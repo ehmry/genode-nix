@@ -1,0 +1,45 @@
+#
+# \brief  Brief test for BLAKE2s library
+# \author Emery Hemingway
+# \date   2015-06-14
+#
+
+# Build program images
+build { core init test/blake2s }
+
+# Create directory where boot files are written to
+create_boot_directory
+
+# Define XML configuration for init
+install_config {
+<config>
+	<parent-provides>
+		<service name="ROM"/>
+		<service name="RAM"/>
+		<service name="IRQ"/>
+		<service name="IO_MEM"/>
+		<service name="IO_PORT"/>
+		<service name="CAP"/>
+		<service name="PD"/>
+		<service name="RM"/>
+		<service name="CPU"/>
+		<service name="LOG"/>
+		<service name="SIGNAL"/>
+	</parent-provides>
+	<default-route>
+		<any-service><parent/><any-child/></any-service>
+	</default-route>
+	<start name="test-blake2s">
+		<resource name="RAM" quantum="1M"/>
+	</start>
+</config>
+}
+
+# Build boot files from source binaries
+build_boot_image { core init test-blake2s }
+
+# Configure Qemu
+append qemu_args " -nographic"
+
+# Execute test in Qemu
+run_genode_until {child "test-blake2s" exited with exit value 0} 60
