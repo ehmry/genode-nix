@@ -1,0 +1,237 @@
+diff --git a/src/libmain/shared.cc b/src/libmain/shared.cc
+index 082705d..1fdefa2 100644
+--- a/src/libmain/shared.cc
++++ b/src/libmain/shared.cc
+@@ -17,6 +17,9 @@
+ #include <unistd.h>
+ #include <signal.h>
+ 
++/* Genode includes. */
++#include <os/config.h>
++
+ extern char * * environ;
+ 
+ 
+@@ -26,15 +29,6 @@ namespace nix {
+ volatile sig_atomic_t blockInt = 0;
+ 
+ 
+-static void sigintHandler(int signo)
+-{
+-    if (!blockInt) {
+-        _isInterrupted = 1;
+-        blockInt = 1;
+-    }
+-}
+-
+-
+ static bool gcWarning = true;
+ 
+ void printGCWarning()
+@@ -119,38 +113,6 @@ void initNix()
+     settings.processEnvironment();
+     settings.loadConfFile();
+ 
+-    /* Catch SIGINT. */
+-    struct sigaction act;
+-    act.sa_handler = sigintHandler;
+-    sigemptyset(&act.sa_mask);
+-    act.sa_flags = 0;
+-    if (sigaction(SIGINT, &act, 0))
+-        throw SysError("installing handler for SIGINT");
+-    if (sigaction(SIGTERM, &act, 0))
+-        throw SysError("installing handler for SIGTERM");
+-    if (sigaction(SIGHUP, &act, 0))
+-        throw SysError("installing handler for SIGHUP");
+-
+-    /* Ignore SIGPIPE. */
+-    act.sa_handler = SIG_IGN;
+-    act.sa_flags = 0;
+-    if (sigaction(SIGPIPE, &act, 0))
+-        throw SysError("ignoring SIGPIPE");
+-
+-    /* Reset SIGCHLD to its default. */
+-    act.sa_handler = SIG_DFL;
+-    act.sa_flags = 0;
+-    if (sigaction(SIGCHLD, &act, 0))
+-        throw SysError("resetting SIGCHLD");
+-
+-    /* Register a SIGSEGV handler to detect stack overflows. */
+-    detectStackOverflow();
+-
+-    /* There is no privacy in the Nix system ;-)  At least not for
+-       now.  In particular, store objects should be readable by
+-       everybody. */
+-    umask(0022);
+-
+     /* Initialise the PRNG. */
+     struct timeval tv;
+     gettimeofday(&tv, 0);
+@@ -158,80 +120,17 @@ void initNix()
+ 
+     if (char *pack = getenv("_NIX_OPTIONS"))
+         settings.unpack(pack);
++
++    /* Set verbosity. */
++    try {
++        verbosity = Verbosity(Genode::config()->xml_node().attribute_value<unsigned long>("verbosity", 0));
++    } catch (...) { };
+ }
+ 
+ 
+ void parseCmdLine(int argc, char * * argv,
+     std::function<bool(Strings::iterator & arg, const Strings::iterator & end)> parseArg)
+ {
+-    /* Put the arguments in a vector. */
+-    Strings args;
+-    argc--; argv++;
+-    while (argc--) args.push_back(*argv++);
+-
+-    /* Process default options. */
+-    for (Strings::iterator i = args.begin(); i != args.end(); ++i) {
+-        string arg = *i;
+-
+-        /* Expand compound dash options (i.e., `-qlf' -> `-q -l -f'). */
+-        if (arg.length() > 2 && arg[0] == '-' && arg[1] != '-' && isalpha(arg[1])) {
+-            *i = (string) "-" + arg[1];
+-            auto next = i; ++next;
+-            for (unsigned int j = 2; j < arg.length(); j++)
+-                if (isalpha(arg[j]))
+-                    args.insert(next, (string) "-" + arg[j]);
+-                else {
+-                    args.insert(next, string(arg, j));
+-                    break;
+-                }
+-            arg = *i;
+-        }
+-
+-        if (arg == "--verbose" || arg == "-v") verbosity = (Verbosity) (verbosity + 1);
+-        else if (arg == "--quiet") verbosity = verbosity > lvlError ? (Verbosity) (verbosity - 1) : lvlError;
+-        else if (arg == "--log-type") {
+-            string s = getArg(arg, i, args.end());
+-            setLogType(s);
+-        }
+-        else if (arg == "--no-build-output" || arg == "-Q")
+-            settings.buildVerbosity = lvlVomit;
+-        else if (arg == "--print-build-trace")
+-            settings.printBuildTrace = true;
+-        else if (arg == "--keep-failed" || arg == "-K")
+-            settings.keepFailed = true;
+-        else if (arg == "--keep-going" || arg == "-k")
+-            settings.keepGoing = true;
+-        else if (arg == "--fallback")
+-            settings.set("build-fallback", "true");
+-        else if (arg == "--max-jobs" || arg == "-j")
+-            settings.set("build-max-jobs", getArg(arg, i, args.end()));
+-        else if (arg == "--cores")
+-            settings.set("build-cores", getArg(arg, i, args.end()));
+-        else if (arg == "--readonly-mode")
+-            settings.readOnlyMode = true;
+-        else if (arg == "--max-silent-time")
+-            settings.set("build-max-silent-time", getArg(arg, i, args.end()));
+-        else if (arg == "--timeout")
+-            settings.set("build-timeout", getArg(arg, i, args.end()));
+-        else if (arg == "--no-build-hook")
+-            settings.useBuildHook = false;
+-        else if (arg == "--show-trace")
+-            settings.showTrace = true;
+-        else if (arg == "--no-gc-warning")
+-            gcWarning = false;
+-        else if (arg == "--option") {
+-            ++i; if (i == args.end()) throw UsageError("‘--option’ requires two arguments");
+-            string name = *i;
+-            ++i; if (i == args.end()) throw UsageError("‘--option’ requires two arguments");
+-            string value = *i;
+-            settings.set(name, value);
+-        }
+-        else {
+-            if (!parseArg(i, args.end()))
+-                throw UsageError(format("unrecognised option ‘%1%’") % *i);
+-        }
+-    }
+-
+     settings.update();
+ }
+ 
+@@ -290,55 +189,5 @@ int handleExceptions(const string & programName, std::function<void()> fun)
+ }
+ 
+ 
+-RunPager::RunPager()
+-{
+-    if (!isatty(STDOUT_FILENO)) return;
+-    string pager = getEnv("PAGER", "default");
+-    if (pager == "" || pager == "cat") return;
+-
+-    /* Ignore SIGINT. The pager will handle it (and we'll get
+-       SIGPIPE). */
+-    struct sigaction act;
+-    act.sa_handler = SIG_IGN;
+-    act.sa_flags = 0;
+-    sigemptyset(&act.sa_mask);
+-    if (sigaction(SIGINT, &act, 0)) throw SysError("ignoring SIGINT");
+-
+-    restoreSIGPIPE();
+-
+-    Pipe toPager;
+-    toPager.create();
+-
+-    pid = startProcess([&]() {
+-        if (dup2(toPager.readSide, STDIN_FILENO) == -1)
+-            throw SysError("dupping stdin");
+-        if (!getenv("LESS"))
+-            setenv("LESS", "FRSXMK", 1);
+-        if (pager != "default")
+-            execl("/bin/sh", "sh", "-c", pager.c_str(), NULL);
+-        execlp("pager", "pager", NULL);
+-        execlp("less", "less", NULL);
+-        execlp("more", "more", NULL);
+-        throw SysError(format("executing ‘%1%’") % pager);
+-    });
+-
+-    if (dup2(toPager.writeSide, STDOUT_FILENO) == -1)
+-        throw SysError("dupping stdout");
+-}
+-
+-
+-RunPager::~RunPager()
+-{
+-    try {
+-        if (pid != -1) {
+-            std::cout.flush();
+-            close(STDOUT_FILENO);
+-            pid.wait(true);
+-        }
+-    } catch (...) {
+-        ignoreException();
+-    }
+-}
+-
+ 
+ }
+diff --git a/src/libmain/shared.hh b/src/libmain/shared.hh
+index b662c6c..d9844c6 100644
+--- a/src/libmain/shared.hh
++++ b/src/libmain/shared.hh
+@@ -66,21 +66,6 @@ template<class N> N getIntArg(const string & opt,
+     return n * multiplier;
+ }
+ 
+-/* Show the manual page for the specified program. */
+-void showManPage(const string & name);
+-
+-/* The constructor of this class starts a pager if stdout is a
+-   terminal and $PAGER is set. Stdout is redirected to the pager. */
+-class RunPager
+-{
+-public:
+-    RunPager();
+-    ~RunPager();
+-
+-private:
+-    Pid pid;
+-};
+-
+ extern volatile ::sig_atomic_t blockInt;
+ 
+ }

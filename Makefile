@@ -1,0 +1,1 @@
+include ../../tool/prepare.mk

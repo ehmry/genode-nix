@@ -1,0 +1,204 @@
+diff --git a/src/libstore/derivations.cc b/src/libstore/derivations.cc
+index 7234ae5..ff3a7b9 100644
+--- a/src/libstore/derivations.cc
++++ b/src/libstore/derivations.cc
+@@ -4,6 +4,8 @@
+ #include "util.hh"
+ #include "misc.hh"
+ 
++#include <rom_session/connection.h>
++#include <dataspace/client.h>
+ 
+ namespace nix {
+ 
+@@ -112,10 +114,40 @@ static Derivation parseDerivation(const string & s)
+ }
+ 
+ 
++/**
++ * Derivations are read from ROM session.
++ * Serving them over ROM makes sense because
++ * clients can be restricted to capability-like
++ * access to the store rather than a full file
++ * system session. Clients and the builder load
++ * the same derivation files during build
++ * operations, so a ROM server can act as a
++ * shared cache.
++ */
+ Derivation readDerivation(const Path & drvPath)
+ {
++    using namespace Genode;
++
++    // TODO: deal with the slashes elsewhere
++    char const *drv_name = drvPath.c_str();
++    while (*drv_name == '/') ++drv_name;
++
++    string raw_drv;
++
++    try {
++        Rom_connection rom(drv_name, "store");
++        Rom_dataspace_capability ds_cap = rom.dataspace();
++
++        char *p = env()->rm_session()->attach(ds_cap);
++        raw_drv.assign(p, Dataspace_client(ds_cap).size());
++        env()->rm_session()->detach(p);
++
++    } catch (Genode::Rom_connection::Rom_connection_failed) {
++        throw Error(format("error opening ROM connection to derivation ‘%1%’") % drvPath);
++    }
++
+     try {
+-        return parseDerivation(readFile(drvPath));
++        return parseDerivation(raw_drv);
+     } catch (FormatError & e) {
+         throw Error(format("error parsing derivation ‘%1%’: %2%") % drvPath % e.msg());
+     }
+diff --git a/src/libstore/local-store.cc b/src/libstore/local-store.cc
+index 3ad80bc..91149b3 100644
+--- a/src/libstore/local-store.cc
++++ b/src/libstore/local-store.cc
+@@ -256,20 +256,23 @@ LocalStore::LocalStore(bool reserveSpace)
+         if (chmod(perUserDir.c_str(), 01777) == -1)
+             throw SysError(format("could not set permissions on ‘%1%’ to 1777") % perUserDir);
+ 
++        mode_t perm = 01775;
++
+         struct group * gr = getgrnam(settings.buildUsersGroup.c_str());
+         if (!gr)
+-            throw Error(format("the group ‘%1%’ specified in ‘build-users-group’ does not exist")
++            printMsg(lvlError, format("warning: the group ‘%1%’ specified in ‘build-users-group’ does not exist")
+                 % settings.buildUsersGroup);
+-
+-        struct stat st;
+-        if (stat(settings.nixStore.c_str(), &st))
+-            throw SysError(format("getting attributes of path ‘%1%’") % settings.nixStore);
+-
+-        if (st.st_uid != 0 || st.st_gid != gr->gr_gid || (st.st_mode & ~S_IFMT) != 01775) {
+-            if (chown(settings.nixStore.c_str(), 0, gr->gr_gid) == -1)
+-                throw SysError(format("changing ownership of path ‘%1%’") % settings.nixStore);
+-            if (chmod(settings.nixStore.c_str(), 01775) == -1)
+-                throw SysError(format("changing permissions on path ‘%1%’") % settings.nixStore);
++        else {
++            struct stat st;
++            if (stat(settings.nixStore.c_str(), &st))
++                throw SysError(format("getting attributes of path ‘%1%’") % settings.nixStore);
++
++            if (st.st_uid != 0 || st.st_gid != gr->gr_gid || (st.st_mode & ~S_IFMT) != perm) {
++                if (chown(settings.nixStore.c_str(), 0, gr->gr_gid) == -1)
++                    throw SysError(format("changing ownership of path ‘%1%’") % settings.nixStore);
++                if (chmod(settings.nixStore.c_str(), perm) == -1)
++                    throw SysError(format("changing permissions on path ‘%1%’") % settings.nixStore);
++            }
+         }
+     }
+ 
+@@ -1402,7 +1405,7 @@ Path LocalStore::addToStoreFromDump(const string & dump, const string & name,
+ }
+ 
+ 
+-Path LocalStore::addToStore(const Path & _srcPath,
++Path LocalStore::addToStore(const string & name, const Path & _srcPath,
+     bool recursive, HashType hashAlgo, PathFilter & filter, bool repair)
+ {
+     Path srcPath(absPath(_srcPath));
+@@ -1417,7 +1420,7 @@ Path LocalStore::addToStore(const Path & _srcPath,
+     else
+         sink.s = readFile(srcPath);
+ 
+-    return addToStoreFromDump(sink.s, baseNameOf(srcPath), recursive, hashAlgo, repair);
++    return addToStoreFromDump(sink.s, name, recursive, hashAlgo, repair);
+ }
+ 
+ 
+diff --git a/src/libstore/local-store.hh b/src/libstore/local-store.hh
+index e0aabdb..819f593 100644
+--- a/src/libstore/local-store.hh
++++ b/src/libstore/local-store.hh
+@@ -130,7 +130,7 @@ public:
+     void querySubstitutablePathInfos(const PathSet & paths,
+         SubstitutablePathInfos & infos);
+ 
+-    Path addToStore(const Path & srcPath,
++    Path addToStore(const string & name, const Path & srcPath,
+         bool recursive = true, HashType hashAlgo = htSHA256,
+         PathFilter & filter = defaultPathFilter, bool repair = false);
+ 
+diff --git a/src/libstore/misc.cc b/src/libstore/misc.cc
+index 2facda8..67f4526 100644
+--- a/src/libstore/misc.cc
++++ b/src/libstore/misc.cc
+@@ -1,7 +1,7 @@
+ #include "misc.hh"
+ #include "store-api.hh"
+-#include "local-store.hh"
+ #include "globals.hh"
++#include "util.hh"
+ 
+ 
+ namespace nix {
+@@ -9,7 +9,6 @@ namespace nix {
+ 
+ Derivation derivationFromPath(StoreAPI & store, const Path & drvPath)
+ {
+-    assertStorePath(drvPath);
+     store.ensurePath(drvPath);
+     return readDerivation(drvPath);
+ }
+diff --git a/src/libstore/store-api.cc b/src/libstore/store-api.cc
+index d3cbd1e..f4f64c4 100644
+--- a/src/libstore/store-api.cc
++++ b/src/libstore/store-api.cc
+@@ -16,26 +16,6 @@ GCOptions::GCOptions()
+ }
+ 
+ 
+-bool isInStore(const Path & path)
+-{
+-    return isInDir(path, settings.nixStore);
+-}
+-
+-
+-bool isStorePath(const Path & path)
+-{
+-    return isInStore(path)
+-        && path.find('/', settings.nixStore.size() + 1) == Path::npos;
+-}
+-
+-
+-void assertStorePath(const Path & path)
+-{
+-    if (!isStorePath(path))
+-        throw Error(format("path ‘%1%’ is not in the Nix store") % path);
+-}
+-
+-
+ Path toStorePath(const Path & path)
+ {
+     if (!isInStore(path))
+@@ -70,8 +50,7 @@ Path followLinksToStorePath(const Path & path)
+ 
+ string storePathToName(const Path & path)
+ {
+-    assertStorePath(path);
+-    return string(path, settings.nixStore.size() + 34);
++    return path.substr(34);
+ }
+ 
+ 
+diff --git a/src/libstore/store-api.hh b/src/libstore/store-api.hh
+index 3109f10..d9a8f89 100644
+--- a/src/libstore/store-api.hh
++++ b/src/libstore/store-api.hh
+@@ -259,12 +259,6 @@ public:
+ 
+ /* !!! These should be part of the store API, I guess. */
+ 
+-/* Throw an exception if `path' is not directly in the Nix store. */
+-void assertStorePath(const Path & path);
+-
+-bool isInStore(const Path & path);
+-bool isStorePath(const Path & path);
+-
+ /* Extract the name part of the given store path. */
+ string storePathToName(const Path & path);
+     

@@ -1,0 +1,15 @@
+LICENSE   := GPLV2
+VERSION   := 1.8
+DOWNLOADS := nix.archive
+
+URL(nix) := http://nixos.org/releases/nix/nix-$(VERSION)/nix-$(VERSION).tar.xz
+SHA(nix) := c03d9d5e80cd3d4c8b9aec5d2ef5b31a00a825fd
+DIR(nix) := src/lib/nix
+
+PATCHES := \
+	src/lib/nixexpr/patch \
+	src/lib/nixmain/patch \
+	src/lib/nixstore/patch \
+	src/lib/nixutil/patch
+
+PATCH_OPT := -p1 -d src/lib/nix

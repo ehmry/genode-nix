@@ -31,8 +31,10 @@ namespace Store_hash {
 	/* Get the base32 encoding of the first 160 bits of the digest. */
 	void encode(uint8_t *buf, char const *name, size_t len)
 	{
-		if (len < 32)
-			throw Genode::Exception();
+		if (len < 32) {
+			*buf = 0;
+			return;
+		}
 		int i = 20;
 		int j = 32;
 		do {

@@ -1,0 +1,82 @@
+diff --git a/src/libexpr/eval.cc b/src/libexpr/eval.cc
+index 298f6a3..d82e5a9 100644
+--- a/src/libexpr/eval.cc
++++ b/src/libexpr/eval.cc
+@@ -28,6 +28,7 @@
+ 
+ #endif
+ 
++#include <os/config.h>
+ 
+ namespace nix {
+ 
+@@ -235,9 +236,23 @@ EvalState::EvalState(const Strings & _searchPath)
+ #endif
+ 
+     /* Initialise the Nix expression search path. */
+-    Strings paths = tokenizeString<Strings>(getEnv("NIX_PATH", ""), ":");
+     for (auto & i : _searchPath) addToSearchPath(i, true);
+-    for (auto & i : paths) addToSearchPath(i);
++
++    try {
++        Genode::Xml_node node = Genode::config()->xml_node().sub_node("search-path");
++        for (; ; node = node.next("search-path")) {
++            Genode::Xml_node::Attribute name_attr = node.attribute("name");
++            Genode::Xml_node::Attribute path_attr = node.attribute("path");
++
++            char str[name_attr.value_size() + path_attr.value_size() + 2];
++            auto i = name_attr.value_size();
++            name_attr.value(str, name_attr.value_size()+1);
++            str[i++] = '=';
++            path_attr.value(str+i, path_attr.value_size()+1);
++			addToSearchPath(str);
++        }
++    } catch (...) { }
++
+     addToSearchPath("nix=" + settings.nixDataDir + "/nix/corepkgs");
+ 
+     createBaseEnv();
+diff --git a/src/libexpr/eval.hh b/src/libexpr/eval.hh
+index 7894292..e49c3b1 100644
+--- a/src/libexpr/eval.hh
++++ b/src/libexpr/eval.hh
+@@ -11,6 +11,8 @@
+ #include <gc/gc_allocator.h>
+ #endif
+ 
++#include <base/fixed_stdint.h>
++using Genode::uint32_t;
+ 
+ namespace nix {
+ 
+diff --git a/src/libexpr/primops.cc b/src/libexpr/primops.cc
+index cd7b287..55dda47 100644
+--- a/src/libexpr/primops.cc
++++ b/src/libexpr/primops.cc
+@@ -48,7 +48,6 @@ void realiseContext(const PathSet & context)
+     for (auto & i : context) {
+         std::pair<string, string> decoded = decodeContext(i);
+         Path ctx = decoded.first;
+-        assert(isStorePath(ctx));
+         if (!store->isValidPath(ctx))
+             throw InvalidPathError(ctx);
+         if (!decoded.second.empty() && isDerivation(ctx))
+@@ -80,7 +79,7 @@ static void prim_scopedImport(EvalState & state, const Pos & pos, Value * * args
+             % path % e.path % pos);
+     }
+ 
+-    if (isStorePath(path) && store->isValidPath(path) && isDerivation(path)) {
++    if (store->isValidPath(path) && isDerivation(path)) {
+         Derivation drv = readDerivation(path);
+         Value & w = *state.allocValue();
+         state.mkAttrs(w, 2 + drv.outputs.size());
+@@ -684,9 +683,6 @@ static void prim_storePath(EvalState & state, const Pos & pos, Value * * args, V
+     /* Resolve symlinks in ‘path’, unless ‘path’ itself is a symlink
+        directly in the store.  The latter condition is necessary so
+        e.g. nix-push does the right thing. */
+-    if (!isStorePath(path)) path = canonPath(path, true);
+-    if (!isInStore(path))
+-        throw EvalError(format("path ‘%1%’ is not in the Nix store, at %2%") % path % pos);
+     Path path2 = toStorePath(path);
+     if (!settings.readOnlyMode)
+         store->ensurePath(path2);

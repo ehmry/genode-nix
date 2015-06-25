@@ -1,0 +1,427 @@
+diff --git a/src/libutil/util.cc b/src/libutil/util.cc
+index dcdb438..c7abbc0 100644
+--- a/src/libutil/util.cc
++++ b/src/libutil/util.cc
+@@ -15,13 +15,9 @@
+ #include <fcntl.h>
+ #include <limits.h>
+ 
+-#ifdef __APPLE__
+-#include <sys/syscall.h>
+-#endif
+-
+-#ifdef __linux__
+-#include <sys/prctl.h>
+-#endif
++/* Genode includes. */
++#include <base/printf.h>
++#include <os/config.h>
+ 
+ 
+ extern char * * environ;
+@@ -53,33 +49,29 @@ SysError::SysError(const FormatOrString & fs)
+ 
+ string getEnv(const string & key, const string & def)
+ {
+-    char * value = getenv(key.c_str());
+-    return value ? string(value) : def;
++	using namespace Genode;
++
++	try {
++		Xml_node::Attribute attr =
++			config()->xml_node().attribute(key.c_str());
++		{
++			char value[256];
++			attr.value(value, sizeof(value));
++
++			PDBG("%s=%s", key.c_str(), value);
++			return string(value);
++		}
++	} catch (...) { }
++	PDBG("%s=%s", key.c_str(), def.c_str());
++	return def;
+ }
+ 
+ 
+ Path absPath(Path path, Path dir)
+ {
+-    if (path[0] != '/') {
+-        if (dir == "") {
+-#ifdef __GNU__
+-            /* GNU (aka. GNU/Hurd) doesn't have any limitation on path
+-               lengths and doesn't define `PATH_MAX'.  */
+-            char *buf = getcwd(NULL, 0);
+-            if (buf == NULL)
+-#else
+-            char buf[PATH_MAX];
+-            if (!getcwd(buf, sizeof(buf)))
+-#endif
+-                throw SysError("cannot get cwd");
+-            dir = buf;
+-#ifdef __GNU__
+-            free(buf);
+-#endif
+-        }
+-        path = dir + "/" + path;
+-    }
+-    return canonPath(path);
++	if (path[0] != '/')
++		path = dir + "/" + path;
++	return canonPath(path);
+ }
+ 
+ 
+@@ -343,9 +335,6 @@ static Path tempName(Path tmpRoot, const Path & prefix, bool includePid,
+     int & counter)
+ {
+     tmpRoot = canonPath(tmpRoot.empty() ? getEnv("TMPDIR", "/tmp") : tmpRoot, true);
+-    if (includePid)
+-        return (format("%1%/%2%-%3%-%4%") % tmpRoot % prefix % getpid() % counter++).str();
+-    else
+         return (format("%1%/%2%-%3%") % tmpRoot % prefix % counter++).str();
+ }
+ 
+@@ -460,17 +449,15 @@ void Nest::close()
+ 
+ void printMsg_(Verbosity level, const FormatOrString & fs)
+ {
+-    checkInterrupt();
+-    if (level > verbosity) return;
+-    string prefix;
+-    if (logType == ltPretty)
+-        for (int i = 0; i < nestingLevel; i++)
+-            prefix += "|   ";
+-    else if (logType == ltEscapes && level != lvlInfo)
+-        prefix = "\033[" + escVerbosity(level) + "s";
+-    string s = (format("%1%%2%\n") % prefix % fs.s).str();
+-    if (!isatty(STDERR_FILENO)) s = filterANSIEscapes(s);
+-    writeToStderr(s);
++	if (level > verbosity) return;
++	string prefix;
++	if (logType == ltPretty)
++		for (int i = 0; i < nestingLevel; i++)
++			prefix += "|   ";
++	else if (logType == ltEscapes && level != lvlInfo)
++		prefix = "\033[" + escVerbosity(level) + "s";
++
++	Genode::printf("%s%s\n", prefix.c_str(), fs.s.c_str());
+ }
+ 
+ 
+@@ -483,22 +470,8 @@ void warnOnce(bool & haveWarned, const FormatOrString & fs)
+ }
+ 
+ 
+-void writeToStderr(const string & s)
+-{
+-    try {
+-        if (_writeToStderr)
+-            _writeToStderr((const unsigned char *) s.data(), s.size());
+-        else
+-            writeFull(STDERR_FILENO, s);
+-    } catch (SysError & e) {
+-        /* Ignore failing writes to stderr if we're in an exception
+-           handler, otherwise throw an exception.  We need to ignore
+-           write errors in exception handlers to ensure that cleanup
+-           code runs to completion if the other side of stderr has
+-           been closed unexpectedly. */
+-        if (!std::uncaught_exception()) throw;
+-    }
+-}
++void writeToStderr(const string & s) {
++	printf("%s", s.c_str()); }
+ 
+ 
+ void (*_writeToStderr) (const unsigned char * buf, size_t count) = 0;
+@@ -726,192 +699,6 @@ void AutoCloseDir::close()
+ //////////////////////////////////////////////////////////////////////
+ 
+ 
+-Pid::Pid()
+-    : pid(-1), separatePG(false), killSignal(SIGKILL)
+-{
+-}
+-
+-
+-Pid::Pid(pid_t pid)
+-    : pid(pid), separatePG(false), killSignal(SIGKILL)
+-{
+-}
+-
+-
+-Pid::~Pid()
+-{
+-    kill();
+-}
+-
+-
+-void Pid::operator =(pid_t pid)
+-{
+-    if (this->pid != pid) kill();
+-    this->pid = pid;
+-    killSignal = SIGKILL; // reset signal to default
+-}
+-
+-
+-Pid::operator pid_t()
+-{
+-    return pid;
+-}
+-
+-
+-void Pid::kill(bool quiet)
+-{
+-    if (pid == -1 || pid == 0) return;
+-
+-    if (!quiet)
+-        printMsg(lvlError, format("killing process %1%") % pid);
+-
+-    /* Send the requested signal to the child.  If it has its own
+-       process group, send the signal to every process in the child
+-       process group (which hopefully includes *all* its children). */
+-    if (::kill(separatePG ? -pid : pid, killSignal) != 0)
+-        printMsg(lvlError, (SysError(format("killing process %1%") % pid).msg()));
+-
+-    /* Wait until the child dies, disregarding the exit status. */
+-    int status;
+-    while (waitpid(pid, &status, 0) == -1) {
+-        checkInterrupt();
+-        if (errno != EINTR) {
+-            printMsg(lvlError,
+-                (SysError(format("waiting for process %1%") % pid).msg()));
+-            break;
+-        }
+-    }
+-
+-    pid = -1;
+-}
+-
+-
+-int Pid::wait(bool block)
+-{
+-    assert(pid != -1);
+-    while (1) {
+-        int status;
+-        int res = waitpid(pid, &status, block ? 0 : WNOHANG);
+-        if (res == pid) {
+-            pid = -1;
+-            return status;
+-        }
+-        if (res == 0 && !block) return -1;
+-        if (errno != EINTR)
+-            throw SysError("cannot get child exit status");
+-        checkInterrupt();
+-    }
+-}
+-
+-
+-void Pid::setSeparatePG(bool separatePG)
+-{
+-    this->separatePG = separatePG;
+-}
+-
+-
+-void Pid::setKillSignal(int signal)
+-{
+-    this->killSignal = signal;
+-}
+-
+-
+-void killUser(uid_t uid)
+-{
+-    debug(format("killing all processes running under uid ‘%1%’") % uid);
+-
+-    assert(uid != 0); /* just to be safe... */
+-
+-    /* The system call kill(-1, sig) sends the signal `sig' to all
+-       users to which the current process can send signals.  So we
+-       fork a process, switch to uid, and send a mass kill. */
+-
+-    ProcessOptions options;
+-    options.allowVfork = false;
+-
+-    Pid pid = startProcess([&]() {
+-
+-        if (setuid(uid) == -1)
+-            throw SysError("setting uid");
+-
+-        while (true) {
+-#ifdef __APPLE__
+-            /* OSX's kill syscall takes a third parameter that, among
+-               other things, determines if kill(-1, signo) affects the
+-               calling process. In the OSX libc, it's set to true,
+-               which means "follow POSIX", which we don't want here
+-                 */
+-            if (syscall(SYS_kill, -1, SIGKILL, false) == 0) break;
+-#else
+-            if (kill(-1, SIGKILL) == 0) break;
+-#endif
+-            if (errno == ESRCH) break; /* no more processes */
+-            if (errno != EINTR)
+-                throw SysError(format("cannot kill processes for uid ‘%1%’") % uid);
+-        }
+-
+-        _exit(0);
+-    }, options);
+-
+-    int status = pid.wait(true);
+-    if (status != 0)
+-        throw Error(format("cannot kill processes for uid ‘%1%’: %2%") % uid % statusToString(status));
+-
+-    /* !!! We should really do some check to make sure that there are
+-       no processes left running under `uid', but there is no portable
+-       way to do so (I think).  The most reliable way may be `ps -eo
+-       uid | grep -q $uid'. */
+-}
+-
+-
+-//////////////////////////////////////////////////////////////////////
+-
+-
+-/* Wrapper around vfork to prevent the child process from clobbering
+-   the caller's stack frame in the parent. */
+-static pid_t doFork(bool allowVfork, std::function<void()> fun) __attribute__((noinline));
+-static pid_t doFork(bool allowVfork, std::function<void()> fun)
+-{
+-#ifdef __linux__
+-    pid_t pid = allowVfork ? vfork() : fork();
+-#else
+-    pid_t pid = fork();
+-#endif
+-    if (pid != 0) return pid;
+-    fun();
+-    abort();
+-}
+-
+-
+-pid_t startProcess(std::function<void()> fun, const ProcessOptions & options)
+-{
+-    auto wrapper = [&]() {
+-        if (!options.allowVfork) _writeToStderr = 0;
+-        try {
+-#if __linux__
+-            if (options.dieWithParent && prctl(PR_SET_PDEATHSIG, SIGKILL) == -1)
+-                throw SysError("setting death signal");
+-#endif
+-            restoreAffinity();
+-            fun();
+-        } catch (std::exception & e) {
+-            try {
+-                std::cerr << options.errorPrefix << e.what() << "\n";
+-            } catch (...) { }
+-        } catch (...) { }
+-        if (options.runExitHandlers)
+-            exit(1);
+-        else
+-            _exit(1);
+-    };
+-
+-    pid_t pid = doFork(options.allowVfork, wrapper);
+-    if (pid == -1) throw SysError("unable to fork");
+-
+-    return pid;
+-}
+-
+-
+ std::vector<const char *> stringsToCharPtrs(const Strings & ss)
+ {
+     std::vector<const char *> res;
+@@ -921,43 +708,8 @@ std::vector<const char *> stringsToCharPtrs(const Strings & ss)
+ }
+ 
+ 
+-string runProgram(Path program, bool searchPath, const Strings & args)
+-{
+-    checkInterrupt();
+-
+-    /* Create a pipe. */
+-    Pipe pipe;
+-    pipe.create();
+-
+-    /* Fork. */
+-    Pid pid = startProcess([&]() {
+-        if (dup2(pipe.writeSide, STDOUT_FILENO) == -1)
+-            throw SysError("dupping stdout");
+-
+-        Strings args_(args);
+-        args_.push_front(program);
+-        auto cargs = stringsToCharPtrs(args_);
+-
+-        if (searchPath)
+-            execvp(program.c_str(), (char * *) &cargs[0]);
+-        else
+-            execv(program.c_str(), (char * *) &cargs[0]);
+-
+-        throw SysError(format("executing ‘%1%’") % program);
+-    });
+-
+-    pipe.writeSide.close();
+-
+-    string result = drainFD(pipe.readSide);
+-
+-    /* Wait for the child to finish. */
+-    int status = pid.wait(true);
+-    if (!statusOk(status))
+-        throw ExecError(format("program ‘%1%’ %2%")
+-            % program % statusToString(status));
+-
+-    return result;
+-}
++string runProgram(Path program, bool searchPath, const Strings & args) {
++	PWRN("not running program %s", program.c_str()); return ""; }
+ 
+ 
+ void closeMostFDs(const set<int> & exceptions)
+diff --git a/src/libutil/util.hh b/src/libutil/util.hh
+index 186ee71..b8c6030 100644
+--- a/src/libutil/util.hh
++++ b/src/libutil/util.hh
+@@ -245,48 +245,6 @@ public:
+ };
+ 
+ 
+-class Pid
+-{
+-    pid_t pid;
+-    bool separatePG;
+-    int killSignal;
+-public:
+-    Pid();
+-    Pid(pid_t pid);
+-    ~Pid();
+-    void operator =(pid_t pid);
+-    operator pid_t();
+-    void kill(bool quiet = false);
+-    int wait(bool block);
+-    void setSeparatePG(bool separatePG);
+-    void setKillSignal(int signal);
+-};
+-
+-
+-/* Kill all processes running under the specified uid by sending them
+-   a SIGKILL. */
+-void killUser(uid_t uid);
+-
+-
+-/* Fork a process that runs the given function, and return the child
+-   pid to the caller. */
+-struct ProcessOptions
+-{
+-    string errorPrefix;
+-    bool dieWithParent;
+-    bool runExitHandlers;
+-    bool allowVfork;
+-    ProcessOptions() : errorPrefix("error: "), dieWithParent(true), runExitHandlers(false), allowVfork(true) { };
+-};
+-
+-pid_t startProcess(std::function<void()> fun, const ProcessOptions & options = ProcessOptions());
+-
+-
+-/* Run a program and return its stdout in a string (i.e., like the
+-   shell backtick operator). */
+-string runProgram(Path program, bool searchPath = false,
+-    const Strings & args = Strings());
+-
+ MakeError(ExecError, Error)
+ 
+ /* Convert a list of strings to a null-terminated vector of char
