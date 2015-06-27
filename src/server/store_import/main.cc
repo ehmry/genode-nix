@@ -12,13 +12,11 @@
  */
 
 /* Genode includes */
+#include <store_import/session.h>
 #include <root/component.h>
 #include <base/allocator_avl.h>
 #include <os/server.h>
 #include <util/list.h>
-
-/* Local includes */
-#include "session.h"
 
 namespace Store_import {
 	class Root_component;

@@ -18,6 +18,8 @@ struct Builder::Session_client : Genode::Rpc_client<Session>
 	explicit Session_client(Session_capability session)
 	: Genode::Rpc_client<Session>(session) { }
 
+	bool valid(Name const &name) { return call<Rpc_valid>(name); }
+
 	void realize(Name const  &drv, Genode::Signal_context_capability sigh) {
 		call<Rpc_realize>(drv, sigh); }
 };

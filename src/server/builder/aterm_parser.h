@@ -55,7 +55,7 @@ class Aterm::Parser
 		void check_end()
 		{
 			if (_len == 0 && _depth == 1) return;
-			if ( *_pos == ',')            return advance();
+			if (*_pos == ',')             return advance();
 			if (*_pos == _state[0])       return pop();
 
 			throw Malformed_element();
@@ -86,7 +86,7 @@ class Aterm::Parser
 				/**
 				 * Return string term as null-terminated string
 				 */
-				void string(char *dst, size_t max_len) const
+				void value(char *dst, size_t max_len) const
 				{
 					Genode::strncpy(dst, _base, min(_len+1, max_len));
 				}
@@ -152,9 +152,10 @@ class Aterm::Parser
 				return check_end();
 			}
 
-			int d = _depth;
+			int start_depth = _depth;
 			push(LIST);
-			while (d < _depth) func();
+			while (_depth > start_depth)
+				func();
 			check_end();
 		}
 

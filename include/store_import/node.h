@@ -4,8 +4,15 @@
  * \date   2015-06-02
  */
 
-#ifndef _STORE_IMPORT__NODE_H_
-#define _STORE_IMPORT__NODE_H_
+/*
+ * Copyright (C) 2015 Genode Labs GmbH
+ *
+ * This file is part of the Genode OS framework, which is distributed
+ * under the terms of the GNU General Public License version 2.
+ */
+
+#ifndef _INCLUDE__STORE_IMPORT__NODE_H_
+#define _INCLUDE__STORE_IMPORT__NODE_H_
 
 /* Genode includes. */
 #include <file_system/util.h>
@@ -19,6 +26,22 @@ namespace Store_import {
 	class Hash_node;
 	class File;
 	class Directory;
+
+	/**
+	 * Write the first element to name and return the start of the second path.
+	 */
+	char const *split_path(char *name, char const *path)
+	{
+		for (int i = 1; i < MAX_NAME_LEN && path[i]; ++i)
+			if (path[i] == '/') {
+				Genode::strncpy(name, path, ++i);
+				return path+i;
+			}
+
+		size_t len = strlen(path);
+		Genode::strncpy(name, path, len+1);
+		return path+len;
+	}
 
 }
 

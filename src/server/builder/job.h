@@ -7,13 +7,12 @@
  * ** Ram allocation **
  * ********************
  *
+ * TODO:
  * Each job's quota is [R / (2^N)] where
  * R is total ram available and N is the
  * position of the job in the queue.
  *
- * TODO: reduce the hash to a shorter length,
- * if this means jobs don't get queued, no big deal,
- * thats a temporary failure.
+ * TODO: put a timeout on jobs
  */
 
 #ifndef _BUILDER__JOB_H_
@@ -41,7 +40,6 @@ namespace Builder {
 
 	class Listener;
 	class Job;
-	class Job_factory;
 	class Job_queue;
 
 };
@@ -74,6 +72,7 @@ class Builder::Listener : public Genode::List<Listener>::Element
 		bool valid() const { return _sigh.valid(); }
 };
 
+
 /**
  * A job wraps a child and informs its listeners
  * of the childs completion.
@@ -86,45 +85,11 @@ class Builder::Job : public List<Job>::Element
 	private:
 
 		char                   _name[MAX_NAME_LEN];
-		File_system::Session  &_fs;
 		Derivation             _drv;
 		Lock                   _lock;
 		List<Listener>         _listeners;
 		Signal_rpc_member<Job> _exit_dispatcher;
-		Cap_session           &_cap;
 		Child                 *_child;
-
-		/**
-		 * Handler for the child exit.
-		 */
-		void _exit(unsigned)
-		{
-			_lock.lock();
-
-			destroy(Genode::env()->heap(), _child);
-			_child = 0;
-
-			/* TODO: how does the job get removed? */
-
-			/*
-			 * Notify the listeners then remove them.
-			 */
-			for (Listener *curr = _listeners.first(); curr; curr = curr->next()) {
-				curr->notify();
-				destroy(Genode::env()->heap(), curr);
-			}
-			_lock.unlock();
-
-			// TODO: propagate to dependers
-		}
-
-		void kill()
-		{
-			if (!_child) return;
-			destroy(Genode::env()->heap(), _child);
-			_child = 0;
-		}
-
 
 	public:
 
@@ -132,67 +97,72 @@ class Builder::Job : public List<Job>::Element
 		 * Constructor
 		 * \param ep   entrypoint for child exit signal dispatcher
 		 * \param drv  derivation that this job realizes
-		 * \param ctx  client or dependency signal handler
 		 */
 		Job(Server::Entrypoint &ep,
-		    Cap_session        &cap,
 
 		    /* Arguments for Derivation. */
-		    Genode::Allocator        *alloc,
-		    File_system::Session     &store_fs,
-
-		    /* Arguments from a client session. */
-		    Name                       const &name,
-		    Genode::Signal_context_capability ctx)
+		    Genode::Allocator    *alloc,
+		    File_system::Session &store_fs,
+		    char           const *name)
 		:
-			_fs(store_fs),
-			_drv(alloc, _fs, name.string()),
-			_exit_dispatcher(ep, *this, &Job::_exit),
-			_cap(cap),
+			_drv(alloc, store_fs, name),
+			_exit_dispatcher(ep, *this, &Job::end),
 			_child(0)
 		{
-			strncpy(_name, name.string(), sizeof(_name));
-			/* Register the first signal context so the job isn't dropped. */
-			sigh(ctx);
+			strncpy(_name, name, sizeof(_name));
 		};
 
-		~Job()
+		/**
+		 * Handler for the child exit.
+		 */
+		void end(unsigned)
 		{
-			_lock.lock();
+			Lock::Guard guard(_lock);
 
-			kill();
-
-			int dbg_destroy = 0;
-			int dbg_notify = 0;
-
-			for (Listener *l = _listeners.first(); l; l = l->next()) {
-				/*
-				 * Will the builder destruct signal exit,
-				 * making these listeners invalid anyway?
-				 */
-				if (l->valid()) {
-					++dbg_notify;
-					l->notify();
-				}
-
-				destroy(Genode::env()->heap(), l);
-				++dbg_destroy;
+			if (_child) {
+				destroy(Genode::env()->heap(), _child);
+				_child = 0;
 			}
-			PDBG("notified %d listerners, destroyed %d", dbg_notify, dbg_destroy);
+			/*
+			 * Notify the listeners then remove them.
+			 */
+			for (Listener *curr = _listeners.first(); curr; curr = curr->next()) {
+				curr->notify();
+				destroy(Genode::env()->heap(), curr);
+			}
 		}
+
+		~Job() { end(0); }
 
 		char const *name() { return _name; };
 
-		void sigh(Genode::Signal_context_capability ctx)
+		void add_listener(Genode::Signal_context_capability sigh)
 		{
 			Genode::Lock::Guard guard(_lock);
 
 			Listener *listener = new (Genode::env()->heap())
-				Listener(ctx);
+				Listener(sigh);
 			_listeners.insert(listener);
 		}
 
-		bool active()
+		bool waiting()
+		{
+			Genode::Lock::Guard guard(_lock);
+
+			if (_child)
+				return false;
+
+			for (Listener *l = _listeners.first(); l; l = l->next()) {
+				if (l->valid())
+					return true;
+				else
+					_listeners.remove(l);
+					destroy(Genode::env()->heap(), l);
+			}
+			return false;
+		}
+
+		bool wanted()
 		{
 			Genode::Lock::Guard guard(_lock);
 
@@ -206,91 +176,96 @@ class Builder::Job : public List<Job>::Element
 			return false;
 		}
 
-		void wake()
-		{
-			//for (Input *input = drv.Inputs(); input; input = input->next())
-			/* Run through the inputs and queue anything that is missing. */
-		}
-
-		void start(Ram &ram) //, Signal_context_capability yield_sigh)
+		void start(File_system::Session &fs,
+		           Cap_session          &cap,
+		           Ram                  &ram)
 		{
 			if (_child) return;
 
+			PDBG("%s", _name);
+
 			_child = new (Genode::env()->heap())
-				Child(name(), _fs, _cap, _drv, ram, _exit_dispatcher);
+				Child(_name, fs, cap, _drv, ram, _exit_dispatcher);
 		}
 };
 
 
-// TODO: jobs need to be removed when they are done.
+// TODO: jobs need to be removed when they are done, do it on yield
 class Builder::Job_queue : private Genode::List<Job>
 {
-
 	private:
 
-		// TODO: make static members?
-		Cap_connection      _cap;
-		Signal_receiver     _sig_rec;
-		Signal_context      _yield_broadcast_sig_ctx;
-		Signal_context      _resource_avail_sig_ctx;
-		Signal_context      _yield_response_sig_ctx;
-		Ram                 _ram;
-		Lock                _lock;
-		Server::Entrypoint &_ep;
+		Cap_connection        _cap;
+		Signal_receiver       _sig_rec;
+		Signal_context        _yield_broadcast_sig_ctx;
+		Signal_context        _resource_avail_sig_ctx;
+		//Signal_context        _yield_response_sig_ctx;
+		Ram                   _ram;
+		Lock                  _lock;
+		Server::Entrypoint   &_ep;
+		File_system::Session &_fs;
 
 		//Signal_context_capability _yield_response_sig_cap;
 
+		Job *lookup_name(char const *name)
+		{
+			for (Job *curr = first(); curr; curr = curr->next())
+				if (strcmp(name, curr->name(), MAX_NAME_LEN) == 0)
+					return curr;
+			return 0;
+		}
+
 	public:
 
-		Job_queue(Server::Entrypoint &ep)
-		: 
+		Job_queue(Server::Entrypoint   &ep,
+		          File_system::Session &fs)
+		:
 			_ram(0, // TODO: add and subtract session donation to preservation?
 			     _sig_rec.manage(&_yield_broadcast_sig_ctx),
 			     _sig_rec.manage(&_resource_avail_sig_ctx)),
 			//_yield_response_sig_cap(_sig_rec.manage(&_yield_response_sig_ctx)),
-			_ep(ep)
+			_ep(ep),
+			_fs(fs)
 		{ }
 
-		Job* create(Genode::Allocator                *alloc,
-		            File_system::Session             &fs,
-		            Name const                       &drv_name,
-		            Genode::Signal_context_capability sigh)
+		void queue(char const                       *drv_name,
+		           Genode::Signal_context_capability sigh)
 		{
-			Job *job = new (Genode::env()->heap())
-				Job(_ep, _cap, alloc, fs, drv_name, sigh);
+			Lock::Guard guard(_lock);
 
-			insert(job);
-			return job;
+			Job *job = lookup_name(drv_name);
+			if (!job) try {
+				job = new (env()->heap())
+					Job(_ep, env()->heap(), _fs, drv_name);
+				insert(job);
+			} catch (...) {
+				PERR("error queueing %s", drv_name);
+				throw;
+			}
+
+			job->add_listener(sigh);
 		}
 
-	/**
-	 * Process the queue; start new jobs and drop stale jobs.
-	 */
-	void process()
-	{
-		/*
-		 * Ensure jobs are started in serial.
+		/**
+		 * Start new jobs
 		 */
-		Lock::Guard guard(_lock);
-		PDBG("not really implemented, just starting them all");
-		try {
-			for (Job *curr = first(); curr; curr = curr->next())
-				curr->start(_ram); //, yield_response_sig_cap);
-		} catch (Ram::Transfer_quota_failed) {
-			Ram::Status status = _ram.status();
-			PERR("%lu/%lu bytes of quota used, cannot start more jobs",
-			     status.used, status.quota);
-			// TODO: how many jobs are running?
-		}
-	}
+		void process()
+		{
+			Lock::Guard guard(_lock);
 
-	Job *lookup_name(char const *name)
-	{
-		for (Job *curr = first(); curr; curr = curr->next())
-			if (strcmp(name, curr->name(), MAX_NAME_LEN) == 0)
-				return curr;
-		return 0;
-	}
+			try {
+				for (Job *job = first(); job; job = job->next()) {
+					if (job->waiting())
+						job->start(_fs, _cap, _ram); //, yield_response_sig_cap);
+					else if (!job->wanted())
+						job->end(0);
+				}
+			} catch (Ram::Transfer_quota_failed) {
+				Ram::Status status = _ram.status();
+				PERR("%lu/%lu bytes of quota used, cannot start more jobs",
+				     status.used, status.quota);
+			}
+		}
 };
 
 #endif

@@ -8,7 +8,9 @@
 #define _STORE_HASH__ENCODE_H_
 
 #include <base/fixed_stdint.h>
-
+#include <base/stdint.h>
+#include <base/exception.h>
+#include <util/string.h>
 
 namespace Store_hash {
 

@@ -15,18 +15,22 @@
 #include <ram_session/connection.h>
 #include <cpu_session/connection.h>
 #include <rm_session/connection.h>
+#include <file_system_session/file_system_session.h>
 #include <init/child_policy.h>
 #include <cli_monitor/ram.h>
+#include <os/server.h>
 
+/* Local imports */
 #include "derivation.h"
-#include "store_rom.h"
+#include "rom_policy.h"
+#include "import_policy.h"
 
 namespace Builder {
 
 	class Quota_exceeded : public Genode::Exception { };
 
 	struct Resources;
-	class  Noux_child_policy;
+	class  Child_policy;
 	class  Child;
 
 }
@@ -78,27 +82,21 @@ struct Builder::Resources
 };
 
 
-/**
- * Specialized child policy for builders wrapped in Noux.
- *
- * TODO: much of this is duplicated from cli_monitor,
- * go there and split child ploicy from Child_base.
- *
- * Then of course split Builder::Child_policy from
- * Noux_child_policy.
- */
-class Builder::Noux_child_policy : public Genode::Child_policy
+class Builder::Child_policy : public Genode::Child_policy
 {
 
 	private:
 
 		enum { CONFIG_SIZE = 4096 };
 
-		char const *_name;
-		Resources                           &_resources;
-		Store_rom_policy                     _binary_policy;
-		Service_registry                     _parent_services;
-		Signal_context_capability            _exit_sigh;
+		char const                *_name;
+		File_system::Session      &_fs;
+		Derivation                &_drv;
+		Signal_context_capability  _exit_sigh;
+		Resources                 &_resources;
+		Store_rom_policy           _binary_policy;
+		Store_fs_policy            _fs_policy;
+		Service_registry           _parent_services;
 
 		struct Store_rom_registry
 		{
@@ -142,7 +140,7 @@ class Builder::Noux_child_policy : public Genode::Child_policy
 					 */
 					try {
 						Store_rom_policy *policy = new (env()->heap())
-							Store_rom_policy(_fs, rom->key, rom->value, &_root_ep);
+							Store_rom_policy(_fs, rom->key, rom->value, _root_ep);
 						_policies.insert(policy);
 						return policy->service();
 					} catch (File_system::Lookup_failed) {
@@ -161,18 +159,21 @@ class Builder::Noux_child_policy : public Genode::Child_policy
 		/**
 		 * Constructor
 		 */
-		Noux_child_policy(char const               *name,
-		                  File_system::Session     &fs,
-		                  Resources                &resources,
-		                  Genode::Rpc_entrypoint   &root_ep,
-		                  Derivation               &drv,
-		                  Signal_context_capability exit_sigh)
+		Child_policy(char const               *name,
+		             File_system::Session     &fs,
+		             Resources                &resources,
+		             Server::Entrypoint       &ep,
+		             Derivation               &drv,
+		             Signal_context_capability exit_sigh)
 		:
 			_name(name),
-			_resources(resources),
-			_binary_policy(fs, "binary", drv.builder(), &root_ep),
+			_fs(fs),
+			_drv(drv),
 			_exit_sigh(exit_sigh),
-			_rom_registry(fs, root_ep, drv)
+			_resources(resources),
+			_binary_policy(_fs, "binary", drv.builder(), ep.rpc_ep()),
+			_fs_policy(ep),
+			_rom_registry(_fs, ep.rpc_ep(), drv)
 		{
 			/*
 			 * A whitelist of services to forward from our parent.
@@ -217,8 +218,12 @@ class Builder::Noux_child_policy : public Genode::Child_policy
 					return service;
 			}
 
+			if ((service = _fs_policy.resolve_session_request(service_name, args)))
+				return service;
+
 			/* get it from the parent if it is allowed */
 			service = _parent_services.find(service_name);
+
 			if (!service) {
 				PERR("illegal %s request from %s", service_name, _name);
 				exit(-1);
@@ -226,59 +231,76 @@ class Builder::Noux_child_policy : public Genode::Child_policy
 			return service;
 		}
 
-		void filter_session_args(const char *, char *) { /* TODO */ }
+		void filter_session_args(const char *service, char *args, size_t args_len)
+		{
+			char label_buf[Parent::Session_args::MAX_SIZE];
+			Arg_string::find_arg(args, "label").string(label_buf, sizeof(label_buf), "");
+
+			char value_buf[Parent::Session_args::MAX_SIZE];
+			Genode::snprintf(value_buf, sizeof(value_buf),
+			                 "\"%s%s%s\"",
+			                 _name,
+			                 Genode::strcmp(label_buf, "") == 0 ? "" : " -> ",
+			                 label_buf);
+
+			Arg_string::set_arg(args, args_len, "label", value_buf);
+		}
 
 		void exit(int exit_value)
 		{
-			if (exit_value)
-				PERR("%s failed", _name);
-			else
-				PINF("%s succedded", _name);
+			if (exit_value) {
+				PERR("failure: %s", _name);
+				// TODO: write a store placeholder that marks failure
+			}
+			else {
+				_fs_policy.finalize(_fs, _drv);
+				PINF("success: %s", _name);
+			}
+
 			Signal_transmitter(_exit_sigh).submit();
 		}
 
 };
 
 
-	class Builder::Child
-	{
-		public:
+class Builder::Child
+{
+	public:
 
-			class Quota_exceeded : public Genode::Exception { };
+		class Quota_exceeded : public Genode::Exception { };
 
-		private:
+	private:
 
-			enum { ENTRYPOINT_STACK_SIZE  =   6*1024*sizeof(long) };
+		enum { ENTRYPOINT_STACK_SIZE  =   6*1024*sizeof(long) };
 
-			Resources                _resources;
-			Rpc_entrypoint           _entrypoint;
-			Noux_child_policy        _child_policy;
-			Genode::Child            _child;
+		Resources           _resources;
+		Server::Entrypoint  _entrypoint;
+		Child_policy        _child_policy;
+		Genode::Child       _child;
 
-		public:
+	public:
 
-			/**
-			 * Constructor
-			 */
-			Child(char const               *label,
-			      File_system::Session     &fs,
-			      Cap_session              &cap_session,
-			      Derivation               &drv,
-			      Ram                      &ram_manager,
-			      Signal_context_capability exit_sigh)
-			:
-				_resources(label, ram_manager, exit_sigh),
-				_entrypoint(&cap_session, ENTRYPOINT_STACK_SIZE, label),
-				_child_policy(label, fs, _resources,  _entrypoint, drv, exit_sigh),
-				_child(_child_policy.binary(),
-				       _resources.pd.cap(),
-				       _resources.ram.cap(),
-				       _resources.cpu.cap(),
-				       _resources.rm.cap(),
-				      &_entrypoint,
-				      &_child_policy)
-			{ }
-
-	};
+		/**
+		 * Constructor
+		 */
+		Child(char const               *label,
+		      File_system::Session     &fs,
+		      Cap_session              &cap_session,
+		      Derivation               &drv,
+		      Ram                      &ram_manager,
+		      Signal_context_capability exit_sigh)
+		:
+			_resources(label, ram_manager, exit_sigh),
+			//_entrypoint(&cap_session, ENTRYPOINT_STACK_SIZE, label),
+			_child_policy(label, fs, _resources,  _entrypoint, drv, exit_sigh),
+			_child(_child_policy.binary(),
+			       _resources.pd.cap(),
+			       _resources.ram.cap(),
+			       _resources.cpu.cap(),
+			       _resources.rm.cap(),
+			      &_entrypoint.rpc_ep(),
+			      &_child_policy)
+		{ }
+};
 
 #endif

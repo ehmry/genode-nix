@@ -4,8 +4,15 @@
  * \date   2015-05-28
  */
 
-#ifndef _STORE_IMPORT__SESSION_H_
-#define _STORE_IMPORT__SESSION_H_
+/*
+ * Copyright (C) 2015 Genode Labs GmbH
+ *
+ * This file is part of the Genode OS framework, which is distributed
+ * under the terms of the GNU General Public License version 2.
+ */
+
+#ifndef _INCLUDE__STORE_IMPORT__SESSION_H_
+#define _INCLUDE__STORE_IMPORT__SESSION_H_
 
 /* Genode includes */
 #include <store_hash/encode.h>
@@ -15,15 +22,20 @@
 #include <os/server.h>
 #include <os/session_policy.h>
 #include <util/string.h>
+#include <base/allocator_avl.h>
 #include <base/allocator_guard.h>
 
 /* Local includes */
-#include "util.h"
 #include "node.h"
 
-namespace File_system {
+namespace Store_import {
 
-	using namespace Store_import;
+	using namespace File_system;
+
+	class Session_component;
+
+	static bool is_root(File_system::Path const &path) {
+		return (path.size() == 2) && (*path.string() == '/'); }
 
 	static unsigned long nonce()
 	{
@@ -143,7 +155,7 @@ class Store_import::Session_component : public Session_rpc_object
 			Symlink_handle handle() {
 				return index | ROOT_HANDLE_PREFIX; }
 
-			void finalise(char const *name)
+			void finalize(char const *name)
 			{
 				strncpy(filename, name, sizeof(filename));
 				done = true;
@@ -200,7 +212,7 @@ class Store_import::Session_component : public Session_rpc_object
 
 		Genode::Allocator_guard              _alloc;
 		Genode::Allocator_avl                _fs_tx_alloc;
-		Connection                           _fs;
+		File_system::Connection              _fs;
 		Signal_rpc_member<Session_component> _process_packet_dispatcher;
 		Lock                                 _packet_lock;
 		Dir_handle                           _root_handle;
@@ -213,7 +225,7 @@ class Store_import::Session_component : public Session_rpc_object
 		 * Process and incoming client packet, return true if a
 		 * response is needed from the backend.
 		 */
-		bool _process_incoming_packet(Packet_descriptor &theirs)
+		bool _process_incoming_packet(File_system::Packet_descriptor &theirs)
 		{
 			/* assume failure by default */
 			theirs.succeeded(false);
@@ -281,9 +293,12 @@ class Store_import::Session_component : public Session_rpc_object
 
 		void _process_outgoing_packet()
 		{
+			using namespace File_system;
+
 			File_system::Session::Tx::Source &source = *_fs.tx();
-			Packet_descriptor ours = source.get_acked_packet();
-			Packet_descriptor *theirs = (Packet_descriptor *)ours.ref();
+			File_system::Packet_descriptor ours = source.get_acked_packet();
+			File_system::Packet_descriptor *theirs =
+				(File_system::Packet_descriptor *)ours.ref();
 			if (!theirs) {
 				PERR("null packet reference received from the backend");
 				source.release_packet(ours);
@@ -291,11 +306,14 @@ class Store_import::Session_component : public Session_rpc_object
 
 			size_t length = ours.length();
 			uint8_t const *content = (uint8_t const *)source.packet_content(ours);
-			if (!content)
-				throw Exception();
+			if (!content) {
+				tx_sink()->acknowledge_packet(*theirs);
+				source.release_packet(ours);
+				return;
+			}
 
 			switch (ours.operation()) {
-				case Packet_descriptor::WRITE:
+				case File_system::Packet_descriptor::WRITE:
 					try {
 						Hash_node *hash_node = _registry.lookup(ours.handle());
 						if (!hash_node) {
@@ -310,10 +328,10 @@ class Store_import::Session_component : public Session_rpc_object
 						length = 0;
 					}
 					break;
-				case Packet_descriptor::READ:
+				case File_system::Packet_descriptor::READ:
 					void *dst = tx_sink()->packet_content(*theirs);
 					if (!dst)
-						throw Exception();
+						length = 0;
 
 					memcpy(dst, content, length);
 					break;
@@ -337,7 +355,7 @@ class Store_import::Session_component : public Session_rpc_object
 			 */
 			Lock::Guard packet_guard(_packet_lock);
 
-			Packet_descriptor queue[TX_QUEUE_SIZE];
+			File_system::Packet_descriptor queue[TX_QUEUE_SIZE];
 			int n = 0;
 
 			while (tx_sink()->packet_avail() && n < TX_QUEUE_SIZE) {
@@ -393,11 +411,75 @@ class Store_import::Session_component : public Session_rpc_object
 			env()->ram_session()->free(static_cap_cast<Ram_dataspace>(ds));
 		}
 
+		void finish(Hash_root *root, char const *name)
+		{
+			/*
+			 * Prevent the main thread from sending packets to the backend
+			 * while we flush here on the RPC thread.
+			 */
+			Lock::Guard packet_guard(_packet_lock);
+
+			/* Flush the root. */
+			File *file_node = dynamic_cast<File *>(root->hash);
+			if (file_node) {
+				File_handle final_handle = _fs.file(_root_handle, root->filename, READ_ONLY, false);
+				Handle_guard guard(_fs, final_handle);
+				file_node->flush(_fs, final_handle);
+			} else {
+				Directory *dir_node = dynamic_cast<Directory *>(root->hash);
+				if (!dir_node)
+					throw Invalid_handle();
+
+				char path[MAX_NAME_LEN+1];
+				*path = '/';
+				strncpy(path+1, root->filename, sizeof(path)-1);
+
+				dir_node->flush(_fs, path);
+			}
+
+			uint8_t final_name[MAX_NAME_LEN];
+			root->hash->digest(final_name, sizeof(final_name));
+			Store_hash::encode(final_name, name, sizeof(final_name));
+			try {
+				_fs.move(_root_handle, root->filename,
+				         _root_handle, (char *)final_name);
+			} catch (File_system::Node_already_exists) {
+				/* A redundant import. */
+				_fs.unlink(_root_handle, root->filename);
+				/* This needs to be done recursively. */
+			}
+			/*
+			 * Close all the open handles
+			 * underneath the the root, unless there is
+			 * a better way to prevent further writes.
+			 */
+			root->finalize((char *)final_name);
+		}
+
+		void finish(const char *name)
+		{
+			Hash_root *root = _root_registry.lookup_name(name);
+			if (!root)
+				throw Lookup_failed();
+
+			finish(root, name);
+		}
+
+		char const *final(char const *name)
+		{
+			Hash_root *root = _root_registry.lookup_name(name);
+			if (!root || !root->done)
+				throw Lookup_failed();
+
+			return root->filename;
+		}
+
+
 		/***************************
 		 ** File_system interface **
 		 ***************************/
 
-		Dir_handle dir(Path const &path, bool create)
+		Dir_handle dir(File_system::Path const &path, bool create)
 		{
 			char const *path_str = path.string();
 
@@ -509,7 +591,7 @@ class Store_import::Session_component : public Session_rpc_object
 			 * Here we perform some trickery, when the client
 			 * accesses a symlink at the top level path, and that
 			 * symlink has the same name of a currently proccessing
-			 * hash tree, the tree is finalised, and the client may
+			 * hash tree, the tree is finalized, and the client may
 			 * find the final name by reading the symlink.
 			 */
 			if (!create) {
@@ -522,49 +604,10 @@ class Store_import::Session_component : public Session_rpc_object
 
 			Hash_root *root = _root_registry.lookup_name(name_str);
 			if (!root)
-				throw Permission_denied();
+				throw Lookup_failed();
 
-			/*
-			 * Prevent the main thread from sending packets to the backend
-			 * while we flush here on the RPC thread.
-			 */
-			Lock::Guard packet_guard(_packet_lock);
+			finish(root, name_str);
 
-			/* Flush the root. */
-			File *file_node = dynamic_cast<File *>(root->hash);
-			if (file_node) {
-				File_handle final_handle = _fs.file(_root_handle, root->filename, READ_ONLY, false);
-				Handle_guard guard(_fs, final_handle);
-				file_node->flush(_fs, final_handle);
-			} else {
-				Directory *dir_node = dynamic_cast<Directory *>(root->hash);
-				if (!dir_node)
-					throw Invalid_handle();
-
-				char path[MAX_NAME_LEN+1];
-				*path = '/';
-				strncpy(path+1, root->filename, sizeof(path)-1);
-
-				dir_node->flush(_fs, path);
-			}
-
-			uint8_t final_name[MAX_NAME_LEN];
-			root->hash->digest(final_name, sizeof(final_name));
-			Store_hash::encode(final_name, name_str, sizeof(final_name));
-			try {
-				_fs.move(_root_handle, root->filename,
-				         _root_handle, (char *)final_name);
-			} catch (File_system::Node_already_exists) {
-				/* A redundant import. */
-				_fs.unlink(_root_handle, root->filename);
-				/* This needs to be done recursively. */
-			}
-			/*
-			 * Close all the open handles
-			 * underneath the the root, unless there is
-			 * a better way to prevent further writes.
-			 */
-			root->finalise((char *)final_name);
 			return root->handle();
 		}
 
@@ -573,7 +616,7 @@ class Store_import::Session_component : public Session_rpc_object
 		 * the first element of the path, or
 		 * return a handle to a vitual symlink.
 		 */
-		Node_handle node(Path const &path)
+		Node_handle node(File_system::Path const &path)
 		{
 			char const *path_str = path.string();
 

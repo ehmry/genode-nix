@@ -1,3 +1,16 @@
+/*
+ * \brief  Policy and service for loading ROMs from the store
+ * \author Emery Hemingway
+ * \date   2015-06-21
+ */
+
+/*
+ * Copyright (C) 2015 Genode Labs GmbH
+ *
+ * This file is part of the Genode OS framework, which is distributed
+ * under the terms of the GNU General Public License version 2.
+ */
+
 /* Genode includes */
 #include <rom_session/rom_session.h>
 #include <cap_session/connection.h>
@@ -8,15 +21,16 @@
 #include <base/env.h>
 #include <base/printf.h>
 
-#ifndef _BUILDER__STORE_ROM_H_
-#define _BUILDER__STORE_ROM_H_
+#ifndef _BUILDER__ROM_POLICY_H_
+#define _BUILDER__ROM_POLICY_H_
 
 namespace Builder { class Store_rom_policy; }
 
 class Builder::Store_rom_policy : public Genode::List<Store_rom_policy>::Element
 {
 	public:
-		enum { ROM_NAME_MAX_LEN = 32 };
+
+		enum { ROM_NAME_MAX_LEN = File_system::MAX_PATH_LEN };
 
 	private:
 
@@ -54,6 +68,10 @@ class Builder::Store_rom_policy : public Genode::List<Store_rom_policy>::Element
 				Handle_guard file_guard(fs, file);
 
 				file_size_t size = fs.status(file).size;
+				if (!size) {
+					PERR("cannot construct a ROM for empty file %s", file_path);
+					throw Invalid_derivation();
+				}
 
 				_ds = env()->ram_session()->alloc(size);
 
@@ -90,7 +108,7 @@ class Builder::Store_rom_policy : public Genode::List<Store_rom_policy>::Element
 
 		} _local_rom_session;
 
-		Genode::Rpc_entrypoint *_ep;
+		Genode::Rpc_entrypoint        &_ep;
 		Genode::Rom_session_capability _rom_session_cap;
 
 		char _rom_name[ROM_NAME_MAX_LEN];
@@ -103,8 +121,6 @@ class Builder::Store_rom_policy : public Genode::List<Store_rom_policy>::Element
 			 * Constructor
 			 *
 			 * \param rom_cap  capability to return on session requests
-			 * \param valid    true if local rom service is backed by a
-			 *                 valid dataspace
 			 */
 			Local_rom_service(Genode::Rom_session_capability rom_cap)
 			: Genode::Service("ROM"), _rom_cap(rom_cap) { }
@@ -124,12 +140,12 @@ class Builder::Store_rom_policy : public Genode::List<Store_rom_policy>::Element
 		 * Constructor
 		 */
 		Store_rom_policy(File_system::Session   &fs,
-			             char const             *rom_name,
-			             char const             *file_path,
-		                 Genode::Rpc_entrypoint *ep)
+		                 char const             *rom_name,
+		                 char const             *file_path,
+		                 Genode::Rpc_entrypoint &ep)
 		:
 			_local_rom_session(fs, file_path), _ep(ep),
-			_rom_session_cap(_ep->manage(&_local_rom_session)),
+			_rom_session_cap(_ep.manage(&_local_rom_session)),
 			_local_rom_service(_rom_session_cap)
 		{
 			Genode::strncpy(_rom_name, rom_name, sizeof(_rom_name));
@@ -141,7 +157,7 @@ class Builder::Store_rom_policy : public Genode::List<Store_rom_policy>::Element
 		/**
 		 * Destructor
 		 */
-		~Store_rom_policy() { _ep->dissolve(&_local_rom_session); }
+		~Store_rom_policy() { _ep.dissolve(&_local_rom_session); }
 
 		Genode::Service *resolve_session_request(const char *service_name,
 		                                         const char *args)

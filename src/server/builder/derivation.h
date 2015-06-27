@@ -70,8 +70,8 @@ namespace Builder {
 
 				Env_pair(Parser::String k, Parser::String v)
 				{
-					k.string(  key, sizeof(key)  );
-					v.string(value, sizeof(value));
+					k.value(  key, sizeof(key)  );
+					v.value(value, sizeof(value));
 				}
 			};
 
@@ -98,11 +98,9 @@ namespace Builder {
 
 				File_handle file;
 				try {
-					PDBG("opening /");
 					Dir_handle root = store_fs.dir("/", false);
 					Handle_guard root_guard(store_fs, root);
 
-					PDBG("opening %s", name);
 					file = store_fs.file(root, name, READ_ONLY, false);
 				} catch (File_system::Lookup_failed) {
 					PERR("derivation not found in store for %s", name);
@@ -174,14 +172,14 @@ namespace Builder {
 					/**************
 					 ** Platform **
 					 **************/
-					Parser::String platform = parser.string();
-					platform.string(_platform, sizeof(_platform));
+					parser.string().value(
+						_platform, sizeof(_platform));
 
 					/********************
 					 ** Builder binary **
 					 ********************/
-					Parser::String builder = parser.string();
-					builder.string(_builder, sizeof(_builder));
+					parser.string().value(
+						_builder, sizeof(_builder));
 
 					/**********
 					 ** Args **
@@ -265,7 +263,7 @@ namespace Builder {
 			{
 				Output *o = _outputs.first();
 				if (!o) throw Invalid_derivation();
-				o->path.string(dest, len);
+				o->path.value(dest, len);
 			}
 
 			/**
