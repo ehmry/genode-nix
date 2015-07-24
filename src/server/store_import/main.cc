@@ -58,6 +58,12 @@ class Store_import::Root_component : public Genode::Root_component<Session_compo
 			return 0;
 		}
 
+		void _upgrade_session(Session_component *s, const char *args)
+		{
+			size_t ram_quota = Arg_string::find_arg(args, "ram_quota").ulong_value(0);
+			s->upgrade_ram_quota(ram_quota);
+		}
+
 	public:
 
 		Root_component(Server::Entrypoint &ep, Allocator &alloc)

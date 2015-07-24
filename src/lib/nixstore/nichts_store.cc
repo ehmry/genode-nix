@@ -15,9 +15,10 @@
 #include <dirent.h>
 
 /* Genode includes. */
-#include <base/printf.h>
-#include <hash/blake2s.h>
+#include <store_import/connection.h>
 #include <store_hash/encode.h>
+#include <hash/blake2s.h>
+#include <base/printf.h>
 
 
 #define NOT_IMP PERR("%s not implemented", __func__)
@@ -64,7 +65,7 @@ static nix::Path finalize_import(File_system::Session &fs, char const *name)
 	packet = source.get_acked_packet();
 
 	if (!packet.succeeded())
-		throw SysError(format("finalising import ‘%1%’") % name);
+		throw nix::Error(format("finalising import ‘%1%’") % name);
 	return nix::Path(source.packet_content(packet), packet.length());
 }
 
@@ -79,9 +80,8 @@ void nix::copy_dir(File_system::Session   &fs,
 
 	for (;;) {
 		struct dirent *dirent = readdir(c_dir);
-		if (!dirent) {
+		if (!dirent)
 			break;
-		}
 
 		Path sub_src_path = src_path + "/";
 		sub_src_path.append(dirent->d_name);
@@ -100,13 +100,6 @@ void nix::copy_dir(File_system::Session   &fs,
 			break;
 		}
 
-		case DT_LNK:
-		{
-			// TODO
-			PERR("%s does not handle symlinks, skipping %s", sub_src_path.c_str());
-			break;
-		}
-
 		case DT_REG:
 		{
 			AutoCloseFD subfd = open(sub_src_path.c_str(), O_RDONLY);
@@ -117,6 +110,17 @@ void nix::copy_dir(File_system::Session   &fs,
 			copy_file(fs, subfd, file_handle, sub_dst_path);
 			break;
 		}
+
+		case DT_LNK:
+		{
+			File_system::Symlink_handle link_handle =
+				fs.symlink(dir_handle, dirent->d_name, true);
+			File_system::Handle_guard sub_guard(fs, link_handle);
+
+			copy_symlink(fs, link_handle, sub_src_path, sub_dst_path);
+			break;
+		}
+
 		default:
 			PERR("unhandled file type for %s", sub_src_path.c_str());
 			break;
@@ -135,7 +139,6 @@ void nix::copy_file(File_system::Session    &fs,
 		throw SysError(format("getting size of file ‘%1%’") % dst_path);
 	size_t remaining_count = sb.st_size;
 	size_t seek_offset = 0;
-	bool success = true;
 
 	/* Preallocate the file space. */
 	fs.truncate(file_handle, remaining_count);
@@ -143,7 +146,7 @@ void nix::copy_file(File_system::Session    &fs,
 	File_system::Session::Tx::Source &source = *fs.tx();
 	size_t const max_packet_size = source.bulk_buffer_size() / 2;
 
-	while (remaining_count && success) {
+	while (remaining_count) {
 		collect_acknowledgements(source);
 
 		size_t const curr_packet_size = std::min(remaining_count, max_packet_size);
@@ -153,31 +156,63 @@ void nix::copy_file(File_system::Session    &fs,
 			       0,
 			       file_handle,
 			       File_system::Packet_descriptor::WRITE,
-			       curr_packet_size,
-			       seek_offset);
+			       0, seek_offset);
 		File_system::Packet_guard packet_guard(source, packet);
 
 		/* Read from the libc VFS to a packet. */
 		ssize_t n = ::read(fd, source.packet_content(packet), curr_packet_size);
-		if (n <= 0) {
-			success = false;
-		}
+		if (n <= 0)
+			throw SysError(format("reading file ‘%1%’") % dst_path);
 
-		if (success) {
-			/* pass packet to server side */
-			source.submit_packet(packet);
+		packet.length(n);
 
-			packet = source.get_acked_packet();
-			success = packet.succeeded();
+		/* pass packet to server side */
+		source.submit_packet(packet);
 
-			/* prepare next iteration */
-			seek_offset += n;
-			remaining_count -= n;
-		}
+		packet = source.get_acked_packet();
+		if (!packet.succeeded())
+			throw nix::Error(format("writing file ‘%1%’") % dst_path);
+
+		/* prepare next iteration */
+		seek_offset += n;
+		remaining_count -= n;
+	}
+}
+
+
+void nix::copy_symlink(File_system::Session       &fs,
+                       File_system::Symlink_handle symlink_handle,
+                       nix::Path const            &src_path,
+                       nix::Path const            &dst_path)
+{
+	File_system::Session::Tx::Source &source = *fs.tx();
+	bool success = false;
+	collect_acknowledgements(source);
+	File_system::Packet_descriptor
+		packet(source.alloc_packet(File_system::MAX_PATH_LEN),
+		       0,
+		       symlink_handle,
+		       File_system::Packet_descriptor::WRITE,
+		       0, 0);
+	File_system::Packet_guard packet_guard(source, packet);
+
+	/* Read from the libc VFS to a packet. */
+		char value[File_system::MAX_PATH_LEN];
+	ssize_t n = readlink(src_path.c_str(),
+	                     source.packet_content(packet),
+	                     File_system::MAX_PATH_LEN);
+	if (n == 0) return;
+
+	if (n > 0) {
+		packet.length(n);
+		/* pass packet to server side */
+		source.submit_packet(packet);
+
+		packet = source.get_acked_packet();
+		if (packet.succeeded()) return;
 	}
 
-	if (!success)
-		throw SysError(format("reading file ‘%1%’") % dst_path);
+	throw SysError(format("reading symlink ‘%1%’") % dst_path);
 }
 
 
@@ -196,14 +231,10 @@ hash_file(uint8_t *buf, nix::Path const &src_path, int fd)
 
 	while (count) {
 		size_t n = ::read(fd, data, sizeof(data));
-		if (n == -1)
+		if (n <= 0)
 			throw SysError(format("reading file ‘%1%’") % src_path);
 
-		if (n == 0)
-			break;
-
 		hash.update(data, n);
-
 		count -= n;
 	}
 
@@ -215,6 +246,26 @@ hash_file(uint8_t *buf, nix::Path const &src_path, int fd)
 	hash.digest(buf, hash.size());
 }
 
+void
+hash_symlink(uint8_t *buf, nix::Path const &src_path)
+{
+	Hash::Blake2s hash;
+	uint8_t data[File_system::MAX_PATH_LEN];
+
+	ssize_t n = readlink(src_path.c_str(), (char *)data, sizeof(data));
+
+	if (n < 0)
+		throw SysError(format("reading symlink ‘%1%’") % src_path);
+
+	hash.update(data, n);
+
+	string name = src_path.substr(src_path.rfind("/")+1, src_path.size()-1);
+
+	hash.update((uint8_t*)"\0s\0", 3);
+	hash.update((uint8_t*)name.data(), name.size());
+
+	hash.digest(buf, hash.size());
+}
 
 string
 Store_client::add_file(nix::Path const &src_path, int fd)
@@ -225,7 +276,7 @@ Store_client::add_file(nix::Path const &src_path, int fd)
 	size_t count = st.st_size;
 
 	Genode::Allocator_avl fs_block_alloc(Genode::env()->heap());
-	File_system::Connection fs(fs_block_alloc, 128*1024, "import");
+	Store_import::Connection fs(fs_block_alloc);
 
 	nix::Path name = src_path.substr(src_path.rfind("/")+1, src_path.size()-1);
 	File_system::Dir_handle root = fs.dir("/", false);
@@ -246,11 +297,11 @@ Store_client::add_file(nix::Path const &src_path, int fd)
 		File_system::Packet_descriptor
 			packet(source.alloc_packet(curr_packet_size), 0,
 			       handle, File_system::Packet_descriptor::WRITE,
-			       curr_packet_size, offset);
+			       0, offset);
 		File_system::Packet_guard guard(source, packet);
 
 		ssize_t n = ::read(fd, source.packet_content(packet), curr_packet_size);
-		if (n == -1)
+		if (n <= 0)
 			throw SysError(format("reading file ‘%1%’") % src_path);
 
 		if (n == 0)
@@ -294,14 +345,16 @@ hash_dir(uint8_t *buf, nix::Path const &src_path, int fd)
 			break;
 		}
 
-		case DT_LNK:
-			// TODO
-			PERR("%s does not handle symlinks, skipping %s", subpath.c_str());
-			break;
-
 		case DT_REG: {
 			AutoCloseFD subfd = open(subpath.c_str(), O_RDONLY);
 			hash_file(buf, subpath, subfd);
+			hash.update(buf, hash.size());
+			break;
+		}
+
+		case DT_LNK:
+		{
+			hash_symlink(buf, subpath);
 			hash.update(buf, hash.size());
 			break;
 		}
@@ -325,7 +378,7 @@ string
 Store_client::add_dir(nix::Path const &src_path, int fd)
 {
 	Genode::Allocator_avl fs_block_alloc(Genode::env()->heap());
-	File_system::Connection fs(fs_block_alloc, 128*1024, "import");
+	Store_import::Connection fs(fs_block_alloc);
 
 	/* The index of the begining of the last path element. */
 	int path_offset = src_path.rfind("/");
@@ -456,6 +509,7 @@ Store_client::addToStore(const Path & srcPath,
 			return "/" + string((char *) buf);
 		}
 
+		lseek(fd, 0, SEEK_SET);
 		name = add_dir(srcPath, fd);
 	} else {
 		hash_file(buf, srcPath, fd);
@@ -491,7 +545,7 @@ Path nix::Store_client::addTextToStore(const string & name, const string & text,
 		char const *name_str = name.c_str();
 
 		Genode::Allocator_avl fs_block_alloc(Genode::env()->heap());
-		File_system::Connection fs(fs_block_alloc, 128*1024, "import");
+		Store_import::Connection fs(fs_block_alloc);
 
 		Dir_handle root = fs.dir("/", false);
 		Handle_guard root_guard(fs, root);

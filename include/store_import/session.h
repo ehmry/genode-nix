@@ -64,6 +64,8 @@ class Store_import::Session_component : public Session_rpc_object
 			ROOT_HANDLE_MASK = 0X3F
 		};
 
+		Genode::Allocator_guard              _alloc;
+
 		/**
 		 * This registry maps node handles from the backend
 		 * store to the local tree of hashing nodes.
@@ -138,10 +140,10 @@ class Store_import::Session_component : public Session_rpc_object
 		 */
 		struct Hash_root
 		{
-			char      filename[MAX_NAME_LEN];
-			Hash_node *hash;
-			unsigned  index;
-			bool      done;
+			char           filename[MAX_NAME_LEN];
+			Hash_node     *hash;
+			unsigned const index;
+			bool           done;
 
 			Hash_root(Hash_node *node)
 			: hash(node), index(nonce())
@@ -166,14 +168,32 @@ class Store_import::Session_component : public Session_rpc_object
 		{
 			private:
 
-				Hash_root *_roots[MAX_ROOT_NODES];
+				Hash_root         *_roots[MAX_ROOT_NODES];
+				Genode::Allocator &_alloc;
 
 			public:
 
-				Hash_root_registry()
+				Hash_root_registry(Genode::Allocator &alloc)
+				: _alloc(alloc)
 				{
-				for (unsigned i = 0; i < MAX_ROOT_NODES; i++)
-					_roots[i] = 0;
+					for (unsigned i = 0; i < MAX_ROOT_NODES; i++)
+						_roots[i] = 0;
+				}
+
+				~Hash_root_registry()
+				{
+					for (unsigned i = 0; i < MAX_ROOT_NODES; i++)
+						if (_roots[i]) {
+							destroy(_alloc, _roots[i]->hash);
+							destroy(_alloc, _roots[i]);
+						}
+				}
+
+				Hash_root *alloc(Hash_node *node)
+				{
+					Hash_root *root = new (_alloc) Hash_root(node);
+					_roots[root->index] = root;
+					return root;
 				}
 
 				/**
@@ -195,13 +215,6 @@ class Store_import::Session_component : public Session_rpc_object
 				Hash_root *lookup_index(Node_handle handle) {
 					return _roots[handle.value&ROOT_HANDLE_MASK]; }
 
-				unsigned insert(Hash_root *root)
-				{
-					// TODO: this index thing is sloppy
-					_roots[root->index] = root;
-					return root->index;
-				}
-
 				void remove(Hash_root *root)
 				{
 					// TODO: this index thing is sloppy
@@ -210,7 +223,6 @@ class Store_import::Session_component : public Session_rpc_object
 
 		} _root_registry;
 
-		Genode::Allocator_guard              _alloc;
 		Genode::Allocator_avl                _fs_tx_alloc;
 		File_system::Connection              _fs;
 		Signal_rpc_member<Session_component> _process_packet_dispatcher;
@@ -389,6 +401,7 @@ class Store_import::Session_component : public Session_rpc_object
 			:
 				Session_rpc_object(env()->ram_session()->alloc(tx_buf_size/2), ep.rpc_ep()),
 				_alloc(env()->heap(), ram_quota),
+				_root_registry(_alloc),
 				_fs_tx_alloc(&_alloc),
 				_fs(_fs_tx_alloc, tx_buf_size/2),
 				_process_packet_dispatcher(ep, *this, &Session_component::_process_packets)
@@ -410,6 +423,8 @@ class Store_import::Session_component : public Session_rpc_object
 			Dataspace_capability ds = tx_sink()->dataspace();
 			env()->ram_session()->free(static_cap_cast<Ram_dataspace>(ds));
 		}
+
+		void upgrade_ram_quota(size_t ram_quota) { _alloc.upgrade(ram_quota); }
 
 		void finish(Hash_root *root, char const *name)
 		{
@@ -481,6 +496,10 @@ class Store_import::Session_component : public Session_rpc_object
 
 		Dir_handle dir(File_system::Path const &path, bool create)
 		{
+			if (create &&
+			    (_alloc.quota()-_alloc.consumed() < sizeof(Directory)))
+				throw No_space();
+
 			char const *path_str = path.string();
 
 			if (is_root(path)) {
@@ -498,8 +517,7 @@ class Store_import::Session_component : public Session_rpc_object
 					throw Lookup_failed();
 
 				dir_node = new (_alloc) Directory(name+1, _alloc);
-				 root    = new (_alloc) Hash_root(dir_node);
-				_root_registry.insert(root);
+				 root = _root_registry.alloc(dir_node);
 			} else
 				dir_node = dynamic_cast<Directory *>(root->hash);
 
@@ -533,6 +551,10 @@ class Store_import::Session_component : public Session_rpc_object
 
 		File_handle file(Dir_handle dir_handle, Name const &name, Mode mode, bool create)
 		{
+			if (create &&
+			    (_alloc.quota()-_alloc.consumed() < sizeof(File)))
+				throw No_space();
+
 			char const *name_str = name.string();
 
 			File_handle handle;
@@ -541,8 +563,7 @@ class Store_import::Session_component : public Session_rpc_object
 				Hash_root *root = _root_registry.lookup_name(name_str);
 				if (!root) {
 					file_node = new (_alloc) File(name_str);
-					root = new (_alloc) Hash_root(file_node);
-					_root_registry.insert(root);
+					root = _root_registry.alloc(file_node);
 				} else
 					file_node = dynamic_cast<File *>(root->hash);
 
@@ -578,6 +599,10 @@ class Store_import::Session_component : public Session_rpc_object
 			char const *name_str = name.string();
 
 			if (dir_handle != _root_handle) {
+				if (create &&
+				    (_alloc.quota()-_alloc.consumed() < sizeof(File)))
+					throw No_space();
+
 				Symlink_handle handle = _fs.symlink(dir_handle, name, create);
 
 				Directory *dir_node = _registry.lookup_dir(dir_handle);
@@ -714,6 +739,7 @@ class Store_import::Session_component : public Session_rpc_object
 		void move(Dir_handle from_dir_handle, Name const &from_name,
 		          Dir_handle to_dir_handle,   Name const &to_name)
 		{
+			PERR("move not implemented");
 			/*
 			 * Not hard to implement, just lazy.
 			 * Need a remove and and insert function at Hash_node.

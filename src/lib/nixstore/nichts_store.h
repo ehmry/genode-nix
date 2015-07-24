@@ -13,8 +13,6 @@
 #include <base/lock.h>
 #include <os/path.h>
 #include <file_system/util.h>
-#include <file_system_session/connection.h>
-//#include <store_import_session/connection.h>
 #include <builder_session/connection.h>
 
 /* Locally defined */
@@ -38,6 +36,11 @@ namespace nix {
  	                    int                      fd,
  	                    File_system::File_handle handle,
  	                    nix::Path const         &dst_path);
+
+	void copy_symlink(File_system::Session       &fs,
+	                  File_system::Symlink_handle symlink_handle,
+	                  nix::Path const            &src_path,
+	                  nix::Path const            &dst_path);
 
 }
 

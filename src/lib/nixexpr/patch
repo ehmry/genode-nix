@@ -1,5 +1,5 @@
 diff --git a/src/libexpr/eval.cc b/src/libexpr/eval.cc
-index 298f6a3..d82e5a9 100644
+index 298f6a3..6dd4606 100644
 --- a/src/libexpr/eval.cc
 +++ b/src/libexpr/eval.cc
 @@ -28,6 +28,7 @@
@@ -36,6 +36,17 @@ index 298f6a3..d82e5a9 100644
      addToSearchPath("nix=" + settings.nixDataDir + "/nix/corepkgs");
  
      createBaseEnv();
+@@ -1372,8 +1387,8 @@ string EvalState::copyPathToStore(PathSet & context, const Path & path)
+ Path EvalState::coerceToPath(const Pos & pos, Value & v, PathSet & context)
+ {
+     string path = coerceToString(pos, v, context, false, false);
+-    if (path == "" || path[0] != '/')
+-        throwEvalError("string ‘%1%’ doesn't represent an absolute path, at %2%", path, pos);
++    if (path.empty())
++        throwEvalError("cannot coerce an empty string to a path at %1%", pos);
+     return path;
+ }
+ 
 diff --git a/src/libexpr/eval.hh b/src/libexpr/eval.hh
 index 7894292..e49c3b1 100644
 --- a/src/libexpr/eval.hh

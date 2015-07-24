@@ -1,5 +1,5 @@
 diff --git a/src/libstore/derivations.cc b/src/libstore/derivations.cc
-index 7234ae5..ff3a7b9 100644
+index 7234ae5..f93cc6a 100644
 --- a/src/libstore/derivations.cc
 +++ b/src/libstore/derivations.cc
 @@ -4,6 +4,8 @@
@@ -10,6 +10,17 @@ index 7234ae5..ff3a7b9 100644
 +#include <dataspace/client.h>
  
  namespace nix {
+ 
+@@ -47,8 +49,8 @@ Path writeDerivation(StoreAPI & store,
+ static Path parsePath(std::istream & str)
+ {
+     string s = parseString(str);
+-    if (s.size() == 0 || s[0] != '/')
+-        throw FormatError(format("bad path ‘%1%’ in derivation") % s);
++    if (s.empty())
++        throw FormatError("empty path in derivation");
+     return s;
+ }
  
 @@ -112,10 +114,40 @@ static Derivation parseDerivation(const string & s)
  }

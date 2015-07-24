@@ -373,7 +373,7 @@ index dcdb438..c7abbc0 100644
  
  void closeMostFDs(const set<int> & exceptions)
 diff --git a/src/libutil/util.hh b/src/libutil/util.hh
-index 186ee71..b8c6030 100644
+index 186ee71..74eba5f 100644
 --- a/src/libutil/util.hh
 +++ b/src/libutil/util.hh
 @@ -245,48 +245,6 @@ public:
@@ -425,3 +425,11 @@ index 186ee71..b8c6030 100644
  MakeError(ExecError, Error)
  
  /* Convert a list of strings to a null-terminated vector of char
+@@ -314,7 +272,6 @@ void _interrupted();
+ 
+ void inline checkInterrupt()
+ {
+-    if (_isInterrupted) _interrupted();
+ }
+ 
+ MakeError(Interrupted, BaseError)

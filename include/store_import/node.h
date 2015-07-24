@@ -67,10 +67,8 @@ class Store_import::Hash_node : public List<Hash_node>::Element {
 		void name(char const *name) {
 			strncpy(_name, name, sizeof(_name)); }
 
-		virtual void write(uint8_t const *dst, size_t len, seek_off_t offset)
-		{
-			throw Invalid_handle();
-		}
+		virtual void write(uint8_t const *dst, size_t len, seek_off_t offset) {
+			throw Invalid_handle(); }
 
 		void digest(uint8_t *buf, size_t len) {
 			return _hash.digest(buf, len); }
@@ -167,14 +165,8 @@ class Store_import::Directory : public Hash_node
 {
 	private:
 
-		Genode::Allocator &_alloc;
+		Genode::Allocator_guard &_alloc;
 		List<Hash_node>    _children;
-
-		void destroy_children()
-		{
-			for (Hash_node *node = _children.first(); node; node = node->next())
-				destroy(env()->heap(), node);
-		}
 
 		File *lookup_file(char const *file_name)
 		{
@@ -223,10 +215,14 @@ class Store_import::Directory : public Hash_node
 		/**
 		 * Constructor
 		 */
-		Directory(char const *name, Genode::Allocator &alloc)
+		Directory(char const *name, Genode::Allocator_guard &alloc)
 		: Hash_node(name), _alloc(alloc) { }
 
-		~Directory() { destroy_children(); }
+		~Directory()
+		{
+			for (Hash_node *node = _children.first(); node; node = node->next())
+				destroy(_alloc, node);
+		}
 
 		void flush(File_system::Session &fs, char const *path)
 		{
@@ -322,12 +318,11 @@ class Store_import::Directory : public Hash_node
 					continue;
 
 				_children.remove(node);
-				destroy(env()->heap(), node);
+				destroy(_alloc, node);
 				return;
 			}
 		}
 
 };
-
 
 #endif
