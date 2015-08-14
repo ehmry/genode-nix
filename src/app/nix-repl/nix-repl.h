@@ -3,6 +3,7 @@
 
 /* Genode includes */
 #include <terminal_session/terminal_session.h>
+#include <os/config.h>
 
 /* Local includes */
 //#include "job.h"
@@ -352,6 +353,16 @@ void NixRepl::initEnv()
     varNames.clear();
     foreach (StaticEnv::Vars::iterator, i, state.staticBaseEnv.vars)
         varNames.insert(i->first);
+
+    char filename[1024];
+    Genode::config()->xml_node().for_each_sub_node("load", [&] (Genode::Xml_node node) {
+        if (node.has_attribute("file")) {
+            node.attribute("file").value(filename, sizeof(filename));
+            loadFile(Path(filename));
+        }
+    });
+
+    reset();
 }
 
 

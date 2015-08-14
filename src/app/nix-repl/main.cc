@@ -8,6 +8,9 @@
 #include "format_util.h"
 #include "nix-repl.h"
 
+/* TODO: look this header over */
+#include <nix/exceptions.h>
+
 
 int main(void)
 {
@@ -25,6 +28,12 @@ int main(void)
 
 	enum { COMMAND_MAX_LEN = 1000 };
 	static char buf[COMMAND_MAX_LEN];
+
+	/*
+	 * Nix may throw errors as exceptions to
+	 * be caught and interpreted before exit.
+	 */
+	return handleExceptions("nix-repl", [] {
 
 	nix::initNix();
 	/*
@@ -67,4 +76,5 @@ int main(void)
 	}
 
 	return 0;
+	});
 }
