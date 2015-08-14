@@ -43,6 +43,7 @@ class Store_import::Connection : public Genode::Connection<File_system::Session>
 			size_t donation = _session_quota / 2;
 			Genode::Arg_string::set_arg(argbuf, sizeof(argbuf),
 			                            "ram_quota", donation);
+			PWRN("donating %s bytes to import session");
 			Genode::env()->parent()->upgrade(cap(), argbuf);
 			_session_quota += donation;
 		}

@@ -203,7 +203,7 @@ class Store_import::Session_component : public Session_rpc_object
 				{
 					for (size_t i = 0; i < MAX_ROOT_NODES; ++i) {
 						Hash_root *root = _roots[i];
-						if (root && Genode::strcmp(root->hash->name(), name, MAX_NAME_LEN) == 0)
+						if (root && (Genode::strcmp(root->hash->name(), name, MAX_NAME_LEN) == 0))
 							return root;
 					}
 					return 0;
@@ -476,7 +476,6 @@ class Store_import::Session_component : public Session_rpc_object
 			Hash_root *root = _root_registry.lookup_name(name);
 			if (!root)
 				throw Lookup_failed();
-
 			finish(root, name);
 		}
 
@@ -599,6 +598,7 @@ class Store_import::Session_component : public Session_rpc_object
 			char const *name_str = name.string();
 
 			if (dir_handle != _root_handle) {
+
 				if (create &&
 				    (_alloc.quota()-_alloc.consumed() < sizeof(File)))
 					throw No_space();
@@ -606,8 +606,7 @@ class Store_import::Session_component : public Session_rpc_object
 				Symlink_handle handle = _fs.symlink(dir_handle, name, create);
 
 				Directory *dir_node = _registry.lookup_dir(dir_handle);
-				/* Symlinks written and read like a file. */
-				_registry.insert(handle, dir_node->file(name_str, create));
+				_registry.insert(handle, dir_node->symlink(name_str, create));
 
 				return handle;
 			}

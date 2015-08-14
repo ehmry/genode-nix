@@ -14,6 +14,8 @@
 
 namespace Store_hash {
 
+	enum { HASH_PREFIX_LEN = 32 };
+
 	using namespace Genode;
 
 	static uint8_t const base16[] = {
@@ -31,7 +33,7 @@ namespace Store_hash {
 	/* Get the base32 encoding of the first 160 bits of the digest. */
 	void encode(uint8_t *buf, char const *name, size_t len)
 	{
-		if (len < 32) {
+		if (len < HASH_PREFIX_LEN+2) {
 			*buf = 0;
 			return;
 		}
@@ -62,8 +64,8 @@ namespace Store_hash {
 			buf[--j] = base32[b1];
 			buf[--j] = base32[b0];
 		} while (i);
-		buf[32] = '-';
-		strncpy((char *)buf+33, name, len-33);
+		buf[HASH_PREFIX_LEN] = '-';
+		strncpy((char *)buf+(HASH_PREFIX_LEN+1), name, len-(HASH_PREFIX_LEN+1));
 	}
 
 }

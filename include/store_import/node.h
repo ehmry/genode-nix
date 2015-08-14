@@ -25,6 +25,7 @@ namespace Store_import {
 
 	class Hash_node;
 	class File;
+	class Symlink;
 	class Directory;
 
 	/**
@@ -141,7 +142,7 @@ class Store_import::File : public Hash_node
 					source.submit_packet(packet);
 					packet = source.get_acked_packet();
 					if (!packet.succeeded()) {
-						PERR("import flush failed");
+						PERR("import flush of '%s' failed", name());
 						throw No_space();
 					}
 					size_t length = packet.length();
@@ -157,7 +158,38 @@ class Store_import::File : public Hash_node
 			_hash.update((uint8_t *)name(), strlen(name()));
 			_offset = 0;
 		}
+};
 
+
+class Store_import::Symlink : public Hash_node
+{
+	public:
+
+		/**
+		 * Constructor
+		 */
+		Symlink(char const *filename)
+		: Hash_node(filename) { }
+
+		/**
+		 * Update hash with symlink target.
+		 */
+		void write(uint8_t const *dst, size_t len, seek_off_t offset)
+		{
+			if (offset != 0)
+				return;
+
+			_hash.reset();
+			_hash.update(dst, len);
+		}
+
+
+		void flush(File_system::Session &fs, Symlink_handle handle)
+		{
+			/* Append the type and name. */
+			_hash.update((uint8_t *)"\0s\0", 3);
+			_hash.update((uint8_t *)name(), strlen(name()));
+		}
 };
 
 
@@ -254,6 +286,17 @@ class Store_import::Directory : public Hash_node
 					continue;
 				}
 
+				Symlink *link_node = dynamic_cast<Symlink *>(node);
+				if (link_node) {
+					Symlink_handle link_handle =
+						fs.symlink(handle, link_node->name(), false);
+					Handle_guard link_guard(fs, link_handle);
+					link_node->flush(fs, link_handle);
+					link_node->digest(buf, sizeof(buf));
+					_hash.update(buf, sizeof(buf));
+					continue;
+				}
+
 				Directory *dir_node = dynamic_cast<Directory *>(node);
 				if (dir_node) {
 					strncpy(sub_path_insert, dir_node->name(), sub_name_len);
@@ -263,7 +306,6 @@ class Store_import::Directory : public Hash_node
 					continue;
 				}
 
-				/* Not really an appropriate error here, since its our fault. */
 				throw Invalid_handle();
 			}
 
@@ -306,6 +348,25 @@ class Store_import::Directory : public Hash_node
 				if (file)
 					if (strcmp(file->name(), name, MAX_NAME_LEN) == 0)
 						return file;
+			}
+			throw Lookup_failed();
+		}
+
+		Symlink *symlink(char const *name, bool create)
+		{
+			Symlink *link;
+			if (create) {
+				link = new (_alloc) Symlink(name);
+				insert(link);
+				return link;
+			}
+
+			for (Hash_node *node = _children.first();
+				node; node = node->next()) {
+				Symlink *link = dynamic_cast<Symlink *>(node);
+				if (link)
+					if (strcmp(link->name(), name, MAX_NAME_LEN) == 0)
+						return link;
 			}
 			throw Lookup_failed();
 		}
