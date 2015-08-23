@@ -182,8 +182,6 @@ class Builder::Job : public List<Job>::Element
 		{
 			if (_child) return;
 
-			PDBG("%s", _name);
-
 			_child = new (Genode::env()->heap())
 				Child(_name, fs, cap, _drv, ram, _exit_dispatcher);
 		}

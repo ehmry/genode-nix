@@ -1,5 +1,5 @@
 /*
- * \brief  Policy and service for writing to the store
+ * \brief  Policy and service for File_system access to the store
  * \author Emery Hemingway
  * \date   2015-06-27
  */
@@ -11,8 +11,8 @@
  * under the terms of the GNU General Public License version 2.
  */
 
-#ifndef _BUILDER__IMPORT_POLICY_H_
-#define _BUILDER__IMPORT_POLICY_H_
+#ifndef _BUILDER__FS_POLICY_H_
+#define _BUILDER__FS_POLICY_H_
 
 #include <store_import/session.h>
 #include <file_system_session/capability.h>
@@ -47,6 +47,8 @@ class Builder::Store_fs_policy
 				lock.lock(); }
 
 		} _local_service;
+		
+		Parent_service _parent_service;
 
 	public:
 
@@ -56,9 +58,11 @@ class Builder::Store_fs_policy
 		Store_fs_policy(Server::Entrypoint &ep)
 		:
 			_ep(ep.rpc_ep()),
-			_local_session(4096, 128*1024*2, ep),
+			/* xxx: get this quota from the root child policy */
+			_local_session(env()->ram_session()->quota() / 4, 128*1024*2, ep),
 			_local_session_cap(_ep.manage(&_local_session)),
-			_local_service(_local_session_cap)
+			_local_service(_local_session_cap),
+			_parent_service("File_system")
 		{ }
 
 		/**
@@ -91,13 +95,13 @@ class Builder::Store_fs_policy
 			try {
 				for (Derivation::Output *out = drv.output(); out; out = out->next()) {
 					out->id.value(name, sizeof(name));
-
 					_local_session.finish(name);
 				}
 			} catch (File_system::Lookup_failed) {
 				/*
 				 * If output symlinks are missing, then failure is implicit.
 				 */
+				PERR("%s not found at the import session", name);
 				return;
 			}
 
@@ -107,6 +111,7 @@ class Builder::Store_fs_policy
 			for (Derivation::Output *out = drv.output(); out; out = out->next()) {
 				out->id.value(name, sizeof(name));
 				char const *final = _local_session.final(name);
+				PDBG("final path is %s", final);
 				out->path.value(link, sizeof(link));
 
 				// TODO:
@@ -124,7 +129,7 @@ class Builder::Store_fs_policy
 				} catch (...) {
 					/*
 					 * A failure at this point does not
-					 * effect the validity of outputs.
+					 * effect the validity of other outputs.
 					 */
 					PERR("error creating symlink %s to %s", link, final);
 				}
@@ -132,19 +137,7 @@ class Builder::Store_fs_policy
 			}
 		}
 
-		/***********************
-		 ** Service interface **
-		 ***********************/
-
 		Genode::Service *service() { return &_local_service; }
-
-		Genode::Service *resolve_session_request(const char *service_name,
-		                                         const char *args)
-		{
-			if (!Genode::strcmp(service_name, "File_system"))
-				return &_local_service;
-			return 0;
-		}
 
 };
 

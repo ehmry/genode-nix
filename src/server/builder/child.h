@@ -8,22 +8,27 @@
 #define _BUILDER__BUILDER_H_
 
 /* Genode includes */
+#include <store_hash/encode.h>
+#include <file_system_session/file_system_session.h>
 #include <base/env.h>
 #include <base/child.h>
 #include <base/printf.h>
+#include <log_session/connection.h>
 #include <pd_session/connection.h>
 #include <ram_session/connection.h>
 #include <cpu_session/connection.h>
 #include <rm_session/connection.h>
-#include <file_system_session/file_system_session.h>
 #include <init/child_policy.h>
 #include <cli_monitor/ram.h>
 #include <os/server.h>
+#include <util/avl_string.h>
+
 
 /* Local imports */
 #include "derivation.h"
 #include "rom_policy.h"
-#include "import_policy.h"
+#include "fs_policy.h"
+#include "terminal_policy.h"
 
 namespace Builder {
 
@@ -84,75 +89,191 @@ struct Builder::Resources
 
 class Builder::Child_policy : public Genode::Child_policy
 {
-
 	private:
 
-		enum { CONFIG_SIZE = 4096 };
-
 		char const                *_name;
+		Log_connection             _log;
 		File_system::Session      &_fs;
 		Derivation                &_drv;
+
+		typedef Avl_string<MAX_NAME_LEN> Input;
+
+		class Inputs : public Avl_tree<Avl_string_base>
+		{
+			private:
+
+				/**
+				 *
+				 */
+				void add_drv_output(char const *buf, size_t len, char const *id)
+				{
+					struct Done { };
+
+					try {
+						Aterm::Parser parser(buf, len);
+						parser.constructor("Derive", [&] {
+							/*************
+							 ** Outputs **
+							 *************/
+							parser.list([&] {
+								parser.tuple([&] {
+									char output_id[MAX_NAME_LEN-Store_hash::HASH_PREFIX_LEN];
+									parser.string().value(output_id, sizeof(output_id));
+									if (!strcmp(id, output_id, sizeof(output_id))) {
+										char output_hash[MAX_NAME_LEN];
+										parser.string().value(output_hash, sizeof(output_hash));
+										Input *input = new (env()->heap()) Input(output_hash);
+										insert(input);
+
+										/* A hack to return without defining the entire term. */
+										throw Done();
+
+										parser.string(); /* Algo */
+										parser.string(); /* Hash */
+									}
+								});
+							});
+
+							/* The output id was not found in this derivation. */
+							throw Invalid_derivation();
+						});
+					} catch (Done) {
+					} catch (Rom_connection::Rom_connection_failed) {
+						throw Missing_dependency();
+					}
+				}
+
+			public:
+
+				Inputs(Derivation &drv)
+				{
+					for (Derivation::Input *drv_input = drv.input();
+					     drv_input; drv_input = drv_input->next()) {
+
+						char const *depend_drv = drv_input->path.string();
+						while (*depend_drv == '/') ++depend_drv;
+						char *p = 0;
+						try {
+							Rom_connection rom(depend_drv, "store");
+							Rom_dataspace_capability ds_cap = rom.dataspace();
+							p = env()->rm_session()->attach(ds_cap);
+							size_t len = Dataspace_client(ds_cap).size();
+
+							for (Aterm::Parser::String *s = drv_input->ids.first();
+							     s; s = s->next()) {
+								char id[MAX_NAME_LEN-Store_hash::HASH_PREFIX_LEN];
+								s->value(id, sizeof(id));
+
+								add_drv_output(p, len, id);
+							}
+						} catch (...) {
+							if (p) env()->rm_session()->detach(p);
+							throw;
+						}
+						env()->rm_session()->detach(p);
+					}
+
+					for (Aterm::Parser::String *src = drv.source();
+					     src; src = src->next()) {
+						char path[MAX_NAME_LEN];
+						src->value(path, sizeof(path));
+						Input *input = new (env()->heap()) Input(path);
+						insert(input);
+					}
+				}
+
+				~Inputs()
+				{
+					while (Avl_string_base *node = first()) {
+						remove(node);
+						Input *input = static_cast<Input *>(node);
+						delete(env()->heap(), input);
+					}
+				}
+
+				bool contains(char const *name)
+				{
+					Avl_string_base *node = first();
+					return node->find_by_name(name);
+				}
+
+		} _inputs;
+
+		class Environment : public Avl_tree<Avl_string_base>
+		{
+			private:
+
+				struct Mapping : Avl_string<MAX_NAME_LEN>
+				{
+					char const *value;
+
+					Mapping(char const *name, char const *value)
+					: Avl_string(name), value(value) { }
+				};
+
+			public:
+
+				Environment(Derivation &drv, Inputs &inputs)
+				{
+					for (Derivation::Env_pair *pair = drv.env(); pair; pair = pair->next()) {
+						Mapping *node = new (env()->heap()) Mapping(pair->key, pair->value);
+						insert(node);
+					}
+				}
+
+				~Environment()
+				{
+					while (Avl_string_base *node = first()) {
+						Mapping *map = static_cast<Mapping *>(node);
+						remove(map);
+						delete(env()->heap(), map);
+					}
+				}
+
+				char const *lookup(char const *key)
+				{
+					if (Avl_string_base *node = first()) {
+						if ((node = node->find_by_name(key))) {
+							Mapping *map = static_cast<Mapping *>(node);
+							return map->value;
+						}
+					}
+					return 0;
+				}
+
+		} _environment;
+
 		Signal_context_capability  _exit_sigh;
 		Resources                 &_resources;
 		Store_rom_policy           _binary_policy;
-		Store_fs_policy            _fs_policy;
+		Parent_service             _fs_input_service;
+		Store_fs_policy            _fs_output_policy;
+		Terminal_policy            _terminal_policy;
+		Parent_service             _parent_rom_service;
+		Parent_service             _parent_fs_service;
 		Service_registry           _parent_services;
 
-		struct Store_rom_registry
+		/**
+		 * Rewrite a session argument if it matches
+		 * the environment. This is how requests for
+		 * things like 'config' are redirected.
+		 *
+		 * TODO: the bool argument is a temporary measure
+		 * to allow ROM requests be routed beyond the store_rom
+		 * server.
+		 */
+		bool rewrite_arg(char *args, size_t args_len, char const *arg)
 		{
-			List<Store_rom_policy>  _policies;
-			File_system::Session   &_fs;
-			Genode::Rpc_entrypoint &_root_ep;
-			Derivation             &_drv;
-
-
-			Store_rom_registry(File_system::Session   &fs,
-			                   Genode::Rpc_entrypoint &root_ep,
-			                   Derivation             &drv)
-			: _fs(fs), _root_ep(root_ep), _drv(drv) { }
-
-			~Store_rom_registry()
-			{
-				for (Store_rom_policy *policy = _policies.first(); policy; policy = policy->next())
-					destroy(env()->heap(), policy);
-			}
-
-			Service *resolve_session_request(const char *service_name,
-			                                 const char *args)
-			{
-				char rom_name[Store_rom_policy::ROM_NAME_MAX_LEN];
-				Genode::Arg_string::find_arg(args, "filename").string(
-					rom_name, sizeof(rom_name), "");
-				if (!*rom_name) return 0;
-
-				for (Store_rom_policy *curr = _policies.first(); curr; curr = curr->next()) {
-					if (!strcmp(rom_name, curr->name()))
-						return curr->service();
+			char buf[File_system::MAX_PATH_LEN+2];
+			Genode::Arg_string::find_arg(args, arg).string(buf, sizeof(buf), "");
+			if (*buf)
+				if (char const *dest = _environment.lookup(buf)) {
+					snprintf(buf, sizeof(buf), "\"%s\"", dest);
+					Arg_string::set_arg(args, args_len, arg, buf);
+					return true;
 				}
-
-				for (Derivation::Env_pair *rom = _drv.rom(); rom; rom = rom->next()) {
-					if (strcmp(rom->key, rom_name)) continue;
-					if (rom->value[0] != '/') continue;
-					PLOG("rom:%s=%s", rom->key, rom->value);
-					/*
-					 * TODO: check if rom->value is in inputs,
-					 * otherwise purity is violated.
-					 */
-					try {
-						Store_rom_policy *policy = new (env()->heap())
-							Store_rom_policy(_fs, rom->key, rom->value, _root_ep);
-						_policies.insert(policy);
-						return policy->service();
-					} catch (File_system::Lookup_failed) {
-						PWRN("%s not found in store", rom->value);
-						return 0;
-					}
-				}
-				PWRN("%s not in env", rom_name);
-				return 0;
-			}
-
-		} _rom_registry;
+			return false;
+		}
 
 	public:
 
@@ -167,13 +288,19 @@ class Builder::Child_policy : public Genode::Child_policy
 		             Signal_context_capability exit_sigh)
 		:
 			_name(name),
+			_log(name),
 			_fs(fs),
 			_drv(drv),
+			_inputs(drv),
+			_environment(drv, _inputs),
 			_exit_sigh(exit_sigh),
 			_resources(resources),
 			_binary_policy(_fs, "binary", drv.builder(), ep.rpc_ep()),
-			_fs_policy(ep),
-			_rom_registry(_fs, ep.rpc_ep(), drv)
+			_fs_input_service("File_system"),
+			_fs_output_policy(ep),
+			_terminal_policy(_log, ep.rpc_ep()),
+			_parent_rom_service("ROM"),
+			_parent_fs_service("File_system")
 		{
 			/*
 			 * A whitelist of services to forward from our parent.
@@ -182,8 +309,7 @@ class Builder::Child_policy : public Genode::Child_policy
 			 * all executables and libraries should be in the store.
 			 */
 			static char const *service_names[] = {
-				"RM", "ROM", "LOG", "CAP", "SIGNAL", "PD", "CPU",
-				"File_system", "Terminal", "Timer", 0
+				"RM", "LOG", "CAP", "SIGNAL", "PD", "CPU", "Timer", 0
 			};
 			for (unsigned i = 0; service_names[i]; ++i)
 				_parent_services.insert(
@@ -203,23 +329,68 @@ class Builder::Child_policy : public Genode::Child_policy
 
 		char const *name() const { return _name; }
 
+		void filter_session_args(const char *service, char *args, size_t args_len)
+		{
+			if (!strcmp(service, "ROM")) {
+				if (rewrite_arg(args, args_len, "filename"))
+					Arg_string::set_arg(args, args_len, "label", "\"store\"");
+			} else if (!strcmp(service, "File_system")) {
+				rewrite_arg(args, args_len, "root");
+			} else {
+				char label_buf[Parent::Session_args::MAX_SIZE];
+				Arg_string::find_arg(args, "label").string(label_buf, sizeof(label_buf), "");
+
+				char value_buf[Parent::Session_args::MAX_SIZE];
+				Genode::snprintf(value_buf, sizeof(value_buf),
+				                 "\"%s%s%s\"",
+				                 _name,
+				                 Genode::strcmp(label_buf, "") == 0 ? "" : " -> ",
+				                 label_buf);
+
+				Arg_string::set_arg(args, args_len, "label", value_buf);
+			}
+		}
+
 		Service *resolve_session_request(const char *service_name,
 		                                 const char *args)
 		{
 			Service *service = 0;
 
 			if (!strcmp("ROM", service_name)) {
-				/* check for binary request */
-				if ((service = _binary_policy.resolve_session_request(service_name, args)))
-					return service;
+				char filename[File_system::MAX_PATH_LEN];
+				Arg_string::find_arg(args, "filename").string(filename, sizeof(filename), "");
 
-				/* Check for ROM defined in derivation */
-				if ((service = _rom_registry.resolve_session_request(service_name, args)))
-					return service;
+				/*
+				 * We've allowed the derivation to override
+				 * ldso's requests to the binary, implications?
+				 */
+				if (!strcmp("binary", filename))
+					return _binary_policy.service();
+
+				/* XXX
+				if (!_inputs.contains(filename))
+					PERR("violating purity with ROM %s", filename);
+				*/
+
+				return &_parent_rom_service;
 			}
 
-			if ((service = _fs_policy.resolve_session_request(service_name, args)))
-				return service;
+			if (!strcmp("File_system", service_name)) {
+				char root[File_system::MAX_PATH_LEN];
+				Arg_string::find_arg(args, "root").string(root, sizeof(root), "");
+
+				if (strcmp("/", root, sizeof(root)) == 0) {
+					/* this is a session for writing the derivation outputs */
+					return _fs_output_policy.service();
+				}
+
+				if (!_inputs.contains(root))
+					PERR("violating purity with FS root %s", root);
+				return &_parent_fs_service;
+			}
+
+			if (strcmp("Terminal", service_name) == 0)
+				return _terminal_policy.service();
 
 			/* get it from the parent if it is allowed */
 			service = _parent_services.find(service_name);
@@ -231,29 +402,13 @@ class Builder::Child_policy : public Genode::Child_policy
 			return service;
 		}
 
-		void filter_session_args(const char *service, char *args, size_t args_len)
-		{
-			char label_buf[Parent::Session_args::MAX_SIZE];
-			Arg_string::find_arg(args, "label").string(label_buf, sizeof(label_buf), "");
-
-			char value_buf[Parent::Session_args::MAX_SIZE];
-			Genode::snprintf(value_buf, sizeof(value_buf),
-			                 "\"%s%s%s\"",
-			                 _name,
-			                 Genode::strcmp(label_buf, "") == 0 ? "" : " -> ",
-			                 label_buf);
-
-			Arg_string::set_arg(args, args_len, "label", value_buf);
-		}
-
 		void exit(int exit_value)
 		{
 			if (exit_value) {
 				PERR("failure: %s", _name);
 				// TODO: write a store placeholder that marks failure
-			}
-			else {
-				_fs_policy.finalize(_fs, _drv);
+			} else {
+				_fs_output_policy.finalize(_fs, _drv);
 				PINF("success: %s", _name);
 			}
 
@@ -291,7 +446,6 @@ class Builder::Child
 		      Signal_context_capability exit_sigh)
 		:
 			_resources(label, ram_manager, exit_sigh),
-			//_entrypoint(&cap_session, ENTRYPOINT_STACK_SIZE, label),
 			_child_policy(label, fs, _resources,  _entrypoint, drv, exit_sigh),
 			_child(_child_policy.binary(),
 			       _resources.pd.cap(),

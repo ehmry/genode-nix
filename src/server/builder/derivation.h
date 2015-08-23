@@ -85,7 +85,7 @@ namespace Builder {
 			String_list            _sources;
 			char                   _platform[32];
 			char                   _builder[File_system::MAX_PATH_LEN];
-			Genode::List<Env_pair>     _roms;
+			Genode::List<Env_pair>     _env;
 
 		public:
 
@@ -200,7 +200,7 @@ namespace Builder {
 							Env_pair *p = new (_alloc)
 								Env_pair(parser.string(), parser.string());
 
-							_roms.insert(p);
+							_env.insert(p);
 						});
 					});
 				});
@@ -228,7 +228,7 @@ namespace Builder {
 				}
 
 				clear<Parser::String>(_sources);
-				clear<Env_pair>(_roms);
+				clear<Env_pair>(_env);
 			}
 
 			/**
@@ -268,9 +268,9 @@ namespace Builder {
 
 			/**
 			 * Return a pointer to the front of the
-			 * roms linked list.
+			 * environment linked list.
 			 */
-			Env_pair *rom() { return _roms.first(); }
+			Env_pair *env() { return _env.first(); }
 
 	};
 

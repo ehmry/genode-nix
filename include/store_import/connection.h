@@ -63,12 +63,11 @@ class Store_import::Connection : public Genode::Connection<File_system::Session>
 		 */
 		Connection(Range_allocator &tx_block_alloc,
 		           size_t           tx_buf_size = 256*1024,
-		           const char      *label = "import",
-		           const char      *root  = "/")
+		           const char      *label = "import")
 		:
 			Genode::Connection<Session>(
-				session("ram_quota=%zd, tx_buf_size=%zd, label=\"%s\", root=\"%s\"",
-				        INITIAL_QUOTA + tx_buf_size, tx_buf_size, label, root)),
+				session("ram_quota=%zd, tx_buf_size=%zd, label=\"%s\"",
+				        INITIAL_QUOTA + tx_buf_size, tx_buf_size, label)),
 			Session_client(cap(), tx_block_alloc),
 			_session_quota(INITIAL_QUOTA) { }
 

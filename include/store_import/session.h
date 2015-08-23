@@ -34,10 +34,10 @@ namespace Store_import {
 
 	class Session_component;
 
-	static bool is_root(File_system::Path const &path) {
+	bool is_root(File_system::Path const &path) {
 		return (path.size() == 2) && (*path.string() == '/'); }
 
-	static unsigned long nonce()
+	unsigned long nonce()
 	{
 		static unsigned i;
 		return i++;
@@ -50,6 +50,8 @@ class Store_import::Session_component : public Session_rpc_object
 	private:
 
 		enum {
+
+			verbose = false,
 
 			/* maximum number of open nodes per session */
 			MAX_NODE_HANDLES = 128U,
@@ -500,6 +502,8 @@ class Store_import::Session_component : public Session_rpc_object
 				throw No_space();
 
 			char const *path_str = path.string();
+			if (verbose)
+				PINF("%s", path_str);
 
 			if (is_root(path)) {
 				if (create) throw Node_already_exists();
@@ -527,8 +531,11 @@ class Store_import::Session_component : public Session_rpc_object
 				try {
 					handle = _fs.dir(name, create);
 				} catch (Node_already_exists) {
-					_fs.unlink(_root_handle, name);
+					_fs.unlink(_root_handle, name+1);
 					handle = _fs.dir(name, true);
+				} catch (Permission_denied) {
+					PERR("permission denied at backend");
+					throw;
 				}
 				_registry.insert(handle, dir_node);
 				return handle;
@@ -555,22 +562,30 @@ class Store_import::Session_component : public Session_rpc_object
 				throw No_space();
 
 			char const *name_str = name.string();
+			if (verbose)
+				PINF("%s", name_str);
 
 			File_handle handle;
 			File *file_node;
 			if (dir_handle == _root_handle) {
 				Hash_root *root = _root_registry.lookup_name(name_str);
 				if (!root) {
-					file_node = new (_alloc) File(name_str);
-					root = _root_registry.alloc(file_node);
+					if (create) {
+						file_node = new (_alloc) File(name_str);
+						root = _root_registry.alloc(file_node);
+					} else
+						throw Lookup_failed();
 				} else
 					file_node = dynamic_cast<File *>(root->hash);
 
 				try {
 					handle = _fs.file(_root_handle, root->filename, mode, create);
-				} catch (...) {
+				} catch (Node_already_exists) {
 					_fs.unlink(_root_handle, root->filename);
 					handle = _fs.file(_root_handle, root->filename, mode, true);
+				} catch (Permission_denied) {
+					PERR("permission denied at backend");
+					throw;
 				}
 
 				if (mode >= WRITE_ONLY)
