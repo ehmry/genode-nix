@@ -7,13 +7,15 @@
 #ifndef __NIXSTORE__NICHTS_STORE_H_
 #define __NIXSTORE__NICHTS_STORE_H_
 
+/* Genode includes */
 #include <libstore/derivations.hh>
 #include <libstore/store-api.hh>
+#include <builder_session/connection.h>
+#include <file_system/util.h>
+#include <vfs/dir_file_system.h>
 #include <base/allocator_avl.h>
 #include <base/lock.h>
 #include <os/path.h>
-#include <file_system/util.h>
-#include <builder_session/connection.h>
 
 /* Locally defined */
 #include <nix/types.h>
@@ -25,22 +27,6 @@ namespace nix {
 	void canonicaliseTimestampAndPermissions(std::string const&);
 
 	class Store_client;
-
-	void copy_dir(File_system::Session   &fs,
-	                     int                     fd,
-	                     File_system::Dir_handle handle,
-	                     nix::Path const         &src_path,
-	                     nix::Path const         &dst_path);
-
-	void copy_file(File_system::Session  &fs,
- 	                    int                      fd,
- 	                    File_system::File_handle handle,
- 	                    nix::Path const         &dst_path);
-
-	void copy_symlink(File_system::Session       &fs,
-	                  File_system::Symlink_handle symlink_handle,
-	                  nix::Path const            &src_path,
-	                  nix::Path const            &dst_path);
 
 }
 
@@ -54,13 +40,36 @@ class nix::Store_client : public nix::StoreAPI
 {
 	private:
 
-		Builder::Connection     _builder;
-		Genode::Lock            _packet_lock;
+		Vfs::File_system    &_vfs_root;
+		Builder::Connection  _builder;
+		Genode::Lock         _packet_lock;
 
-		string add_file(const nix::Path &path, int fd);
-		string add_dir(const nix::Path &path, int fd);
+		void hash_dir(uint8_t *buf, nix::Path const &src_path);
+		void hash_file(uint8_t *buf, nix::Path const &src_path);
+		void hash_symlink(uint8_t *buf, nix::Path const &src_path);
+
+		void copy_dir(File_system::Session   &fs,
+		              File_system::Dir_handle handle,
+		              nix::Path const         &src_path,
+		              nix::Path const         &dst_path);
+
+		void copy_file(File_system::Session  &fs,
+		               File_system::File_handle handle,
+		               nix::Path const         &src_path,
+		               nix::Path const         &dst_path);
+
+		void copy_symlink(File_system::Session       &fs,
+		                  File_system::Symlink_handle symlink_handle,
+		                  nix::Path const            &src_path,
+		                  nix::Path const            &dst_path);
+
+		string add_file(const nix::Path &path);
+		string add_dir(const nix::Path &path);
 
 	public:
+
+		Store_client(Vfs::File_system &vfs_root)
+		: _vfs_root(vfs_root) { };
 
 		/************************
 		 ** StoreAPI interface **

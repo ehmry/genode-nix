@@ -1,20 +1,31 @@
 diff --git a/src/libmain/shared.cc b/src/libmain/shared.cc
-index 082705d..1fdefa2 100644
+index 082705d..2290b3e 100644
 --- a/src/libmain/shared.cc
 +++ b/src/libmain/shared.cc
-@@ -17,6 +17,9 @@
- #include <unistd.h>
- #include <signal.h>
+@@ -12,28 +12,19 @@
+ #include <algorithm>
  
+ #include <cstdlib>
+-#include <sys/time.h>
+-#include <sys/stat.h>
+-#include <unistd.h>
+-#include <signal.h>
+ 
+-extern char * * environ;
+-
+-
+-namespace nix {
 +/* Genode includes. */
 +#include <os/config.h>
-+
- extern char * * environ;
  
++/* Jitterentropy includes */
++namespace Jitter { extern "C" {
++#include <jitterentropy.h>
++} };
  
-@@ -26,15 +29,6 @@ namespace nix {
- volatile sig_atomic_t blockInt = 0;
- 
+-volatile sig_atomic_t blockInt = 0;
+-
++extern char * * environ;
  
 -static void sigintHandler(int signo)
 -{
@@ -23,15 +34,35 @@ index 082705d..1fdefa2 100644
 -        blockInt = 1;
 -    }
 -}
--
--
+ 
++namespace nix {
+ 
  static bool gcWarning = true;
  
- void printGCWarning()
-@@ -119,38 +113,6 @@ void initNix()
-     settings.processEnvironment();
-     settings.loadConfFile();
+@@ -62,7 +53,7 @@ void printMissing(const PathSet & willBuild,
+ {
+     if (!willBuild.empty()) {
+         printMsg(lvlInfo, format("these derivations will be built:"));
+-        Paths sorted = topoSortPaths(*store, willBuild);
++        Paths sorted = topoSortPaths(*store(), willBuild);
+         reverse(sorted.begin(), sorted.end());
+         for (auto & i : sorted)
+             printMsg(lvlInfo, format("  %1%") % i);
+@@ -108,130 +99,27 @@ void detectStackOverflow();
  
+ void initNix()
+ {
+-    /* Turn on buffering for cerr. */
+-#if HAVE_PUBSETBUF
+-    static char buf[1024];
+-    std::cerr.rdbuf()->pubsetbuf(buf, sizeof(buf));
+-#endif
+-
+-    std::ios::sync_with_stdio(false);
+-
+-    settings.processEnvironment();
+-    settings.loadConfFile();
+-
 -    /* Catch SIGINT. */
 -    struct sigaction act;
 -    act.sa_handler = sigintHandler;
@@ -65,13 +96,21 @@ index 082705d..1fdefa2 100644
 -    umask(0022);
 -
      /* Initialise the PRNG. */
-     struct timeval tv;
-     gettimeofday(&tv, 0);
-@@ -158,80 +120,17 @@ void initNix()
+-    struct timeval tv;
+-    gettimeofday(&tv, 0);
+-    srandom(tv.tv_usec);
++    unsigned int seed;
++    if (int jinit = Jitter::jent_entropy_init()) {
++	PERR("failed to collect entropy from jitter, error code %d", jinit);
++         Genode::env()->parent()->exit(jinit);
++    }
++    Jitter::rand_data *ec = Jitter::jent_entropy_collector_alloc(0,0);
++    Jitter::jent_read_entropy(ec, (char *)&seed, sizeof(seed));
++    Jitter::jent_entropy_collector_free(ec);
++    srandom(seed);
  
-     if (char *pack = getenv("_NIX_OPTIONS"))
-         settings.unpack(pack);
-+
+-    if (char *pack = getenv("_NIX_OPTIONS"))
+-        settings.unpack(pack);
 +    /* Set verbosity. */
 +    try {
 +        verbosity = Verbosity(Genode::config()->xml_node().attribute_value<unsigned long>("verbosity", 0));
@@ -153,7 +192,52 @@ index 082705d..1fdefa2 100644
      settings.update();
  }
  
-@@ -290,55 +189,5 @@ int handleExceptions(const string & programName, std::function<void()> fun)
+@@ -243,29 +131,12 @@ void printVersion(const string & programName)
+ }
+ 
+ 
+-void showManPage(const string & name)
+-{
+-    restoreSIGPIPE();
+-    execlp("man", "man", name.c_str(), NULL);
+-    throw SysError(format("command ‘man %1%’ failed") % name.c_str());
+-}
+-
+-
+ int handleExceptions(const string & programName, std::function<void()> fun)
+ {
++	PDBG("%s", programName.c_str());
+     string error = ANSI_RED "error:" ANSI_NORMAL " ";
+     try {
+-        try {
+-            fun();
+-        } catch (...) {
+-            /* Subtle: we have to make sure that any `interrupted'
+-               condition is discharged before we reach printMsg()
+-               below, since otherwise it will throw an (uncaught)
+-               exception. */
+-            blockInt = 1; /* ignore further SIGINTs */
+-            _isInterrupted = 0;
+-            throw;
+-        }
++        fun();
+     } catch (Exit & e) {
+         return e.status;
+     } catch (UsageError & e) {
+@@ -273,10 +144,8 @@ int handleExceptions(const string & programName, std::function<void()> fun)
+             format(error + "%1%\nTry ‘%2% --help’ for more information.")
+             % e.what() % programName);
+         return 1;
+-    } catch (BaseError & e) {
+-        printMsg(lvlError, format(error + "%1%%2%") % (settings.showTrace ? e.prefix() : "") % e.msg());
+-        if (e.prefix() != "" && !settings.showTrace)
+-            printMsg(lvlError, "(use ‘--show-trace’ to show detailed location information)");
++    } catch (Error & e) {
++        printMsg(lvlError, format(error + "%1%%2%") % e.prefix() % e.msg());
+         return e.status;
+     } catch (std::bad_alloc & e) {
+         printMsg(lvlError, error + "out of memory");
+@@ -290,55 +159,5 @@ int handleExceptions(const string & programName, std::function<void()> fun)
  }
  
  
@@ -210,10 +294,19 @@ index 082705d..1fdefa2 100644
  
  }
 diff --git a/src/libmain/shared.hh b/src/libmain/shared.hh
-index b662c6c..d9844c6 100644
+index b662c6c..8fdf00e 100644
 --- a/src/libmain/shared.hh
 +++ b/src/libmain/shared.hh
-@@ -66,21 +66,6 @@ template<class N> N getIntArg(const string & opt,
+@@ -2,8 +2,6 @@
+ 
+ #include "util.hh"
+ 
+-#include <signal.h>
+-
+ #include <locale>
+ 
+ 
+@@ -66,21 +64,4 @@ template<class N> N getIntArg(const string & opt,
      return n * multiplier;
  }
  
@@ -232,6 +325,20 @@ index b662c6c..d9844c6 100644
 -    Pid pid;
 -};
 -
- extern volatile ::sig_atomic_t blockInt;
- 
+-extern volatile ::sig_atomic_t blockInt;
+-
  }
+diff --git a/src/libmain/stack.cc b/src/libmain/stack.cc
+index 41b617d..9438bb9 100644
+--- a/src/libmain/stack.cc
++++ b/src/libmain/stack.cc
+@@ -6,9 +6,6 @@
+ #include <cstddef>
+ #include <cstdlib>
+ 
+-#include <unistd.h>
+-#include <signal.h>
+-
+ namespace nix {
+ 
+ 

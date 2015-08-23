@@ -1,22 +1,46 @@
+diff --git a/src/libexpr/eval-inline.hh b/src/libexpr/eval-inline.hh
+index c275f7b..3191758 100644
+--- a/src/libexpr/eval-inline.hh
++++ b/src/libexpr/eval-inline.hh
+@@ -31,7 +31,6 @@ void EvalState::forceValue(Value & v)
+         Expr * expr = v.thunk.expr;
+         try {
+             v.type = tBlackhole;
+-            //checkInterrupt();
+             expr->eval(*this, *env, v);
+         } catch (Error & e) {
+             v.type = tThunk;
 diff --git a/src/libexpr/eval.cc b/src/libexpr/eval.cc
-index 298f6a3..6dd4606 100644
+index 298f6a3..a307d2d 100644
 --- a/src/libexpr/eval.cc
 +++ b/src/libexpr/eval.cc
-@@ -28,6 +28,7 @@
+@@ -8,9 +8,6 @@
+ 
+ #include <algorithm>
+ #include <cstring>
+-#include <unistd.h>
+-#include <sys/time.h>
+-#include <sys/resource.h>
+ 
+ #if HAVE_BOEHMGC
+ 
+@@ -28,6 +25,8 @@
  
  #endif
  
++/* Genode includes */
 +#include <os/config.h>
  
  namespace nix {
  
-@@ -235,9 +236,23 @@ EvalState::EvalState(const Strings & _searchPath)
+@@ -235,10 +234,24 @@ EvalState::EvalState(const Strings & _searchPath)
  #endif
  
      /* Initialise the Nix expression search path. */
 -    Strings paths = tokenizeString<Strings>(getEnv("NIX_PATH", ""), ":");
      for (auto & i : _searchPath) addToSearchPath(i, true);
 -    for (auto & i : paths) addToSearchPath(i);
+-    addToSearchPath("nix=" + settings.nixDataDir + "/nix/corepkgs");
 +
 +    try {
 +        Genode::Xml_node node = Genode::config()->xml_node().sub_node("search-path");
@@ -33,10 +57,20 @@ index 298f6a3..6dd4606 100644
 +        }
 +    } catch (...) { }
 +
-     addToSearchPath("nix=" + settings.nixDataDir + "/nix/corepkgs");
++    addToSearchPath("nix=/nix/corepkgs");
  
      createBaseEnv();
-@@ -1372,8 +1387,8 @@ string EvalState::copyPathToStore(PathSet & context, const Path & path)
+ }
+@@ -1358,7 +1371,7 @@ string EvalState::copyPathToStore(PathSet & context, const Path & path)
+     else {
+         dstPath = settings.readOnlyMode
+             ? computeStorePathForPath(path).first
+-            : store->addToStore(path, true, htSHA256, defaultPathFilter, repair);
++            : store()->addToStore(path, true, htSHA256, defaultPathFilter, repair);
+         srcToStore[path] = dstPath;
+         printMsg(lvlChatty, format("copied source ‘%1%’ -> ‘%2%’")
+             % path % dstPath);
+@@ -1372,8 +1385,8 @@ string EvalState::copyPathToStore(PathSet & context, const Path & path)
  Path EvalState::coerceToPath(const Pos & pos, Value & v, PathSet & context)
  {
      string path = coerceToString(pos, v, context, false, false);
@@ -47,6 +81,24 @@ index 298f6a3..6dd4606 100644
      return path;
  }
  
+@@ -1455,16 +1468,12 @@ void EvalState::printStats()
+     Verbosity v = showStats ? lvlInfo : lvlDebug;
+     printMsg(v, "evaluation statistics:");
+ 
+-    struct rusage buf;
+-    getrusage(RUSAGE_SELF, &buf);
+-    float cpuTime = buf.ru_utime.tv_sec + ((float) buf.ru_utime.tv_usec / 1000000);
+-
+     uint64_t bEnvs = nrEnvs * sizeof(Env) + nrValuesInEnvs * sizeof(Value *);
+     uint64_t bLists = nrListElems * sizeof(Value *);
+     uint64_t bValues = nrValues * sizeof(Value);
+     uint64_t bAttrsets = nrAttrsets * sizeof(Bindings) + nrAttrsInAttrsets * sizeof(Attr);
+ 
+-    printMsg(v, format("  time elapsed: %1%") % cpuTime);
++    /* printMsg(v, format("  time elapsed: %1%") % cpuTime); */
+     printMsg(v, format("  size of a value: %1%") % sizeof(Value));
+     printMsg(v, format("  environments allocated: %1% (%2% bytes)") % nrEnvs % bEnvs);
+     printMsg(v, format("  list elements: %1% (%2% bytes)") % nrListElems % bLists);
 diff --git a/src/libexpr/eval.hh b/src/libexpr/eval.hh
 index 7894292..e49c3b1 100644
 --- a/src/libexpr/eval.hh
@@ -60,28 +112,203 @@ index 7894292..e49c3b1 100644
  
  namespace nix {
  
+diff --git a/src/libexpr/parser.y b/src/libexpr/parser.y
+index ff17481..223f166 100644
+--- a/src/libexpr/parser.y
++++ b/src/libexpr/parser.y
+@@ -521,11 +521,6 @@ formal
+ %%
+ 
+ 
+-#include <sys/types.h>
+-#include <sys/stat.h>
+-#include <fcntl.h>
+-#include <unistd.h>
+-
+ #include <eval.hh>
+ 
+ 
+@@ -555,20 +550,22 @@ Expr * EvalState::parse(const char * text,
+ 
+ Path resolveExprPath(Path path)
+ {
++    using namespace Vfs;
++
+     assert(path[0] == '/');
++    Directory_service::Stat stat;
+ 
+     /* If `path' is a symlink, follow it.  This is so that relative
+        path references work. */
+-    struct stat st;
+-    while (true) {
+-        if (lstat(path.c_str(), &st))
+-            throw SysError(format("getting status of ‘%1%’") % path);
+-        if (!S_ISLNK(st.st_mode)) break;
+-        path = absPath(readLink(path), dirOf(path));
++    for (;;) {
++        stat = status(path);
++        if (S_ISLNK(stat.mode))
++            path = absPath(readLink(path), dirOf(path));
++        else break;
+     }
+ 
+     /* If `path' refers to a directory, append `/default.nix'. */
+-    if (S_ISDIR(st.st_mode))
++    if (S_ISDIR(stat.mode))
+         path = canonPath(path + "/default.nix");
+ 
+     return path;
 diff --git a/src/libexpr/primops.cc b/src/libexpr/primops.cc
-index cd7b287..55dda47 100644
+index cd7b287..723ac16 100644
 --- a/src/libexpr/primops.cc
 +++ b/src/libexpr/primops.cc
-@@ -48,7 +48,6 @@ void realiseContext(const PathSet & context)
+@@ -10,13 +10,8 @@
+ #include "names.hh"
+ #include "eval-inline.hh"
+ 
+-#include <sys/types.h>
+-#include <sys/stat.h>
+-#include <unistd.h>
+-
+ #include <algorithm>
+ #include <cstring>
+-#include <dlfcn.h>
+ 
+ 
+ namespace nix {
+@@ -48,8 +43,7 @@ void realiseContext(const PathSet & context)
      for (auto & i : context) {
          std::pair<string, string> decoded = decodeContext(i);
          Path ctx = decoded.first;
 -        assert(isStorePath(ctx));
-         if (!store->isValidPath(ctx))
+-        if (!store->isValidPath(ctx))
++        if (!store()->isValidPath(ctx))
              throw InvalidPathError(ctx);
          if (!decoded.second.empty() && isDerivation(ctx))
-@@ -80,7 +79,7 @@ static void prim_scopedImport(EvalState & state, const Pos & pos, Value * * args
+             drvs.insert(decoded.first + "!" + decoded.second);
+@@ -58,10 +52,10 @@ void realiseContext(const PathSet & context)
+         /* For performance, prefetch all substitute info. */
+         PathSet willBuild, willSubstitute, unknown;
+         unsigned long long downloadSize, narSize;
+-        queryMissing(*store, drvs,
++        queryMissing(*store(), drvs,
+             willBuild, willSubstitute, unknown, downloadSize, narSize);
+ 
+-        store->buildPaths(drvs);
++        store()->buildPaths(drvs);
+     }
+ }
+ 
+@@ -80,7 +74,7 @@ static void prim_scopedImport(EvalState & state, const Pos & pos, Value * * args
              % path % e.path % pos);
      }
  
 -    if (isStorePath(path) && store->isValidPath(path) && isDerivation(path)) {
-+    if (store->isValidPath(path) && isDerivation(path)) {
++    if (store()->isValidPath(path) && isDerivation(path)) {
          Derivation drv = readDerivation(path);
          Value & w = *state.allocValue();
          state.mkAttrs(w, 2 + drv.outputs.size());
-@@ -684,9 +683,6 @@ static void prim_storePath(EvalState & state, const Pos & pos, Value * * args, V
+@@ -139,33 +133,7 @@ static void prim_importNative(EvalState & state, const Pos & pos, Value * * args
+     PathSet context;
+     Path path = state.coerceToPath(pos, *args[0], context);
+ 
+-    try {
+-        realiseContext(context);
+-    } catch (InvalidPathError & e) {
+-        throw EvalError(format("cannot import ‘%1%’, since path ‘%2%’ is not valid, at %3%")
+-            % path % e.path % pos);
+-    }
+-
+-    string sym = state.forceStringNoCtx(*args[1], pos);
+-
+-    void *handle = dlopen(path.c_str(), RTLD_LAZY | RTLD_LOCAL);
+-    if (!handle)
+-        throw EvalError(format("could not open ‘%1%’: %2%") % path % dlerror());
+-
+-    dlerror();
+-    ValueInitializer func = (ValueInitializer) dlsym(handle, sym.c_str());
+-    if(!func) {
+-        char *message = dlerror();
+-        if (message)
+-            throw EvalError(format("could not load symbol ‘%1%’ from ‘%2%’: %3%") % sym % path % message);
+-        else
+-            throw EvalError(format("symbol ‘%1%’ from ‘%2%’ resolved to NULL when a function pointer was expected")
+-                    % sym % path);
+-    }
+-
+-    (func)(state, v);
+-
+-    /* We don't dlclose because v may be a primop referencing a function in the shared object file */
++    throw EvalError(format("refusing to open dso ‘%1%’") % path);
+ }
+ 
+ 
+@@ -376,14 +344,6 @@ static void prim_tryEval(EvalState & state, const Pos & pos, Value * * args, Val
+ }
+ 
+ 
+-/* Return an environment variable.  Use with care. */
+-static void prim_getEnv(EvalState & state, const Pos & pos, Value * * args, Value & v)
+-{
+-    string name = state.forceStringNoCtx(*args[0], pos);
+-    mkString(v, getEnv(name));
+-}
+-
+-
+ /* Evaluate the first argument, then return the second argument. */
+ static void prim_seq(EvalState & state, const Pos & pos, Value * * args, Value & v)
+ {
+@@ -554,11 +514,11 @@ static void prim_derivationStrict(EvalState & state, const Pos & pos, Value * *
+            runs. */
+         if (path.at(0) == '=') {
+             /* !!! This doesn't work if readOnlyMode is set. */
+-            PathSet refs; computeFSClosure(*store, string(path, 1), refs);
++            PathSet refs; computeFSClosure(*store(), string(path, 1), refs);
+             foreach (PathSet::iterator, j, refs) {
+                 drv.inputSrcs.insert(*j);
+                 if (isDerivation(*j))
+-                    drv.inputDrvs[*j] = store->queryDerivationOutputNames(*j);
++                    drv.inputDrvs[*j] = store()->queryDerivationOutputNames(*j);
+             }
+         }
+ 
+@@ -575,7 +535,7 @@ static void prim_derivationStrict(EvalState & state, const Pos & pos, Value * *
+         /* Handle derivation contexts returned by
+            ‘builtins.storePath’. */
+         else if (isDerivation(path))
+-            drv.inputDrvs[path] = store->queryDerivationOutputNames(path);
++            drv.inputDrvs[path] = store()->queryDerivationOutputNames(path);
+ 
+         /* Otherwise it's a source file. */
+         else
+@@ -624,7 +584,7 @@ static void prim_derivationStrict(EvalState & state, const Pos & pos, Value * *
+ 
+         /* Use the masked derivation expression to compute the output
+            path. */
+-        Hash h = hashDerivationModulo(*store, drv);
++        Hash h = hashDerivationModulo(*store(), drv);
+ 
+         foreach (DerivationOutputs::iterator, i, drv.outputs)
+             if (i->second.path == "") {
+@@ -635,7 +595,7 @@ static void prim_derivationStrict(EvalState & state, const Pos & pos, Value * *
+     }
+ 
+     /* Write the resulting term into the Nix store directory. */
+-    Path drvPath = writeDerivation(*store, drv, drvName, state.repair);
++    Path drvPath = writeDerivation(*store(), drv, drvName, state.repair);
+ 
+     printMsg(lvlChatty, format("instantiated ‘%1%’ -> ‘%2%’")
+         % drvName % drvPath);
+@@ -643,7 +603,7 @@ static void prim_derivationStrict(EvalState & state, const Pos & pos, Value * *
+     /* Optimisation, but required in read-only mode! because in that
+        case we don't actually write store derivations, so we can't
+        read them later. */
+-    drvHashes[drvPath] = hashDerivationModulo(*store, drv);
++    drvHashes[drvPath] = hashDerivationModulo(*store(), drv);
+ 
+     state.mkAttrs(v, 1 + drv.outputs.size());
+     mkString(*state.allocAttr(v, state.sDrvPath), drvPath, singleton<PathSet>("=" + drvPath));
+@@ -684,12 +644,9 @@ static void prim_storePath(EvalState & state, const Pos & pos, Value * * args, V
      /* Resolve symlinks in ‘path’, unless ‘path’ itself is a symlink
         directly in the store.  The latter condition is necessary so
         e.g. nix-push does the right thing. */
@@ -90,4 +317,102 @@ index cd7b287..55dda47 100644
 -        throw EvalError(format("path ‘%1%’ is not in the Nix store, at %2%") % path % pos);
      Path path2 = toStorePath(path);
      if (!settings.readOnlyMode)
-         store->ensurePath(path2);
+-        store->ensurePath(path2);
++        store()->ensurePath(path2);
+     context.insert(path2);
+     mkString(v, path, context);
+ }
+@@ -795,12 +752,10 @@ static void prim_readDir(EvalState & state, const Pos & pos, Value * * args, Val
+ 
+     for (auto & ent : entries) {
+         Value * ent_val = state.allocAttr(v, state.symbols.create(ent.name));
+-        if (ent.type == DT_UNKNOWN)
+-            ent.type = getFileType(path);
+         mkStringNoCopy(*ent_val,
+-            ent.type == DT_REG ? "regular" :
+-            ent.type == DT_DIR ? "directory" :
+-            ent.type == DT_LNK ? "symlink" :
++            ent.type == Vfs::Directory_service::DIRENT_TYPE_FILE ? "regular" :
++            ent.type == Vfs::Directory_service::DIRENT_TYPE_DIRECTORY ? "directory" :
++            ent.type == Vfs::Directory_service::DIRENT_TYPE_SYMLINK ? "symlink" :
+             "unknown");
+     }
+ 
+@@ -865,7 +820,7 @@ static void prim_toFile(EvalState & state, const Pos & pos, Value * * args, Valu
+ 
+     Path storePath = settings.readOnlyMode
+         ? computeStorePathForText(name, contents, refs)
+-        : store->addTextToStore(name, contents, refs, state.repair);
++        : store()->addTextToStore(name, contents, refs, state.repair);
+ 
+     /* Note: we don't need to add `context' to the context of the
+        result, since `storePath' itself has references to the paths
+@@ -887,9 +842,9 @@ struct FilterFromExpr : PathFilter
+ 
+     bool operator () (const Path & path)
+     {
+-        struct stat st;
+-        if (lstat(path.c_str(), &st))
+-            throw SysError(format("getting attributes of path ‘%1%’") % path);
++        using namespace Vfs;
++
++        Directory_service::Stat stat = status(path);
+ 
+         /* Call the filter function.  The first argument is the path,
+            the second is a string indicating the type of the file. */
+@@ -901,9 +856,9 @@ struct FilterFromExpr : PathFilter
+ 
+         Value arg2;
+         mkString(arg2,
+-            S_ISREG(st.st_mode) ? "regular" :
+-            S_ISDIR(st.st_mode) ? "directory" :
+-            S_ISLNK(st.st_mode) ? "symlink" :
++            S_ISREG(stat.mode) ? "regular" :
++            S_ISDIR(stat.mode) ? "directory" :
++            S_ISLNK(stat.mode) ? "symlink" :
+             "unknown" /* not supported, will fail! */);
+ 
+         Value res;
+@@ -929,7 +884,7 @@ static void prim_filterSource(EvalState & state, const Pos & pos, Value * * args
+ 
+     Path dstPath = settings.readOnlyMode
+         ? computeStorePathForPath(path, true, htSHA256, filter).first
+-        : store->addToStore(path, true, htSHA256, filter, state.repair);
++        : store()->addToStore(path, true, htSHA256, filter, state.repair);
+ 
+     mkString(v, dstPath, singleton<PathSet>(dstPath));
+ }
+@@ -1526,7 +1481,6 @@ void EvalState::createBaseEnv()
+     addPrimOp("throw", 1, prim_throw);
+     addPrimOp("__addErrorContext", 2, prim_addErrorContext);
+     addPrimOp("__tryEval", 1, prim_tryEval);
+-    addPrimOp("__getEnv", 1, prim_getEnv);
+ 
+     // Strictness
+     addPrimOp("__seq", 2, prim_seq);
+diff --git a/src/libexpr/value-to-json.cc b/src/libexpr/value-to-json.cc
+index cdb7134..bf4c2d7 100644
+--- a/src/libexpr/value-to-json.cc
++++ b/src/libexpr/value-to-json.cc
+@@ -27,8 +27,6 @@ void escapeJSON(std::ostream & str, const string & s)
+ void printValueAsJSON(EvalState & state, bool strict,
+     Value & v, std::ostream & str, PathSet & context)
+ {
+-    checkInterrupt();
+-
+     if (strict) state.forceValue(v);
+ 
+     switch (v.type) {
+diff --git a/src/libexpr/value-to-xml.cc b/src/libexpr/value-to-xml.cc
+index bbbb703..21f37bd 100644
+--- a/src/libexpr/value-to-xml.cc
++++ b/src/libexpr/value-to-xml.cc
+@@ -54,8 +54,6 @@ static void showAttrs(EvalState & state, bool strict, bool location,
+ static void printValueAsXML(EvalState & state, bool strict, bool location,
+     Value & v, XMLWriter & doc, PathSet & context, PathSet & drvsSeen)
+ {
+-    checkInterrupt();
+-
+     if (strict) state.forceValue(v);
+         
+     switch (v.type) {

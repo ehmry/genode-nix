@@ -1,9 +1,15 @@
 LICENSE   := GPLV2
 VERSION   := 1.8
-DOWNLOADS := nix.archive
+DOWNLOADS := nix.git
 
-URL(nix) := http://nixos.org/releases/nix/nix-$(VERSION)/nix-$(VERSION).tar.xz
-SHA(nix) := c03d9d5e80cd3d4c8b9aec5d2ef5b31a00a825fd
+#
+# Check for tools
+#
+$(call check_tool,lex)
+$(call check_tool,bison)
+
+URL(nix) := https://github.com/NixOS/nix.git
+REV(nix) := c2384052e30f1c7c6e4e9aae408a38c3d441f8d8
 DIR(nix) := src/lib/nix
 
 PATCHES := \
@@ -13,3 +19,22 @@ PATCHES := \
 	src/lib/nixutil/patch
 
 PATCH_OPT := -p1 -d src/lib/nix
+
+EXPR_DIR = src/lib/nix/src/libexpr
+
+generated_files = \
+	$(EXPR_DIR)/parser-tab.cc $(EXPR_DIR)/parser-tab.hh \
+	$(EXPR_DIR)/lexer-tab.cc  $(EXPR_DIR)/lexer-tab.hh
+	
+$(EXPR_DIR)/parser.y: _patch _dirs
+$(EXPR_DIR)/lexer.l:  _patch _dirs
+
+$(EXPR_DIR)/parser-tab.cc $(EXPR_DIR)/parser-tab.hh: $(EXPR_DIR)/parser.y
+	@$(MSG_GENERATE)$(notdir $@)
+	$(VERBOSE)bison -v -o $(EXPR_DIR)/parser-tab.cc $< -d
+
+$(EXPR_DIR)/lexer-tab.cc $(EXPR_DIR)/lexer-tab.hh: $(EXPR_DIR)/lexer.l
+	@$(MSG_GENERATE)$(notdir $@)
+	$(VERBOSE)flex --outfile $(EXPR_DIR)/lexer-tab.cc --header-file=$(EXPR_DIR)/lexer-tab.hh $<
+
+default: $(generated_files)

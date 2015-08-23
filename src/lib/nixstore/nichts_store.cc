@@ -8,16 +8,12 @@
 #include "nichts_store.h"
 #include <libutil/util.hh>
 
-/* Libc includes. */
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <dirent.h>
-
 /* Genode includes. */
 #include <store_import/connection.h>
 #include <store_hash/encode.h>
 #include <hash/blake2s.h>
+#include <vfs/file_system_factory.h>
+#include <os/config.h>
 #include <base/printf.h>
 
 
@@ -29,8 +25,8 @@ using namespace nix;
 
 static string hash_text(const string &name, const string &text)
 {
-	Hash::Blake2s hash;
-	uint8_t buf[Builder::MAX_NAME_LEN];
+	::Hash::Blake2s hash;
+	uint8_t         buf[Builder::MAX_NAME_LEN];
 
 	hash.update((uint8_t*)text.data(), text.size());
 	hash.update((uint8_t *)"\0f\0", 3);
@@ -47,10 +43,15 @@ static nix::Path finalize_import(File_system::Session &fs, char const *name)
 {
 	using namespace File_system;
 
-	Dir_handle root = fs.dir("/", false);
-	Handle_guard root_guard(fs, root);
-
-	Symlink_handle link_handle = fs.symlink(root, name, true);
+	Symlink_handle link_handle;
+	try {
+		Dir_handle root = fs.dir("/", false);
+		Handle_guard root_guard(fs, root);
+		link_handle = fs.symlink(root, name, true);
+	} catch (...) {
+		PERR("closing export handle for ‘%s’", name);
+		throw;
+	}
 	Handle_guard link_guard(fs, link_handle);
 
 	File_system::Session::Tx::Source &source = *fs.tx();
@@ -70,85 +71,105 @@ static nix::Path finalize_import(File_system::Session &fs, char const *name)
 }
 
 
-void nix::copy_dir(File_system::Session   &fs,
-                   int                     fd,
-                   File_system::Dir_handle dir_handle,
-                   nix::Path const        &src_path,
-                   nix::Path const        &dst_path)
+void Store_client::copy_dir(File_system::Session   &fs,
+                            File_system::Dir_handle export_dir,
+                            nix::Path const        &src_path,
+                            nix::Path const        &dst_path)
 {
-	DIR *c_dir = fdopendir(fd);
+	("%s", src_path.c_str());
 
-	for (;;) {
-		struct dirent *dirent = readdir(c_dir);
-		if (!dirent)
-			break;
+	using namespace Vfs;
+	using namespace File_system;
+
+	Directory_service::Dirent dirent;
+
+	for (file_offset i = 0;; ++i) {
+		_vfs_root.dirent(src_path.c_str(), i, dirent);
+		if (dirent.type == Directory_service::DIRENT_TYPE_END) break;
 
 		Path sub_src_path = src_path + "/";
-		sub_src_path.append(dirent->d_name);
+		sub_src_path.append(dirent.name);
 
 		Path sub_dst_path = dst_path + "/";
-		sub_dst_path.append(dirent->d_name);
+		sub_dst_path.append(dirent.name);
 
-		switch (dirent->d_type) {
-		case DT_DIR:
-		{
-			File_system::Dir_handle sub_handle = fs.dir(sub_dst_path.c_str(), true);
+		switch (dirent.type) {
+		case Directory_service::DIRENT_TYPE_DIRECTORY: {
+			File_system::Dir_handle sub_handle;
+			try {
+				sub_handle = fs.dir(sub_dst_path.c_str(), true);
+			} catch (...) {
+				PERR("error opening export directory handle for ‘%s’", sub_dst_path.c_str());
+				throw;
+			}
 			File_system::Handle_guard sub_guard(fs, sub_handle);
 
-			AutoCloseFD subfd = open(sub_src_path.c_str(), O_RDONLY | O_DIRECTORY);
-			copy_dir(fs, (int)subfd, sub_handle, sub_src_path, sub_dst_path);
+			copy_dir(fs, sub_handle, sub_src_path, sub_dst_path);
 			break;
 		}
-
-		case DT_REG:
-		{
-			AutoCloseFD subfd = open(sub_src_path.c_str(), O_RDONLY);
-
-			File_system::File_handle file_handle =
-				fs.file(dir_handle, dirent->d_name, File_system::WRITE_ONLY, true);
+		
+		case Directory_service::DIRENT_TYPE_FILE: {
+			File_system::File_handle file_handle;
+			try {
+				file_handle = fs.file(export_dir, dirent.name,
+				                      File_system::WRITE_ONLY, true);
+			} catch (...) {
+				PERR("error opening export file handle for ‘%s’", sub_dst_path.c_str());
+				throw;
+			}
 			File_system::Handle_guard sub_guard(fs, file_handle);
-			copy_file(fs, subfd, file_handle, sub_dst_path);
+
+			copy_file(fs, file_handle, sub_src_path, sub_dst_path);
 			break;
 		}
-
-		case DT_LNK:
-		{
-			File_system::Symlink_handle link_handle =
-				fs.symlink(dir_handle, dirent->d_name, true);
+		
+		case Directory_service::DIRENT_TYPE_SYMLINK: {
+			File_system::Symlink_handle link_handle;
+			try {
+				link_handle = fs.symlink(export_dir, dirent.name, true);
+			} catch (...) {
+				PERR("error opening export symlink handle for ‘%s’", sub_dst_path.c_str());
+				throw;
+			}
 			File_system::Handle_guard sub_guard(fs, link_handle);
 
 			copy_symlink(fs, link_handle, sub_src_path, sub_dst_path);
 			break;
 		}
-
+		
 		default:
-			PERR("unhandled file type for %s", sub_src_path.c_str());
-			break;
+			PERR("skipping unexportable file %s", sub_src_path.c_str());
 		}
 	}
 }
 
 
-void nix::copy_file(File_system::Session    &fs,
-                    int                      fd,
-                    File_system::File_handle file_handle,
-                    Path const              &dst_path)
+void Store_client::copy_file(File_system::Session    &fs,
+                             File_system::File_handle file_handle,
+                             Path const              &src_path,
+                             Path const              &dst_path)
 {
-	struct stat sb;
-	if (fstat(fd, &sb))
-		throw SysError(format("getting size of file ‘%1%’") % dst_path);
-	size_t remaining_count = sb.st_size;
-	size_t seek_offset = 0;
+	using namespace Vfs;
+
+	Directory_service::Stat stat = status(src_path);
+	file_size remaining_count    = stat.size;
+	file_size seek_offset        = 0;
+
+	Vfs_handle *vfs_handle = nullptr;
+	if (_vfs_root.open(src_path.c_str(),
+	                   Directory_service::OPEN_MODE_RDONLY,
+	                   &vfs_handle) != Directory_service::OPEN_OK)
+		throw Error(format("getting handle on file ‘%1%’") % dst_path);
+	Vfs_handle::Guard vfs_guard(vfs_handle);
 
 	/* Preallocate the file space. */
 	fs.truncate(file_handle, remaining_count);
 
 	File_system::Session::Tx::Source &source = *fs.tx();
-	size_t const max_packet_size = source.bulk_buffer_size() / 2;
+	file_size const max_packet_size = source.bulk_buffer_size();
 
 	while (remaining_count) {
 		collect_acknowledgements(source);
-
 		size_t const curr_packet_size = std::min(remaining_count, max_packet_size);
 
 		File_system::Packet_descriptor
@@ -159,12 +180,13 @@ void nix::copy_file(File_system::Session    &fs,
 			       0, seek_offset);
 		File_system::Packet_guard packet_guard(source, packet);
 
-		/* Read from the libc VFS to a packet. */
-		ssize_t n = ::read(fd, source.packet_content(packet), curr_packet_size);
-		if (n <= 0)
-			throw SysError(format("reading file ‘%1%’") % dst_path);
+		/* Read from the VFS to a packet. */
+		file_size vfs_count;
+		if (vfs_handle->fs().read(vfs_handle, source.packet_content(packet),
+		                          curr_packet_size, vfs_count) != File_io_service::READ_OK)
+			throw Error(format("reading file ‘%1%’") % dst_path);
 
-		packet.length(n);
+		packet.length(vfs_count);
 
 		/* pass packet to server side */
 		source.submit_packet(packet);
@@ -174,17 +196,22 @@ void nix::copy_file(File_system::Session    &fs,
 			throw nix::Error(format("writing file ‘%1%’") % dst_path);
 
 		/* prepare next iteration */
-		seek_offset += n;
-		remaining_count -= n;
+		remaining_count -= packet.length();
+		if (remaining_count) {
+			seek_offset += packet.length();
+			vfs_handle->seek(seek_offset);
+		}
 	}
 }
 
 
-void nix::copy_symlink(File_system::Session       &fs,
-                       File_system::Symlink_handle symlink_handle,
-                       nix::Path const            &src_path,
-                       nix::Path const            &dst_path)
+void Store_client::copy_symlink(File_system::Session       &fs,
+                                File_system::Symlink_handle symlink_handle,
+                                nix::Path const            &src_path,
+                                nix::Path const            &dst_path)
 {
+	using namespace Vfs;
+
 	File_system::Session::Tx::Source &source = *fs.tx();
 	bool success = false;
 	collect_acknowledgements(source);
@@ -196,46 +223,51 @@ void nix::copy_symlink(File_system::Session       &fs,
 		       0, 0);
 	File_system::Packet_guard packet_guard(source, packet);
 
-	/* Read from the libc VFS to a packet. */
-		char value[File_system::MAX_PATH_LEN];
-	ssize_t n = readlink(src_path.c_str(),
-	                     source.packet_content(packet),
-	                     File_system::MAX_PATH_LEN);
-	if (n == 0) return;
+	/* Read from the VFS to a packet. */
+	file_size vfs_count;
+	if (_vfs_root.readlink(src_path.c_str(), source.packet_content(packet),
+	                       packet.size(), vfs_count) != Directory_service::READLINK_OK)
+		throw Error(format("reading symlink ‘%1%’") % src_path);
+	packet.length(vfs_count);
 
-	if (n > 0) {
-		packet.length(n);
-		/* pass packet to server side */
-		source.submit_packet(packet);
+	/* pass packet to server side */
+	source.submit_packet(packet);
 
-		packet = source.get_acked_packet();
-		if (packet.succeeded()) return;
-	}
-
-	throw SysError(format("reading symlink ‘%1%’") % dst_path);
+	packet = source.get_acked_packet();
+	if (!packet.succeeded())
+		throw Error(format("writing symlink ‘%1%’") % src_path);
 }
 
 
 void
-hash_file(uint8_t *buf, nix::Path const &src_path, int fd)
+Store_client::hash_file(uint8_t *buf, nix::Path const &src_path)
 {
-	Hash::Blake2s hash;
+	using namespace Vfs;
 
-	struct stat st;
-	if (fstat(fd, &st))
-		throw SysError(format("getting size of file ‘%1%’") % src_path);
-	size_t count = st.st_size;
-	size_t remaining_count = count;
+	::Hash::Blake2s hash;
+	file_size       remaining;
+	file_size       pos = 0;
 
-	uint8_t data[Genode::min(4096, count)];
+	Directory_service::Stat stat = status(src_path);
 
-	while (count) {
-		size_t n = ::read(fd, data, sizeof(data));
-		if (n <= 0)
-			throw SysError(format("reading file ‘%1%’") % src_path);
+	uint8_t data[Genode::min(4096, stat.size)];
+
+	Vfs_handle *vfs_handle = nullptr;
+	if (_vfs_root.open(src_path.c_str(),
+	                   Directory_service::OPEN_MODE_RDONLY,
+	                   &vfs_handle) != Directory_service::OPEN_OK)
+		throw Error(format("getting handle on file ‘%1%’") % src_path);
+	Vfs_handle::Guard vfs_guard(vfs_handle);
+
+	while (pos < stat.size) {
+		file_size n;
+		if (vfs_handle->fs().read(vfs_handle, (char *)data,
+	                          sizeof(data), n) != File_io_service::READ_OK)
+		throw Error(format("hashing file ‘%1%’") % src_path);
 
 		hash.update(data, n);
-		count -= n;
+		pos += n;
+		vfs_handle->seek(pos);
 	}
 
 	string name = src_path.substr(src_path.rfind("/")+1, src_path.size()-1);
@@ -247,17 +279,19 @@ hash_file(uint8_t *buf, nix::Path const &src_path, int fd)
 }
 
 void
-hash_symlink(uint8_t *buf, nix::Path const &src_path)
+Store_client::hash_symlink(uint8_t *buf, nix::Path const &src_path)
 {
-	Hash::Blake2s hash;
-	uint8_t data[File_system::MAX_PATH_LEN];
+	using namespace Vfs;
 
-	ssize_t n = readlink(src_path.c_str(), (char *)data, sizeof(data));
+	::Hash::Blake2s hash;
+	uint8_t         data[File_system::MAX_PATH_LEN];
 
-	if (n < 0)
-		throw SysError(format("reading symlink ‘%1%’") % src_path);
+	file_size vfs_count;
+	if (_vfs_root.readlink(src_path.c_str(), (char *)data,
+	                       sizeof(data), vfs_count) != Directory_service::READLINK_OK)
+		throw Error(format("reading symlink ‘%1%’") % src_path);
 
-	hash.update(data, n);
+	hash.update(data, vfs_count);
 
 	string name = src_path.substr(src_path.rfind("/")+1, src_path.size()-1);
 
@@ -268,53 +302,64 @@ hash_symlink(uint8_t *buf, nix::Path const &src_path)
 }
 
 string
-Store_client::add_file(nix::Path const &src_path, int fd)
+Store_client::add_file(nix::Path const &src_path)
 {
-	struct stat st;
-	if (fstat(fd, &st))
-		throw SysError(format("getting size of file ‘%1%’") % src_path);
-	size_t count = st.st_size;
+	using namespace Vfs;
+
+	Directory_service::Stat stat = status(src_path);
+	file_size remaining = stat.size;;
+	file_size offset    = 0;
+
+	Vfs_handle *vfs_handle = nullptr;
+	if (_vfs_root.open(src_path.c_str(),
+	                   Directory_service::OPEN_MODE_RDONLY,
+	                   &vfs_handle) != Directory_service::OPEN_OK)
+		throw Error(format("getting handle on file ‘%1%’") % src_path);
+	Vfs_handle::Guard vfs_guard(vfs_handle);
 
 	Genode::Allocator_avl fs_block_alloc(Genode::env()->heap());
 	Store_import::Connection fs(fs_block_alloc);
 
 	nix::Path name = src_path.substr(src_path.rfind("/")+1, src_path.size()-1);
-	File_system::Dir_handle root = fs.dir("/", false);
-	File_system::Handle_guard root_guard(fs, root);
+	File_system::File_handle export_handle;
+	try {
+		File_system::Dir_handle root_handle = fs.dir("/", false);
+		File_system::Handle_guard root_guard(fs, root_handle);
 
-	File_system::File_handle handle = fs.file(root, name.c_str(), File_system::WRITE_ONLY, true);
-	File_system::Handle_guard file_guard(fs, handle);
+		export_handle = fs.file(root_handle, name.c_str(),
+		                        File_system::WRITE_ONLY, true);
+	} catch (...) {
+		PERR("erro opening export file handle for ‘%s’", name.c_str());
+		throw;
+	}
+	File_system::Handle_guard fs_guard(fs, export_handle);
 
 	File_system::Session::Tx::Source &source = *fs.tx();
 	size_t const max_packet_size = source.bulk_buffer_size() / 2;
 
-	size_t remaining_count = count;
-	File_system::seek_off_t offset = 0;
-
-	while (remaining_count) {
-		size_t const curr_packet_size = Genode::min(remaining_count, max_packet_size);
+	while (remaining) {
+		vfs_handle->seek(offset);
+		size_t const curr_packet_size = Genode::min(remaining, max_packet_size);
 
 		File_system::Packet_descriptor
 			packet(source.alloc_packet(curr_packet_size), 0,
-			       handle, File_system::Packet_descriptor::WRITE,
+			       export_handle, File_system::Packet_descriptor::WRITE,
 			       0, offset);
 		File_system::Packet_guard guard(source, packet);
 
-		ssize_t n = ::read(fd, source.packet_content(packet), curr_packet_size);
-		if (n <= 0)
-			throw SysError(format("reading file ‘%1%’") % src_path);
+		file_size vfs_count;
+		if (vfs_handle->fs().read(vfs_handle, source.packet_content(packet),
+		                          curr_packet_size, vfs_count) != File_io_service::READ_OK)
+			throw Error(format("reading file ‘%1%’") % src_path);
 
-		if (n == 0)
-			break;
-		packet.length(n);
+		packet.length(vfs_count);
 
 		source.submit_packet(packet);
-		packet= source.get_acked_packet();
+		packet = source.get_acked_packet();
 		if (!packet.succeeded())
 			throw nix::Error(format("addPathToStore: writing `%1%' failed") % src_path);
-
-		remaining_count -= packet.length();
-		offset          += packet.length();
+		remaining -= packet.length();
+		offset    += packet.length();
 	}
 
 	return finalize_import(fs, name.c_str());
@@ -322,46 +367,42 @@ Store_client::add_file(nix::Path const &src_path, int fd)
 
 
 void
-hash_dir(uint8_t *buf, nix::Path const &src_path, int fd)
+Store_client::hash_dir(uint8_t *buf, nix::Path const &src_path)
 {
-	Hash::Blake2s hash;
+	using namespace Vfs;
 
-	DIR *c_dir = fdopendir(fd);
+	::Hash::Blake2s           hash;
+	Directory_service::Dirent dirent;
 
+	/* Use a map so that entries are sorted. */
 	std::map<string, unsigned char> entries;
 
-	for (struct dirent *dirent = readdir(c_dir); dirent; dirent = readdir(c_dir)) {
-		entries.insert(std::pair<string, unsigned char>(dirent->d_name, dirent->d_type));
+	for (file_offset i = 0;; ++i) {
+		_vfs_root.dirent(src_path.c_str(), i, dirent);
+		if (dirent.type == Directory_service::DIRENT_TYPE_END) break;
+
+		entries.insert(
+			std::pair<string, Directory_service::Dirent_type>
+			(dirent.name, dirent.type));
 	}
 
 	for (auto i = entries.cbegin(); i != entries.cend(); ++i) {
 		Path subpath = src_path + "/" + i->first;
 
-		switch (i->second) {
-		case DT_DIR: {
-			AutoCloseFD subfd = open(subpath.c_str(), O_RDONLY | O_DIRECTORY);
-			hash_dir(buf, subpath, subfd);
+		if (i->second == Directory_service::DIRENT_TYPE_DIRECTORY) {
+			hash_dir(buf, subpath);
 			hash.update(buf, hash.size());
-			break;
-		}
 
-		case DT_REG: {
-			AutoCloseFD subfd = open(subpath.c_str(), O_RDONLY);
-			hash_file(buf, subpath, subfd);
+		} else if (i->second == Directory_service::DIRENT_TYPE_FILE) {
+			hash_file(buf, subpath);
 			hash.update(buf, hash.size());
-			break;
-		}
 
-		case DT_LNK:
-		{
+		} else if (i->second == Directory_service::DIRENT_TYPE_SYMLINK) {
 			hash_symlink(buf, subpath);
 			hash.update(buf, hash.size());
-			break;
-		}
 
-		default:
+		} else {
 			PERR("unhandled file type for %s", subpath.c_str());
-			break;
 		}
 	}
 
@@ -375,7 +416,7 @@ hash_dir(uint8_t *buf, nix::Path const &src_path, int fd)
 
 
 string
-Store_client::add_dir(nix::Path const &src_path, int fd)
+Store_client::add_dir(nix::Path const &src_path)
 {
 	Genode::Allocator_avl fs_block_alloc(Genode::env()->heap());
 	Store_import::Connection fs(fs_block_alloc);
@@ -384,10 +425,16 @@ Store_client::add_dir(nix::Path const &src_path, int fd)
 	int path_offset = src_path.rfind("/");
 	Path dst_path = src_path.substr(path_offset, src_path.size());
 
-	File_system::Dir_handle dir = fs.dir(dst_path.c_str(), true);
-	File_system::Handle_guard dir_guard(fs, dir);
+	File_system::Dir_handle export_dir;
+	try {
+		export_dir = fs.dir(dst_path.c_str(), true);
+	} catch (...) {
+		PERR("opening export directory handle for ‘%s'", dst_path.c_str());
+		throw;
+	}
+	File_system::Handle_guard dir_guard(fs, export_dir);
 
-	copy_dir(fs, (int) fd, dir, src_path, dst_path);
+	copy_dir(fs, export_dir, src_path, dst_path);
 
 	return finalize_import(fs, dst_path.c_str()+1);
 }
@@ -485,43 +532,35 @@ Store_client::addToStore(const Path & srcPath,
                          PathFilter & filter, bool repair)
 {
 	debug(format("adding ‘%1%’ to the store") % srcPath);
-	/*
-	 * Access the file using libc to ensure
-	 * the VFS is used for path resolution.
-	 */
-	AutoCloseFD fd = open(srcPath.c_str(), O_RDONLY);
-	if (fd == -1)
-		throw SysError(format("opening file ‘%1%’") % srcPath);
- 
-	struct stat sb;
-	if (fstat(fd, &sb) != 0)
-		throw SysError(format("stating file '%1%'") % srcPath);
+
+	using namespace Vfs;
+
+	char const *path_str = srcPath.c_str();
+
+	Directory_service::Stat stat = status(srcPath);
 
 	uint8_t buf[Builder::MAX_NAME_LEN];
 
 	string name = srcPath.substr(srcPath.rfind("/")+1, srcPath.size()-1);
 
-	if (S_ISDIR(sb.st_mode)) {
-		hash_dir(buf, srcPath, fd);
+	if (stat.mode & Directory_service::STAT_MODE_DIRECTORY) {
+		hash_dir(buf, srcPath);
 		Store_hash::encode(buf, name.c_str(), sizeof(buf));
-		if (_builder.valid((char *) buf)) {
-			PINF("%s", (char*)buf);
+		if (_builder.valid((char *) buf))
 			return "/" + string((char *) buf);
-		}
 
-		lseek(fd, 0, SEEK_SET);
-		name = add_dir(srcPath, fd);
-	} else {
-		hash_file(buf, srcPath, fd);
+		name = add_dir(srcPath);
+
+	} else if (stat.mode & Directory_service::STAT_MODE_FILE) {
+		hash_file(buf, srcPath);
 		Store_hash::encode(buf, name.c_str(), sizeof(buf));
-		if (_builder.valid((char *) buf)) {
-			PINF("%s already in the store", (char*)buf);
+		if (_builder.valid((char *) buf))
 			return "/" + string((char *) buf);
-		}
 
-		lseek(fd, 0, SEEK_SET);
-		name = add_file(srcPath, fd);
-	}
+		name = add_file(srcPath);
+	} else
+		throw nix::Error(format("addToStore: `%1%' has an inappropriate file type") % name);
+
 	return "/" + name;
 }
 
@@ -546,17 +585,24 @@ Path nix::Store_client::addTextToStore(const string & name, const string & text,
 
 		Genode::Allocator_avl fs_block_alloc(Genode::env()->heap());
 		Store_import::Connection fs(fs_block_alloc);
-
-		Dir_handle root = fs.dir("/", false);
-		Handle_guard root_guard(fs, root);
-		File_handle handle = fs.file(root, name_str, File_system::WRITE_ONLY, true);
+		
+		File_handle handle;
+		try {
+			Dir_handle root = fs.dir("/", false);
+			Handle_guard root_guard(fs, root);
+			handle = fs.file(root, name_str, File_system::WRITE_ONLY, true);
+		} catch (...) {
+			PERR("opening export handle for ‘%s’", name.c_str());
+			throw;
+		}
 		Handle_guard file_guard(fs, handle);
 
 		size_t count = text.size();
 		size_t offset = 0;
 
 		File_system::Session::Tx::Source &source = *fs.tx();
-		size_t const max_packet_size = source.bulk_buffer_size() / 2;
+		size_t const max_packet_size =
+			Genode::min(source.bulk_buffer_size() / 2, count);
 
 		size_t remaining_count = count;
 
@@ -576,8 +622,8 @@ Path nix::Store_client::addTextToStore(const string & name, const string & text,
 			if (!packet.succeeded())
 				throw nix::Error(format("addTextToStore: writing `%1%' failed") % name);
 
-			offset += packet.length();
-			remaining_count   -= packet.length();
+			offset          += packet.length();
+			remaining_count -= packet.length();
 		}
 
 		//foreach (PathSet::const_iterator, i, references)

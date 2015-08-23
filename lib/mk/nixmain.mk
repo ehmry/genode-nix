@@ -1,6 +1,6 @@
 include $(call select_from_repositories,lib/mk/nix-common.inc)
 
-LIBS += stdcxx nixstore
+LIBS += stdcxx nixstore jitterentropy
 
 SRC_CC = shared.cc dummy.cc
 

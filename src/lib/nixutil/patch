@@ -1,11 +1,551 @@
+diff --git a/src/libutil/affinity.cc b/src/libutil/affinity.cc
+index 3e21f43..cb9a29f 100644
+--- a/src/libutil/affinity.cc
++++ b/src/libutil/affinity.cc
+@@ -2,10 +2,6 @@
+ #include "util.hh"
+ #include "affinity.hh"
+ 
+-#if HAVE_SCHED_H
+-#include <sched.h>
+-#endif
+-
+ namespace nix {
+ 
+ 
+diff --git a/src/libutil/archive.cc b/src/libutil/archive.cc
+index 9e16e04..ac050e4 100644
+--- a/src/libutil/archive.cc
++++ b/src/libutil/archive.cc
+@@ -9,12 +9,6 @@
+ 
+ #include <strings.h> // for strcasecmp
+ 
+-#include <sys/types.h>
+-#include <sys/stat.h>
+-#include <unistd.h>
+-#include <dirent.h>
+-#include <fcntl.h>
+-
+ #include "archive.hh"
+ #include "util.hh"
+ 
+@@ -39,19 +33,29 @@ PathFilter defaultPathFilter;
+ static void dumpContents(const Path & path, size_t size,
+     Sink & sink)
+ {
++    using namespace Vfs;
++
+     writeString("contents", sink);
+     writeLongLong(size, sink);
+ 
+-    AutoCloseFD fd = open(path.c_str(), O_RDONLY);
+-    if (fd == -1) throw SysError(format("opening file ‘%1%’") % path);
++    Vfs_handle *handle = nullptr;
++    if (vfs_root()->open(path.c_str(), Directory_service::OPEN_MODE_RDONLY, &handle)
++        != Vfs::Directory_service::OPEN_OK)
++        throw Error(format("opening file ‘%1%’") % path);
++
++    Vfs_handle::Guard guard(handle);
+ 
+     unsigned char buf[65536];
+     size_t left = size;
+ 
+     while (left > 0) {
+-        size_t n = left > sizeof(buf) ? sizeof(buf) : left;
+-        readFull(fd, buf, n);
++        file_size n;
++        if (handle->fs().read(handle, (char *)buf, sizeof(buf), n) != File_io_service::READ_OK)
++            throw Error(format("reading file ‘%1%’") % path);
++
+         left -= n;
++        if (left)
++            handle->seek(n);
+         sink(buf, n);
+     }
+ 
+@@ -61,23 +65,19 @@ static void dumpContents(const Path & path, size_t size,
+ 
+ static void dump(const Path & path, Sink & sink, PathFilter & filter)
+ {
+-    struct stat st;
+-    if (lstat(path.c_str(), &st))
+-        throw SysError(format("getting attributes of path ‘%1%’") % path);
++    using namespace Vfs;
++
++    Directory_service::Stat stat = status(path);
+ 
+     writeString("(", sink);
+ 
+-    if (S_ISREG(st.st_mode)) {
++    if (S_ISREG(stat.mode)) {
+         writeString("type", sink);
+         writeString("regular", sink);
+-        if (st.st_mode & S_IXUSR) {
+-            writeString("executable", sink);
+-            writeString("", sink);
+-        }
+-        dumpContents(path, (size_t) st.st_size, sink);
++        dumpContents(path, (size_t) stat.size, sink);
+     }
+ 
+-    else if (S_ISDIR(st.st_mode)) {
++    else if (S_ISDIR(stat.mode)) {
+         writeString("type", sink);
+         writeString("directory", sink);
+ 
+@@ -85,18 +85,6 @@ static void dump(const Path & path, Sink & sink, PathFilter & filter)
+            the case hack applied by restorePath(). */
+         std::map<string, string> unhacked;
+         for (auto & i : readDirectory(path))
+-            if (useCaseHack) {
+-                string name(i.name);
+-                size_t pos = i.name.find(caseHackSuffix);
+-                if (pos != string::npos) {
+-                    printMsg(lvlDebug, format("removing case hack suffix from ‘%1%’") % (path + "/" + i.name));
+-                    name.erase(pos);
+-                }
+-                if (unhacked.find(name) != unhacked.end())
+-                    throw Error(format("file name collision in between ‘%1%’ and ‘%2%’")
+-                        % (path + "/" + unhacked[name]) % (path + "/" + i.name));
+-                unhacked[name] = i.name;
+-            } else
+                 unhacked[i.name] = i.name;
+ 
+         for (auto & i : unhacked)
+@@ -111,7 +99,8 @@ static void dump(const Path & path, Sink & sink, PathFilter & filter)
+             }
+     }
+ 
+-    else if (S_ISLNK(st.st_mode)) {
++    else if (S_ISLNK(stat.mode)) {
++        PDBG("%s is as symlink", path.c_str());
+         writeString("type", sink);
+         writeString("symlink", sink);
+         writeString("target", sink);
+@@ -158,7 +147,6 @@ static void parseContents(ParseSink & sink, Source & source, const Path & path)
+     unsigned char buf[65536];
+ 
+     while (left) {
+-        checkInterrupt();
+         unsigned int n = sizeof(buf);
+         if ((unsigned long long) n > left) n = left;
+         source(buf, n);
+@@ -191,7 +179,6 @@ static void parse(ParseSink & sink, Source & source, const Path & path)
+     std::map<Path, int, CaseInsensitiveCompare> names;
+ 
+     while (1) {
+-        checkInterrupt();
+ 
+         s = readString(source);
+ 
+@@ -226,11 +213,6 @@ static void parse(ParseSink & sink, Source & source, const Path & path)
+             parseContents(sink, source, path);
+         }
+ 
+-        else if (s == "executable" && type == tpRegular) {
+-            readString(source);
+-            sink.isExecutable();
+-        }
+-
+         else if (s == "entry" && type == tpDirectory) {
+             string name, prevName;
+ 
+@@ -238,7 +220,6 @@ static void parse(ParseSink & sink, Source & source, const Path & path)
+             if (s != "(") throw badArchive("expected open tag");
+ 
+             while (1) {
+-                checkInterrupt();
+ 
+                 s = readString(source);
+ 
+@@ -297,50 +278,46 @@ void parseDump(ParseSink & sink, Source & source)
+ struct RestoreSink : ParseSink
+ {
+     Path dstPath;
+-    AutoCloseFD fd;
++    Vfs::Vfs_handle *handle;
++
++    RestoreSink() : handle(nullptr) { }
++
++    ~RestoreSink()
++    {
++        if (handle)
++            destroy(Genode::env()->heap(), handle);
++    }
+ 
+     void createDirectory(const Path & path)
+     {
+         Path p = dstPath + path;
+-        if (mkdir(p.c_str(), 0777) == -1)
+-            throw SysError(format("creating directory ‘%1%’") % p);
++        mkdir(p);
+     };
+ 
+     void createRegularFile(const Path & path)
+     {
+-        Path p = dstPath + path;
+-        fd.close();
+-        fd = open(p.c_str(), O_CREAT | O_EXCL | O_WRONLY, 0666);
+-        if (fd == -1) throw SysError(format("creating file ‘%1%’") % p);
+-    }
++        using namespace Vfs;
+ 
+-    void isExecutable()
+-    {
+-        struct stat st;
+-        if (fstat(fd, &st) == -1)
+-            throw SysError("fstat");
+-        if (fchmod(fd, st.st_mode | (S_IXUSR | S_IXGRP | S_IXOTH)) == -1)
+-            throw SysError("fchmod");
++        if (handle)
++            destroy(Genode::env()->heap(), handle);
++
++        Path p = dstPath + path;
++        enum { MODE = Directory_service::OPEN_MODE_WRONLY | Directory_service::OPEN_MODE_CREATE };
++        if (vfs_root()->open(path.c_str(), MODE, &handle) != Directory_service::OPEN_OK)
++            throw Error(format("creating file ‘%1%’") % p);
+     }
+ 
+     void preallocateContents(unsigned long long len)
+     {
+-#if HAVE_POSIX_FALLOCATE
+-        if (len) {
+-            errno = posix_fallocate(fd, 0, len);
+-            /* Note that EINVAL may indicate that the underlying
+-               filesystem doesn't support preallocation (e.g. on
+-               OpenSolaris).  Since preallocation is just an
+-               optimisation, ignore it. */
+-            if (errno && errno != EINVAL)
+-                throw SysError(format("preallocating file of %1% bytes") % len);
+-        }
+-#endif
++        if (handle)
++            handle->fs().ftruncate(handle, handle->seek()+Vfs::file_size(len));
+     }
+ 
+     void receiveContents(unsigned char * data, unsigned int len)
+     {
+-        writeFull(fd, data, len);
++        Vfs::file_size n;
++        if (handle->fs().write(handle, (char *)data, len, n) != Vfs::File_io_service::WRITE_OK)
++            throw Error(format("writing file ‘%1%’") % dstPath);
+     }
+ 
+     void createSymlink(const Path & path, const string & target)
+diff --git a/src/libutil/hash.cc b/src/libutil/hash.cc
+index 965f3ed..273c9c2 100644
+--- a/src/libutil/hash.cc
++++ b/src/libutil/hash.cc
+@@ -18,10 +18,6 @@ extern "C" {
+ #include "archive.hh"
+ #include "util.hh"
+ 
+-#include <sys/types.h>
+-#include <sys/stat.h>
+-#include <fcntl.h>
+-
+ 
+ namespace nix {
+ 
+@@ -285,19 +281,28 @@ Hash hashString(HashType ht, const string & s)
+ 
+ Hash hashFile(HashType ht, const Path & path)
+ {
++    using namespace Vfs;
++
+     Ctx ctx;
+     Hash hash(ht);
+     start(ht, ctx);
+ 
+-    AutoCloseFD fd = open(path.c_str(), O_RDONLY);
+-    if (fd == -1) throw SysError(format("opening file ‘%1%’") % path);
++    Vfs_handle *handle = nullptr;
++    if (vfs_root()->open(path.c_str(), Directory_service::OPEN_MODE_RDONLY, &handle)
++        != Vfs::Directory_service::OPEN_OK)
++        throw Error(format("opening file ‘%1%’") % path);
++
++    Vfs_handle::Guard guard(handle);
+ 
+     unsigned char buf[8192];
+-    ssize_t n;
+-    while ((n = read(fd, buf, sizeof(buf)))) {
+-        checkInterrupt();
+-        if (n == -1) throw SysError(format("reading file ‘%1%’") % path);
+-        update(ht, ctx, buf, n);
++    file_size n = 1;
++    while (n) {
++        if (handle->fs().read(handle, (char *)buf, sizeof(buf), n) != File_io_service::READ_OK)
++            throw Error(format("reading file ‘%1%’") % path);
++        if (n) {
++            update(ht, ctx, buf, n);
++            handle->seek(n);
++        }
+     }
+     
+     finish(ht, ctx, hash.hash);
+diff --git a/src/libutil/monitor-fd.hh b/src/libutil/monitor-fd.hh
+deleted file mode 100644
+index 6f01ccd..0000000
+--- a/src/libutil/monitor-fd.hh
++++ /dev/null
+@@ -1,43 +0,0 @@
+-#pragma once
+-
+-#include <thread>
+-#include <atomic>
+-
+-#include <cstdlib>
+-#include <poll.h>
+-#include <sys/types.h>
+-#include <unistd.h>
+-#include <signal.h>
+-
+-namespace nix {
+-
+-
+-class MonitorFdHup
+-{
+-private:
+-    std::thread thread;
+-
+-public:
+-    MonitorFdHup(int fd)
+-    {
+-        thread = std::thread([fd]() {
+-            /* Wait indefinitely until a POLLHUP occurs. */
+-            struct pollfd fds[1];
+-            fds[0].fd = fd;
+-            fds[0].events = 0;
+-            if (poll(fds, 1, -1) == -1) abort(); // can't happen
+-            assert(fds[0].revents & POLLHUP);
+-            /* We got POLLHUP, so send an INT signal to the main thread. */
+-            kill(getpid(), SIGINT);
+-        });
+-    };
+-
+-    ~MonitorFdHup()
+-    {
+-        pthread_cancel(thread.native_handle());
+-        thread.join();
+-    }
+-};
+-
+-
+-}
+diff --git a/src/libutil/regex.hh b/src/libutil/regex.hh
+index 53e31f4..8cab7be 100644
+--- a/src/libutil/regex.hh
++++ b/src/libutil/regex.hh
+@@ -2,7 +2,6 @@
+ 
+ #include "types.hh"
+ 
+-#include <sys/types.h>
+ #include <regex.h>
+ 
+ #include <map>
+diff --git a/src/libutil/serialise.cc b/src/libutil/serialise.cc
+index 9241750..4f47fc1 100644
+--- a/src/libutil/serialise.cc
++++ b/src/libutil/serialise.cc
+@@ -48,12 +48,6 @@ void BufferedSink::flush()
+ }
+ 
+ 
+-FdSink::~FdSink()
+-{
+-    try { flush(); } catch (...) { ignoreException(); }
+-}
+-
+-
+ size_t threshold = 256 * 1024 * 1024;
+ 
+ static void warnLargeDump()
+@@ -62,20 +56,6 @@ static void warnLargeDump()
+ }
+ 
+ 
+-void FdSink::write(const unsigned char * data, size_t len)
+-{
+-    static bool warned = false;
+-    if (warn && !warned) {
+-        written += len;
+-        if (written > threshold) {
+-            warnLargeDump();
+-            warned = true;
+-        }
+-    }
+-    writeFull(fd, data, len);
+-}
+-
+-
+ void Source::operator () (unsigned char * data, size_t len)
+ {
+     while (len) {
+@@ -112,19 +92,6 @@ bool BufferedSource::hasData()
+ }
+ 
+ 
+-size_t FdSource::readUnbuffered(unsigned char * data, size_t len)
+-{
+-    ssize_t n;
+-    do {
+-        checkInterrupt();
+-        n = ::read(fd, (char *) data, bufSize);
+-    } while (n == -1 && errno == EINTR);
+-    if (n == -1) throw SysError("reading from file");
+-    if (n == 0) throw EndOfFile("unexpected end-of-file");
+-    return n;
+-}
+-
+-
+ size_t StringSource::read(unsigned char * data, size_t len)
+ {
+     if (pos == s.size()) throw EndOfFile("end of string reached");
+diff --git a/src/libutil/serialise.hh b/src/libutil/serialise.hh
+index 6a6f028..d8a10fd 100644
+--- a/src/libutil/serialise.hh
++++ b/src/libutil/serialise.hh
+@@ -68,31 +68,6 @@ struct BufferedSource : Source
+ };
+ 
+ 
+-/* A sink that writes data to a file descriptor. */
+-struct FdSink : BufferedSink
+-{
+-    int fd;
+-    bool warn;
+-    size_t written;
+-
+-    FdSink() : fd(-1), warn(false), written(0) { }
+-    FdSink(int fd) : fd(fd), warn(false), written(0) { }
+-    ~FdSink();
+-    
+-    void write(const unsigned char * data, size_t len);
+-};
+-
+-
+-/* A source that reads data from a file descriptor. */
+-struct FdSource : BufferedSource
+-{
+-    int fd;
+-    FdSource() : fd(-1) { }
+-    FdSource(int fd) : fd(fd) { }
+-    size_t readUnbuffered(unsigned char * data, size_t len);
+-};
+-
+-
+ /* A sink that writes data to a string. */
+ struct StringSink : Sink
+ {
+diff --git a/src/libutil/types.hh b/src/libutil/types.hh
+index 160884e..e3e2ded 100644
+--- a/src/libutil/types.hh
++++ b/src/libutil/types.hh
+@@ -8,14 +8,8 @@
+ 
+ #include <boost/format.hpp>
+ 
+-/* Before 4.7, gcc's std::exception uses empty throw() specifiers for
+- * its (virtual) destructor and what() in c++11 mode, in violation of spec
+- */
+-#ifdef __GNUC__
+-#if __GNUC__ < 4 || (__GNUC__ == 4 && __GNUC_MINOR__ < 7)
+-#define EXCEPTION_NEEDS_THROW_SPEC
+-#endif
+-#endif
++/* Genode includes */
++#include <base/printf.h>
+ 
+ 
+ namespace nix {
+@@ -38,27 +32,39 @@ struct FormatOrString
+ };
+ 
+ 
+-/* BaseError should generally not be caught, as it has Interrupted as
+-   a subclass. Catch Error instead. */
+-class BaseError : public std::exception
++class Error : public std::runtime_error
+ {
+ protected:
+-    string prefix_; // used for location traces etc.
++
++    string prefix_; /* used for location traces etc. */
+     string err;
++
+ public:
++
+     unsigned int status; // exit status
+-    BaseError(const FormatOrString & fs, unsigned int status = 1);
+-#ifdef EXCEPTION_NEEDS_THROW_SPEC
+-    ~BaseError() throw () { };
+-    const char * what() const throw () { return err.c_str(); }
+-#else
++
++    Error(const FormatOrString & fs, unsigned int status = 1)
++    :
++        std::runtime_error(fs.s),
++        err(fs.s),
++        status(status)
++    {
++        PERR("%s%s", prefix_.c_str(), fs.s.c_str());
++    }
++
+     const char * what() const noexcept { return err.c_str(); }
+-#endif
++
+     const string & msg() const { return err; }
+     const string & prefix() const { return prefix_; }
+-    BaseError & addPrefix(const FormatOrString & fs);
++
++    Error & addPrefix(const FormatOrString & fs)
++    {
++        prefix_ = fs.s + prefix_;
++        return *this;
++    }
+ };
+ 
++
+ #define MakeError(newClass, superClass) \
+     class newClass : public superClass                  \
+     {                                                   \
+@@ -66,15 +72,6 @@ public:
+         newClass(const FormatOrString & fs, unsigned int status = 1) : superClass(fs, status) { }; \
+     };
+ 
+-MakeError(Error, BaseError)
+-
+-class SysError : public Error
+-{
+-public:
+-    int errNo;
+-    SysError(const FormatOrString & fs);
+-};
+-
+ 
+ typedef list<string> Strings;
+ typedef set<string> StringSet;
 diff --git a/src/libutil/util.cc b/src/libutil/util.cc
-index dcdb438..c7abbc0 100644
+index dcdb438..68c7989 100644
 --- a/src/libutil/util.cc
 +++ b/src/libutil/util.cc
-@@ -15,13 +15,9 @@
- #include <fcntl.h>
- #include <limits.h>
+@@ -4,24 +4,15 @@
+ #include "affinity.hh"
  
+ #include <iostream>
+-#include <cerrno>
+ #include <cstdio>
+ #include <cstdlib>
+ #include <sstream>
+ #include <cstring>
+ 
+-#include <sys/wait.h>
+-#include <unistd.h>
+-#include <fcntl.h>
+-#include <limits.h>
+-
 -#ifdef __APPLE__
 -#include <sys/syscall.h>
 -#endif
@@ -14,26 +554,61 @@ index dcdb438..c7abbc0 100644
 -#include <sys/prctl.h>
 -#endif
 +/* Genode includes. */
-+#include <base/printf.h>
++#include <vfs/dir_file_system.h>
 +#include <os/config.h>
++#include <base/printf.h>
  
  
  extern char * * environ;
-@@ -53,33 +49,29 @@ SysError::SysError(const FormatOrString & fs)
+@@ -29,57 +20,48 @@ extern char * * environ;
  
- string getEnv(const string & key, const string & def)
+ namespace nix {
+ 
+-
+-BaseError::BaseError(const FormatOrString & fs, unsigned int status)
+-    : status(status)
++Vfs::File_system *vfs_root()
  {
--    char * value = getenv(key.c_str());
--    return value ? string(value) : def;
+-    err = fs.s;
+-}
++	try {
++		/* initialize virtual file system */
++		static Vfs::Dir_file_system
++			_root_dir(Genode::config()->xml_node().sub_node("vfs"),
++			         Vfs::global_file_system_factory());
+ 
++		return &_root_dir;
+ 
+-BaseError & BaseError::addPrefix(const FormatOrString & fs)
+-{
+-    prefix_ = fs.s + prefix_;
+-    return *this;
++	} catch (Genode::Xml_node::Nonexistent_sub_node) {
++		PERR("missing '<vfs>' configuration");
++		throw;
++	}
+ }
+ 
+ 
+-SysError::SysError(const FormatOrString & fs)
+-    : Error(format("%1%: %2%") % fs.s % strerror(errno))
+-    , errNo(errno)
++string getEnv(const string & key, const string & def)
+ {
+-}
 +	using namespace Genode;
-+
+ 
 +	try {
 +		Xml_node::Attribute attr =
 +			config()->xml_node().attribute(key.c_str());
 +		{
 +			char value[256];
 +			attr.value(value, sizeof(value));
-+
+ 
+-string getEnv(const string & key, const string & def)
+-{
+-    char * value = getenv(key.c_str());
+-    return value ? string(value) : def;
 +			PDBG("%s=%s", key.c_str(), value);
 +			return string(value);
 +		}
@@ -71,7 +646,258 @@ index dcdb438..c7abbc0 100644
  }
  
  
-@@ -343,9 +335,6 @@ static Path tempName(Path tmpRoot, const Path & prefix, bool includePid,
+@@ -165,161 +147,152 @@ bool isInDir(const Path & path, const Path & dir)
+ }
+ 
+ 
+-struct stat lstat(const Path & path)
++Vfs::Directory_service::Stat status(const Path & path)
+ {
+-    struct stat st;
+-    if (lstat(path.c_str(), &st))
+-        throw SysError(format("getting status of ‘%1%’") % path);
+-    return st;
++    using namespace Vfs;
++
++    Directory_service::Stat stat;
++    switch (vfs_root()->stat(path.c_str(), stat)) {
++    case Directory_service::STAT_OK: return stat;
++    case Directory_service::STAT_ERR_NO_ENTRY:   
++        throw Error(format("getting status of ‘%1%’, STAT_ERR_NO_ENTRY") % path);
++    };
+ }
+ 
+ 
+-bool pathExists(const Path & path)
++void mkdir(const Path & path)
+ {
+-    int res;
+-    struct stat st;
+-    res = lstat(path.c_str(), &st);
+-    if (!res) return true;
+-    if (errno != ENOENT && errno != ENOTDIR)
+-        throw SysError(format("getting status of %1%") % path);
+-    return false;
++    if (vfs_root()->mkdir(path.c_str(), 0) != Vfs::Directory_service::MKDIR_OK)
++        throw Error(format("creating directory ‘%1%’") % path);
+ }
+ 
+ 
++bool pathExists(const Path & path) {
++    return vfs_root()->leaf_path(path.c_str()); }
++
++
+ Path readLink(const Path & path)
+ {
+-    checkInterrupt();
+-    struct stat st = lstat(path);
+-    if (!S_ISLNK(st.st_mode))
+-        throw Error(format("‘%1%’ is not a symlink") % path);
+-    char buf[st.st_size];
+-    if (readlink(path.c_str(), buf, st.st_size) != st.st_size)
+-        throw SysError(format("reading symbolic link ‘%1%’") % path);
+-    return string(buf, st.st_size);
++    char buf[Vfs::MAX_PATH_LEN];
++    Vfs::file_size n;
++
++    if (vfs_root()->readlink(path.c_str(), buf, sizeof(buf), n)
++        != Vfs::Directory_service::READLINK_OK)
++        throw Error(format("reading symbolic link ‘%1%’") % path);
++
++    return string(buf, n);
+ }
+ 
+ 
+ bool isLink(const Path & path)
+ {
+-    struct stat st = lstat(path);
+-    return S_ISLNK(st.st_mode);
++    Vfs::Directory_service::Stat stat = status(path);
++    return S_ISLNK(stat.mode);
+ }
+ 
+ 
+ DirEntries readDirectory(const Path & path)
+ {
+-    DirEntries entries;
+-    entries.reserve(64);
+-
+-    AutoCloseDir dir = opendir(path.c_str());
+-    if (!dir) throw SysError(format("opening directory ‘%1%’") % path);
+-
+-    struct dirent * dirent;
+-    while (errno = 0, dirent = readdir(dir)) { /* sic */
+-        checkInterrupt();
+-        string name = dirent->d_name;
+-        if (name == "." || name == "..") continue;
+-        entries.emplace_back(name, dirent->d_ino, dirent->d_type);
+-    }
+-    if (errno) throw SysError(format("reading directory ‘%1%’") % path);
++    char const *path_str = path.c_str();
+ 
+-    return entries;
+-}
++    Vfs::file_size n = vfs_root()->num_dirent(path_str);
++    DirEntries entries(n);
+ 
++    for (int i = 0; i < n; ++i)
++        if (vfs_root()->dirent(path_str, i, entries[i]) != Vfs::Directory_service::DIRENT_OK)
++            throw Error(format("reading directory ‘%1%’") % path);
+ 
+-unsigned char getFileType(const Path & path)
+-{
+-    struct stat st = lstat(path);
+-    if (S_ISDIR(st.st_mode)) return DT_DIR;
+-    if (S_ISLNK(st.st_mode)) return DT_LNK;
+-    if (S_ISREG(st.st_mode)) return DT_REG;
+-    return DT_UNKNOWN;
++    return entries;
+ }
+ 
+ 
+-string readFile(int fd)
++string readFile(const Path & path, bool drain)
+ {
+-    struct stat st;
+-    if (fstat(fd, &st) == -1)
+-        throw SysError("statting file");
++    using namespace Vfs;
+ 
+-    unsigned char * buf = new unsigned char[st.st_size];
+-    AutoDeleteArray<unsigned char> d(buf);
+-    readFull(fd, buf, st.st_size);
++    Directory_service::Stat stat = status(path);
+ 
+-    return string((char *) buf, st.st_size);
+-}
++    char buf[stat.size];
++    Vfs_handle *handle = nullptr;
++    if (vfs_root()->open(path.c_str(), Vfs::Directory_service::OPEN_MODE_RDONLY, &handle)
++        != Vfs::Directory_service::OPEN_OK)
++        throw Error(format("open ‘%1%’") % path);
+ 
++    Vfs_handle::Guard guard(handle);
+ 
+-string readFile(const Path & path, bool drain)
+-{
+-    AutoCloseFD fd = open(path.c_str(), O_RDONLY);
+-    if (fd == -1)
+-        throw SysError(format("opening file ‘%1%’") % path);
+-    return drain ? drainFD(fd) : readFile(fd);
++    file_size n = 0;
++    if (handle->fs().read(handle, buf, sizeof(buf), n)
++        != Vfs::File_io_service::READ_OK)
++        throw Error(format("open ‘%1%’") % path);
++
++    return string(buf, n);
+ }
+ 
+ 
+ void writeFile(const Path & path, const string & s)
+ {
+-    AutoCloseFD fd = open(path.c_str(), O_WRONLY | O_TRUNC | O_CREAT, 0666);
+-    if (fd == -1)
+-        throw SysError(format("opening file ‘%1%’") % path);
+-    writeFull(fd, s);
++    using namespace Vfs;
++
++    Directory_service::Stat stat = status(path);
++
++    Vfs_handle *handle = nullptr;
++    if (vfs_root()->open(path.c_str(), Vfs::Directory_service::OPEN_MODE_RDONLY, &handle)
++        != Vfs::Directory_service::OPEN_OK)
++        throw Error(format("opening file ‘%1%’") % path);
++
++    Vfs_handle::Guard guard(handle);
++
++    writeFull(handle, s);
+ }
+ 
+ 
+-string readLine(int fd)
++string readLine(Vfs::Vfs_handle *handle)
+ {
++    char buf[1024];
+     string s;
++
+     while (1) {
+-        checkInterrupt();
+-        char ch;
+-        ssize_t rd = read(fd, &ch, 1);
+-        if (rd == -1) {
+-            if (errno != EINTR)
+-                throw SysError("reading a line");
+-        } else if (rd == 0)
+-            throw EndOfFile("unexpected EOF reading a line");
+-        else {
+-            if (ch == '\n') return s;
+-            s += ch;
++        Vfs::file_size n = 0;
++        if (handle->fs().read(handle, buf, sizeof(buf), n)
++            != Vfs::File_io_service::READ_OK)
++            throw Error("reading a line");
++
++        for (int i = 0; i < n; ++i) {
++            if (buf[i] == '\n') {
++                handle->seek(i);
++                s.append(buf, i-1);
++                return s;
++            }
+         }
++
++        s.append(buf, n);
+     }
+ }
+ 
+ 
+-void writeLine(int fd, string s)
++void writeLine(Vfs::Vfs_handle *handle, string s)
+ {
+     s += '\n';
+-    writeFull(fd, s);
++    writeFull(handle, s);
+ }
+ 
+ 
+ static void _deletePath(const Path & path, unsigned long long & bytesFreed)
+ {
+-    checkInterrupt();
+-
+     printMsg(lvlVomit, format("%1%") % path);
+ 
+-    struct stat st = lstat(path);
++    Vfs::Directory_service::Stat stat = status(path);
+ 
+-    if (!S_ISDIR(st.st_mode) && st.st_nlink == 1)
+-        bytesFreed += st.st_blocks * 512;
+-
+-    if (S_ISDIR(st.st_mode)) {
+-        /* Make the directory writable. */
+-        if (!(st.st_mode & S_IWUSR)) {
+-            if (chmod(path.c_str(), st.st_mode | S_IWUSR) == -1)
+-                throw SysError(format("making ‘%1%’ writable") % path);
+-        }
++    if (!(S_ISDIR(stat.mode)))
++        bytesFreed += stat.size;
+ 
++    else {
+         for (auto & i : readDirectory(path))
+             _deletePath(path + "/" + i.name, bytesFreed);
+     }
+ 
+-    if (remove(path.c_str()) == -1)
+-        throw SysError(format("cannot unlink ‘%1%’") % path);
++    if (vfs_root()->unlink(path.c_str()) != Vfs::Directory_service::UNLINK_OK)
++        throw Error(format("cannot unlink ‘%1%’") % path);
+ }
+ 
+ 
+@@ -339,42 +312,30 @@ void deletePath(const Path & path, unsigned long long & bytesFreed)
+ }
+ 
+ 
+-static Path tempName(Path tmpRoot, const Path & prefix, bool includePid,
++static Path tempName(Path tmpRoot, const Path & prefix,
      int & counter)
  {
      tmpRoot = canonPath(tmpRoot.empty() ? getEnv("TMPDIR", "/tmp") : tmpRoot, true);
@@ -81,7 +907,92 @@ index dcdb438..c7abbc0 100644
          return (format("%1%/%2%-%3%") % tmpRoot % prefix % counter++).str();
  }
  
-@@ -460,17 +449,15 @@ void Nest::close()
+ 
+ Path createTempDir(const Path & tmpRoot, const Path & prefix,
+-    bool includePid, bool useGlobalCounter, mode_t mode)
++    bool useGlobalCounter)
+ {
+     static int globalCounter = 0;
+     int localCounter = 0;
+     int & counter(useGlobalCounter ? globalCounter : localCounter);
+ 
+     while (1) {
+-        checkInterrupt();
+-        Path tmpDir = tempName(tmpRoot, prefix, includePid, counter);
+-        if (mkdir(tmpDir.c_str(), mode) == 0) {
+-            /* Explicitly set the group of the directory.  This is to
+-               work around around problems caused by BSD's group
+-               ownership semantics (directories inherit the group of
+-               the parent).  For instance, the group of /tmp on
+-               FreeBSD is "wheel", so all directories created in /tmp
+-               will be owned by "wheel"; but if the user is not in
+-               "wheel", then "tar" will fail to unpack archives that
+-               have the setgid bit set on directories. */
+-            if (chown(tmpDir.c_str(), (uid_t) -1, getegid()) != 0)
+-                throw SysError(format("setting group of directory ‘%1%’") % tmpDir);
++        Path tmpDir = tempName(tmpRoot, prefix, counter);
++        Vfs::Directory_service::Mkdir_result r = vfs_root()->mkdir(tmpDir.c_str(), 0);
++        if (r == Vfs::Directory_service::MKDIR_OK)
+             return tmpDir;
+-        }
+-        if (errno != EEXIST)
+-            throw SysError(format("creating directory ‘%1%’") % tmpDir);
++        else if (r == Vfs::Directory_service::MKDIR_ERR_EXISTS)
++            continue;
++        else
++        throw Error(format("creating directory ‘%1%’") % tmpDir);
+     }
+ }
+ 
+@@ -384,28 +345,35 @@ Paths createDirs(const Path & path)
+     Paths created;
+     if (path == "/") return created;
+ 
+-    struct stat st;
+-    if (lstat(path.c_str(), &st) == -1) {
++    char const *path_str = path.c_str();
++
++    Vfs::Directory_service::Stat stat;
++    switch (vfs_root()->stat(path.c_str(), stat)) {
++
++    case Vfs::Directory_service::STAT_ERR_NO_ENTRY:
+         created = createDirs(dirOf(path));
+-        if (mkdir(path.c_str(), 0777) == -1 && errno != EEXIST)
+-            throw SysError(format("creating directory ‘%1%’") % path);
+-        st = lstat(path);
++        if (vfs_root()->mkdir(path.c_str(), 0) != Vfs::Directory_service::MKDIR_OK)
++            throw Error(format("creating directory ‘%1%’") % path);
+         created.push_back(path);
+-    }
++        return created;
+ 
+-    if (S_ISLNK(st.st_mode) && stat(path.c_str(), &st) == -1)
+-        throw SysError(format("statting symlink ‘%1%’") % path);
++    case Vfs::Directory_service::STAT_OK:
++        if (S_ISDIR(stat.mode))
++            return created;
+ 
+-    if (!S_ISDIR(st.st_mode)) throw Error(format("‘%1%’ is not a directory") % path);
++        if (S_ISLNK(stat.mode))
++            return createDirs(readLink(path));
+ 
+-    return created;
++        throw Error(format("‘%1%’ is not a directory") % path);
++    }
+ }
+ 
+ 
+ void createSymlink(const Path & target, const Path & link)
+ {
+-    if (symlink(target.c_str(), link.c_str()))
+-        throw SysError(format("creating symlink from ‘%1%’ to ‘%2%’") % link % target);
++    if (vfs_root()->symlink(target.c_str(), link.c_str())
++        != Vfs::Directory_service::SYMLINK_OK)
++        throw Error(format("creating symlink from ‘%1%’ to ‘%2%’") % link % target);
+ }
+ 
+ 
+@@ -460,17 +428,15 @@ void Nest::close()
  
  void printMsg_(Verbosity level, const FormatOrString & fs)
  {
@@ -108,7 +1019,7 @@ index dcdb438..c7abbc0 100644
  }
  
  
-@@ -483,22 +470,8 @@ void warnOnce(bool & haveWarned, const FormatOrString & fs)
+@@ -483,83 +449,49 @@ void warnOnce(bool & haveWarned, const FormatOrString & fs)
  }
  
  
@@ -128,15 +1039,245 @@ index dcdb438..c7abbc0 100644
 -        if (!std::uncaught_exception()) throw;
 -    }
 -}
+-
+-
+-void (*_writeToStderr) (const unsigned char * buf, size_t count) = 0;
 +void writeToStderr(const string & s) {
-+	printf("%s", s.c_str()); }
++	printf(s.c_str()); }
  
  
- void (*_writeToStderr) (const unsigned char * buf, size_t count) = 0;
-@@ -726,192 +699,6 @@ void AutoCloseDir::close()
+-void readFull(int fd, unsigned char * buf, size_t count)
++void readFull(Vfs::Vfs_handle *handle, unsigned char * buf, size_t count)
+ {
++    using namespace Vfs;
++
++    file_size n = 0;
+     while (count) {
+-        checkInterrupt();
+-        ssize_t res = read(fd, (char *) buf, count);
+-        if (res == -1) {
+-            if (errno == EINTR) continue;
+-            throw SysError("reading from file");
+-        }
+-        if (res == 0) throw EndOfFile("unexpected end-of-file");
+-        count -= res;
+-        buf += res;
++        if (handle->fs().read(handle, (char*)buf, count, n) != File_io_service::READ_OK)
++            throw Error("reading from file");
++
++        count -= n;
++        buf += n;
++        if (n == 0) throw EndOfFile("unexpected end-of-file");
++        handle->seek(n);
+     }
+ }
+ 
+ 
+-void writeFull(int fd, const unsigned char * buf, size_t count)
++void writeFull(Vfs::Vfs_handle *handle, const unsigned char * buf, size_t count)
+ {
++    using namespace Vfs;
++
++    file_size n = 0;
+     while (count) {
+-        checkInterrupt();
+-        ssize_t res = write(fd, (char *) buf, count);
+-        if (res == -1) {
+-            if (errno == EINTR) continue;
+-            throw SysError("writing to file");
+-        }
+-        count -= res;
+-        buf += res;
++        if (handle->fs().write(handle, (char *)buf, count, n) != File_io_service::WRITE_OK)
++            throw Error("writing to file");
++
++        count -= n;
++        buf += n;
++        handle->seek(n);
+     }
+ }
+ 
+ 
+-void writeFull(int fd, const string & s)
++void writeFull(Vfs::Vfs_handle *handle, const string & s)
+ {
+-    writeFull(fd, (const unsigned char *) s.data(), s.size());
++    writeFull(handle, (const unsigned char *) s.data(), s.size());
+ }
+ 
+ 
+-string drainFD(int fd)
+-{
+-    string result;
+-    unsigned char buffer[4096];
+-    while (1) {
+-        checkInterrupt();
+-        ssize_t rd = read(fd, buffer, sizeof buffer);
+-        if (rd == -1) {
+-            if (errno != EINTR)
+-                throw SysError("reading from file");
+-        }
+-        else if (rd == 0) break;
+-        else result.append((char *) buffer, rd);
+-    }
+-    return result;
+-}
+-
+-
+-
  //////////////////////////////////////////////////////////////////////
  
  
+@@ -576,8 +508,8 @@ AutoDelete::~AutoDelete()
+             if (recursive)
+                 deletePath(path);
+             else {
+-                if (remove(path.c_str()) == -1)
+-                    throw SysError(format("cannot unlink ‘%1%’") % path);
++                if (vfs_root()->unlink(path.c_str()) != Vfs::Directory_service::UNLINK_OK)
++                    throw Error(format("cannot unlink ‘%1%’") % path);
+             }
+         }
+     } catch (...) {
+@@ -591,327 +523,9 @@ void AutoDelete::cancel()
+ }
+ 
+ 
+-
+-//////////////////////////////////////////////////////////////////////
+-
+-
+-AutoCloseFD::AutoCloseFD()
+-{
+-    fd = -1;
+-}
+-
+-
+-AutoCloseFD::AutoCloseFD(int fd)
+-{
+-    this->fd = fd;
+-}
+-
+-
+-AutoCloseFD::AutoCloseFD(const AutoCloseFD & fd)
+-{
+-    /* Copying an AutoCloseFD isn't allowed (who should get to close
+-       it?).  But as an edge case, allow copying of closed
+-       AutoCloseFDs.  This is necessary due to tiresome reasons
+-       involving copy constructor use on default object values in STL
+-       containers (like when you do `map[value]' where value isn't in
+-       the map yet). */
+-    this->fd = fd.fd;
+-    if (this->fd != -1) abort();
+-}
+-
+-
+-AutoCloseFD::~AutoCloseFD()
+-{
+-    try {
+-        close();
+-    } catch (...) {
+-        ignoreException();
+-    }
+-}
+-
+-
+-void AutoCloseFD::operator =(int fd)
+-{
+-    if (this->fd != fd) close();
+-    this->fd = fd;
+-}
+-
+-
+-AutoCloseFD::operator int() const
+-{
+-    return fd;
+-}
+-
+-
+-void AutoCloseFD::close()
+-{
+-    if (fd != -1) {
+-        if (::close(fd) == -1)
+-            /* This should never happen. */
+-            throw SysError(format("closing file descriptor %1%") % fd);
+-        fd = -1;
+-    }
+-}
+-
+-
+-bool AutoCloseFD::isOpen()
+-{
+-    return fd != -1;
+-}
+-
+-
+-/* Pass responsibility for closing this fd to the caller. */
+-int AutoCloseFD::borrow()
+-{
+-    int oldFD = fd;
+-    fd = -1;
+-    return oldFD;
+-}
+-
+-
+-void Pipe::create()
+-{
+-    int fds[2];
+-    if (pipe(fds) != 0) throw SysError("creating pipe");
+-    readSide = fds[0];
+-    writeSide = fds[1];
+-    closeOnExec(readSide);
+-    closeOnExec(writeSide);
+-}
+-
+-
+-
+ //////////////////////////////////////////////////////////////////////
+ 
+ 
+-AutoCloseDir::AutoCloseDir()
+-{
+-    dir = 0;
+-}
+-
+-
+-AutoCloseDir::AutoCloseDir(DIR * dir)
+-{
+-    this->dir = dir;
+-}
+-
+-
+-AutoCloseDir::~AutoCloseDir()
+-{
+-    close();
+-}
+-
+-
+-void AutoCloseDir::operator =(DIR * dir)
+-{
+-    this->dir = dir;
+-}
+-
+-
+-AutoCloseDir::operator DIR *()
+-{
+-    return dir;
+-}
+-
+-
+-void AutoCloseDir::close()
+-{
+-    if (dir) {
+-        closedir(dir);
+-        dir = 0;
+-    }
+-}
+-
+-
+-//////////////////////////////////////////////////////////////////////
+-
+-
 -Pid::Pid()
 -    : pid(-1), separatePG(false), killSignal(SIGKILL)
 -{
@@ -326,7 +1467,7 @@ index dcdb438..c7abbc0 100644
  std::vector<const char *> stringsToCharPtrs(const Strings & ss)
  {
      std::vector<const char *> res;
-@@ -921,43 +708,8 @@ std::vector<const char *> stringsToCharPtrs(const Strings & ss)
+@@ -921,91 +535,8 @@ std::vector<const char *> stringsToCharPtrs(const Strings & ss)
  }
  
  
@@ -367,19 +1508,253 @@ index dcdb438..c7abbc0 100644
 -
 -    return result;
 -}
+-
+-
+-void closeMostFDs(const set<int> & exceptions)
+-{
+-    int maxFD = 0;
+-    maxFD = sysconf(_SC_OPEN_MAX);
+-    for (int fd = 0; fd < maxFD; ++fd)
+-        if (fd != STDIN_FILENO && fd != STDOUT_FILENO && fd != STDERR_FILENO
+-            && exceptions.find(fd) == exceptions.end())
+-            close(fd); /* ignore result */
+-}
+-
+-
+-void closeOnExec(int fd)
+-{
+-    int prev;
+-    if ((prev = fcntl(fd, F_GETFD, 0)) == -1 ||
+-        fcntl(fd, F_SETFD, prev | FD_CLOEXEC) == -1)
+-        throw SysError("setting close-on-exec flag");
+-}
+-
+-
+-void restoreSIGPIPE()
+-{
+-    struct sigaction act;
+-    act.sa_handler = SIG_DFL;
+-    act.sa_flags = 0;
+-    sigemptyset(&act.sa_mask);
+-    if (sigaction(SIGPIPE, &act, 0)) throw SysError("resetting SIGPIPE");
+-}
+-
+-
+-//////////////////////////////////////////////////////////////////////
+-
+-
+-volatile sig_atomic_t _isInterrupted = 0;
+-
+-void _interrupted()
+-{
+-    /* Block user interrupts while an exception is being handled.
+-       Throwing an exception while another exception is being handled
+-       kills the program! */
+-    if (!std::uncaught_exception()) {
+-        _isInterrupted = 0;
+-        throw Interrupted("interrupted by the user");
+-    }
+-}
+-
 +string runProgram(Path program, bool searchPath, const Strings & args) {
 +	PWRN("not running program %s", program.c_str()); return ""; }
  
  
- void closeMostFDs(const set<int> & exceptions)
+ //////////////////////////////////////////////////////////////////////
+@@ -1059,32 +590,6 @@ string chomp(const string & s)
+ }
+ 
+ 
+-string statusToString(int status)
+-{
+-    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+-        if (WIFEXITED(status))
+-            return (format("failed with exit code %1%") % WEXITSTATUS(status)).str();
+-        else if (WIFSIGNALED(status)) {
+-            int sig = WTERMSIG(status);
+-#if HAVE_STRSIGNAL
+-            const char * description = strsignal(sig);
+-            return (format("failed due to signal %1% (%2%)") % sig % description).str();
+-#else
+-            return (format("failed due to signal %1%") % sig).str();
+-#endif
+-        }
+-        else
+-            return "died abnormally";
+-    } else return "succeeded";
+-}
+-
+-
+-bool statusOk(int status)
+-{
+-    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+-}
+-
+-
+ bool hasSuffix(const string & s, const string & suffix)
+ {
+     return s.size() >= suffix.size() && string(s, s.size() - suffix.size()) == suffix;
 diff --git a/src/libutil/util.hh b/src/libutil/util.hh
-index 186ee71..74eba5f 100644
+index 186ee71..56284da 100644
 --- a/src/libutil/util.hh
 +++ b/src/libutil/util.hh
-@@ -245,48 +245,6 @@ public:
+@@ -2,18 +2,22 @@
+ 
+ #include "types.hh"
+ 
+-#include <sys/types.h>
+-#include <sys/stat.h>
+-#include <dirent.h>
+-#include <unistd.h>
+-#include <signal.h>
+ #include <functional>
+ 
+ #include <cstdio>
+ 
++/* Genode includes */
++#include <vfs/file_system.h>
++#include <vfs/vfs_handle.h>
+ 
+ namespace nix {
+ 
++Vfs::File_system *vfs_root();
++
++#define S_ISDIR(m) (((m) & 0170000) == 0040000)    /* directory */
++#define S_ISREG(m) (((m) & 0170000) == 0100000)    /* regular file */
++#define S_ISLNK(m) (((m) & 0170000) == 0120000)    /* symbolic link */
++
+ 
+ #define foreach(it_type, it, collection)                                \
+     for (it_type it = (collection).begin(); it != (collection).end(); ++it)
+@@ -51,7 +55,10 @@ string baseNameOf(const Path & path);
+ bool isInDir(const Path & path, const Path & dir);
+ 
+ /* Get status of `path'. */
+-struct stat lstat(const Path & path);
++Vfs::Directory_service::Stat status(const Path & path);
++
++/* Make directory. */
++void mkdir(const Path & path);
+ 
+ /* Return true iff the given path exists. */
+ bool pathExists(const Path & path);
+@@ -62,35 +69,21 @@ Path readLink(const Path & path);
+ 
+ bool isLink(const Path & path);
+ 
+-/* Read the contents of a directory.  The entries `.' and `..' are
+-   removed. */
+-struct DirEntry
+-{
+-    string name;
+-    ino_t ino;
+-    unsigned char type; // one of DT_*
+-    DirEntry(const string & name, ino_t ino, unsigned char type)
+-        : name(name), ino(ino), type(type) { }
+-};
+-
+-typedef vector<DirEntry> DirEntries;
++typedef vector<Vfs::Directory_service::Dirent> DirEntries;
+ 
+ DirEntries readDirectory(const Path & path);
+ 
+-unsigned char getFileType(const Path & path);
+-
+ /* Read the contents of a file into a string. */
+-string readFile(int fd);
+ string readFile(const Path & path, bool drain = false);
+ 
+ /* Write a string to a file. */
+ void writeFile(const Path & path, const string & s);
+ 
+-/* Read a line from a file descriptor. */
+-string readLine(int fd);
++/* Read a line from a VFS handle. */
++string readLine(Vfs::Vfs_handle *);
+ 
+-/* Write a line to a file descriptor. */
+-void writeLine(int fd, string s);
++/* Write a line to a VFS handle. */
++void writeLine(Vfs::Vfs_handle *, string s);
+ 
+ /* Delete a path; i.e., in the case of a directory, it is deleted
+    recursively.  Don't use this at home, kids.  The second variant
+@@ -101,7 +94,7 @@ void deletePath(const Path & path, unsigned long long & bytesFreed);
+ 
+ /* Create a temporary directory. */
+ Path createTempDir(const Path & tmpRoot = "", const Path & prefix = "nix",
+-    bool includePid = true, bool useGlobalCounter = true, mode_t mode = 0755);
++    bool useGlobalCounter = true);
+ 
+ /* Create a directory and all its parents, if necessary.  Returns the
+    list of created directories, in order of creation. */
+@@ -164,20 +157,17 @@ void warnOnce(bool & haveWarned, const FormatOrString & fs);
+ 
+ void writeToStderr(const string & s);
+ 
+-extern void (*_writeToStderr) (const unsigned char * buf, size_t count);
+-
+-
+ /* Wrappers arount read()/write() that read/write exactly the
+    requested number of bytes. */
+-void readFull(int fd, unsigned char * buf, size_t count);
+-void writeFull(int fd, const unsigned char * buf, size_t count);
+-void writeFull(int fd, const string & s);
++void readFull(Vfs::Vfs_handle *handle, unsigned char * buf, size_t count);
++void writeFull(Vfs::Vfs_handle *handle, const unsigned char * buf, size_t count);
++void writeFull(Vfs::Vfs_handle *handle, const string & s);
+ 
+ MakeError(EndOfFile, Error)
+ 
+ 
+-/* Read a file descriptor until EOF occurs. */
+-string drainFD(int fd);
++/* Read a VFS handle until EOF occurs. */
++string drainFD(Vfs::Vfs_handle *);
+ 
+ 
+ 
+@@ -208,117 +198,11 @@ public:
  };
  
  
+-class AutoCloseFD
+-{
+-    int fd;
+-public:
+-    AutoCloseFD();
+-    AutoCloseFD(int fd);
+-    AutoCloseFD(const AutoCloseFD & fd);
+-    ~AutoCloseFD();
+-    void operator =(int fd);
+-    operator int() const;
+-    void close();
+-    bool isOpen();
+-    int borrow();
+-};
+-
+-
+-class Pipe
+-{
+-public:
+-    AutoCloseFD readSide, writeSide;
+-    void create();
+-};
+-
+-
+-class AutoCloseDir
+-{
+-    DIR * dir;
+-public:
+-    AutoCloseDir();
+-    AutoCloseDir(DIR * dir);
+-    ~AutoCloseDir();
+-    void operator =(DIR * dir);
+-    operator DIR *();
+-    void close();
+-};
+-
+-
 -class Pid
 -{
 -    pid_t pid;
@@ -422,14 +1797,52 @@ index 186ee71..74eba5f 100644
 -string runProgram(Path program, bool searchPath = false,
 -    const Strings & args = Strings());
 -
- MakeError(ExecError, Error)
- 
+-MakeError(ExecError, Error)
+-
  /* Convert a list of strings to a null-terminated vector of char
-@@ -314,7 +272,6 @@ void _interrupted();
+    *'s. The result must not be accessed beyond the lifetime of the
+    list of strings. */
+ std::vector<const char *> stringsToCharPtrs(const Strings & ss);
  
- void inline checkInterrupt()
- {
+-/* Close all file descriptors except stdin, stdout, stderr, and those
+-   listed in the given set.  Good practice in child processes. */
+-void closeMostFDs(const set<int> & exceptions);
+-
+-/* Set the close-on-exec flag for the given file descriptor. */
+-void closeOnExec(int fd);
+-
+-/* Restore default handling of SIGPIPE, otherwise some programs will
+-   randomly say "Broken pipe". */
+-void restoreSIGPIPE();
+-
+-
+-/* User interruption. */
+-
+-extern volatile sig_atomic_t _isInterrupted;
+-
+-void _interrupted();
+-
+-void inline checkInterrupt()
+-{
 -    if (_isInterrupted) _interrupted();
- }
+-}
+-
+-MakeError(Interrupted, BaseError)
+-
  
- MakeError(Interrupted, BaseError)
+ /* String tokenizer. */
+ template<class C> C tokenizeString(const string & s, const string & separators = " \t\n\r");
+@@ -334,13 +218,6 @@ string concatStringsSep(const string & sep, const StringSet & ss);
+ string chomp(const string & s);
+ 
+ 
+-/* Convert the exit status of a child as returned by wait() into an
+-   error string. */
+-string statusToString(int status);
+-
+-bool statusOk(int status);
+-
+-
+ /* Parse a string into an integer. */
+ template<class N> bool string2Int(const string & s, N & n)
+ {
