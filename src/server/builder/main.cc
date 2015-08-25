@@ -6,6 +6,7 @@
 
 /* Local includes */
 #include "aterm_parser.h"
+#include "config.h"
 #include "session.h"
 
 /* Genode includes */
@@ -32,6 +33,8 @@ class Builder::Root_component : public Genode::Root_component<Session_component>
 {
 	private:
 
+		enum { MAX_LABEL_SIZE = 64 };
+
 		Server::Entrypoint     &_ep;
 		Ram_session_capability  _ram;
 		Genode::Allocator_avl   _fs_block_alloc;
@@ -42,8 +45,6 @@ class Builder::Root_component : public Genode::Root_component<Session_component>
 
 		Session_component *_create_session(const char *args, Affinity const &affinity) override
 		{
-			Session_label  label(args);
-
 			size_t ram_quota =
 				Arg_string::find_arg(args, "ram_quota"  ).ulong_value(0);
 
@@ -59,7 +60,8 @@ class Builder::Root_component : public Genode::Root_component<Session_component>
 			}
 
 			return new(md_alloc())
-				Session_component(label.string(), _ep,
+				Session_component(fs_label(),
+				                  _ep,
 				                  md_alloc(), ram_quota,
 				                  _fs,
 				                  _job_queue);
@@ -78,7 +80,7 @@ class Builder::Root_component : public Genode::Root_component<Session_component>
 			_ep(ep),
 			_ram(ram),
 			_fs_block_alloc(env()->heap()),
-			_fs(_fs_block_alloc, 128*1024, "store"),
+			_fs(_fs_block_alloc, 128*1024, fs_label()),
 			_job_queue(_ep, _fs)
 		{
 			/* look for dynamic linker */
@@ -112,7 +114,7 @@ namespace Server {
 
 	char const *name() { return "builder_ep"; }
 
-	size_t stack_size() { return 4*1024*sizeof(long); }
+	size_t stack_size() { return 8*1024*sizeof(long); }
 
 	void construct(Entrypoint &ep)
 	{

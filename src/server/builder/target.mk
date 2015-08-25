@@ -1,3 +1,3 @@
 TARGET = builder
 SRC_CC = main.cc
-LIBS   = base server blake2s
+LIBS   = base config server blake2s

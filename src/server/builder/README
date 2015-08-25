@@ -1,0 +1,5 @@
+ROM and File_system requests labels are configurable with the attributes
+rom_label and fs_label on the config node.
+
+The default configurations is as follows:
+! <config rom_label="store" fs_label="store"/>

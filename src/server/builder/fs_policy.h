@@ -48,22 +48,24 @@ class Builder::Store_fs_policy
 
 		} _local_service;
 		
-		Parent_service _parent_service;
+		Parent_service &_parent_service;
 
 	public:
 
 		/**
 		 * Constructor
 		 */
-		Store_fs_policy(Server::Entrypoint &ep)
+		Store_fs_policy(Parent_service &fs_backend, Server::Entrypoint &ep)
 		:
 			_ep(ep.rpc_ep()),
 			/* xxx: get this quota from the root child policy */
 			_local_session(env()->ram_session()->quota() / 4, 128*1024*2, ep),
 			_local_session_cap(_ep.manage(&_local_session)),
 			_local_service(_local_session_cap),
-			_parent_service("File_system")
-		{ }
+			_parent_service(fs_backend)
+		{
+			PDBG("constructed Store_fs_policy");
+		}
 
 		/**
 		 * Destructor

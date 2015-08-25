@@ -25,8 +25,8 @@
 
 
 /* Local imports */
+#include "config.h"
 #include "derivation.h"
-#include "rom_policy.h"
 #include "fs_policy.h"
 #include "terminal_policy.h"
 
@@ -45,7 +45,7 @@ namespace Builder {
  */
 struct Builder::Resources
 {
-	enum { MINIMUM_QUOTA = 4096 };
+	enum { MINIMUM_QUOTA = 8 * 1024 * sizeof(long) };
 
 	Genode::Pd_connection  pd;
 	Genode::Ram_connection ram;
@@ -216,7 +216,8 @@ class Builder::Child_policy : public Genode::Child_policy
 				Environment(Derivation &drv, Inputs &inputs)
 				{
 					for (Derivation::Env_pair *pair = drv.env(); pair; pair = pair->next()) {
-						Mapping *node = new (env()->heap()) Mapping(pair->key, pair->value);
+						Mapping *node = new (env()->heap())
+							Mapping(pair->key, pair->value);
 						insert(node);
 					}
 				}
@@ -245,7 +246,6 @@ class Builder::Child_policy : public Genode::Child_policy
 
 		Signal_context_capability  _exit_sigh;
 		Resources                 &_resources;
-		Store_rom_policy           _binary_policy;
 		Parent_service             _fs_input_service;
 		Store_fs_policy            _fs_output_policy;
 		Terminal_policy            _terminal_policy;
@@ -254,15 +254,10 @@ class Builder::Child_policy : public Genode::Child_policy
 		Service_registry           _parent_services;
 
 		/**
-		 * Rewrite a session argument if it matches
-		 * the environment. This is how requests for
-		 * things like 'config' are redirected.
-		 *
-		 * TODO: the bool argument is a temporary measure
-		 * to allow ROM requests be routed beyond the store_rom
-		 * server.
+		 * Rewrite a session argument if it matches the environment.
+		 * This is how file system requests are re-rooted.
 		 */
-		bool rewrite_arg(char *args, size_t args_len, char const *arg)
+		void rewrite_arg(char *args, size_t args_len, char const *arg)
 		{
 			char buf[File_system::MAX_PATH_LEN+2];
 			Genode::Arg_string::find_arg(args, arg).string(buf, sizeof(buf), "");
@@ -270,9 +265,7 @@ class Builder::Child_policy : public Genode::Child_policy
 				if (char const *dest = _environment.lookup(buf)) {
 					snprintf(buf, sizeof(buf), "\"%s\"", dest);
 					Arg_string::set_arg(args, args_len, arg, buf);
-					return true;
 				}
-			return false;
 		}
 
 	public:
@@ -295,9 +288,8 @@ class Builder::Child_policy : public Genode::Child_policy
 			_environment(drv, _inputs),
 			_exit_sigh(exit_sigh),
 			_resources(resources),
-			_binary_policy(_fs, "binary", drv.builder(), ep.rpc_ep()),
 			_fs_input_service("File_system"),
-			_fs_output_policy(ep),
+			_fs_output_policy(_fs_input_service, ep),
 			_terminal_policy(_log, ep.rpc_ep()),
 			_parent_rom_service("ROM"),
 			_parent_fs_service("File_system")
@@ -317,8 +309,6 @@ class Builder::Child_policy : public Genode::Child_policy
 						Parent_service(service_names[i]));
 		}
 
-		Dataspace_capability binary() { return _binary_policy.dataspace(); }
-
 		/*
 		 * TODO: actually implement resource trading
 		 */
@@ -329,13 +319,44 @@ class Builder::Child_policy : public Genode::Child_policy
 
 		char const *name() const { return _name; }
 
+		/**
+		 * Rewrite ROM and File_system requests to enforce purity, set session
+		 * labels to a user defined value so that the proper routing is enforced.
+		 */
 		void filter_session_args(const char *service, char *args, size_t args_len)
 		{
-			if (!strcmp(service, "ROM")) {
-				if (rewrite_arg(args, args_len, "filename"))
-					Arg_string::set_arg(args, args_len, "label", "\"store\"");
-			} else if (!strcmp(service, "File_system")) {
+			if (strcmp(service, "ROM") == 0) {
+				char filename[File_system::MAX_PATH_LEN] = { 0 };
+				Genode::Arg_string::find_arg(args, "filename").string(
+					filename, sizeof(filename), "");
+
+				if (*filename) {
+
+					if (strcmp(filename, "binary")) {
+						Arg_string::set_arg(args, args_len,
+						                    "filename", _drv.builder());
+
+					} else if (char const *dest = _environment.lookup(filename)) {
+						snprintf(filename, sizeof(filename), "\"%s\"", dest);
+						Arg_string::set_arg(args, args_len, "filename", filename);
+					}
+
+					/* XXX: invalidate this request, it does not match */
+				}
+
+				char label_buf[Parent::Session_args::MAX_SIZE];
+				Genode::snprintf(label_buf, sizeof(label_buf),
+				                 "\"%s\"", rom_label());
+				Arg_string::set_arg(args, args_len, "label", label_buf);
+
+			} else if (strcmp(service, "File_system") == 0) {
 				rewrite_arg(args, args_len, "root");
+
+				char label_buf[Parent::Session_args::MAX_SIZE];
+				Genode::snprintf(label_buf, sizeof(label_buf),
+				                 "\"%s\"", fs_label());
+				Arg_string::set_arg(args, args_len, "label", label_buf);
+
 			} else {
 				char label_buf[Parent::Session_args::MAX_SIZE];
 				Arg_string::find_arg(args, "label").string(label_buf, sizeof(label_buf), "");
@@ -355,17 +376,9 @@ class Builder::Child_policy : public Genode::Child_policy
 		                                 const char *args)
 		{
 			Service *service = 0;
-
 			if (!strcmp("ROM", service_name)) {
 				char filename[File_system::MAX_PATH_LEN];
 				Arg_string::find_arg(args, "filename").string(filename, sizeof(filename), "");
-
-				/*
-				 * We've allowed the derivation to override
-				 * ldso's requests to the binary, implications?
-				 */
-				if (!strcmp("binary", filename))
-					return _binary_policy.service();
 
 				/* XXX
 				if (!_inputs.contains(filename))
@@ -409,7 +422,6 @@ class Builder::Child_policy : public Genode::Child_policy
 				// TODO: write a store placeholder that marks failure
 			} else {
 				_fs_output_policy.finalize(_fs, _drv);
-				PINF("success: %s", _name);
 			}
 
 			Signal_transmitter(_exit_sigh).submit();
@@ -426,9 +438,10 @@ class Builder::Child
 
 	private:
 
-		enum { ENTRYPOINT_STACK_SIZE  =   6*1024*sizeof(long) };
+		enum { ENTRYPOINT_STACK_SIZE  =   8*1024*sizeof(long) };
 
 		Resources           _resources;
+		Rom_connection      _binary_rom;
 		Server::Entrypoint  _entrypoint;
 		Child_policy        _child_policy;
 		Genode::Child       _child;
@@ -446,8 +459,9 @@ class Builder::Child
 		      Signal_context_capability exit_sigh)
 		:
 			_resources(label, ram_manager, exit_sigh),
+			_binary_rom(drv.builder(), rom_label()),
 			_child_policy(label, fs, _resources,  _entrypoint, drv, exit_sigh),
-			_child(_child_policy.binary(),
+			_child(_binary_rom.dataspace(),
 			       _resources.pd.cap(),
 			       _resources.ram.cap(),
 			       _resources.cpu.cap(),
