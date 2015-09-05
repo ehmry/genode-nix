@@ -28,7 +28,7 @@
 /* Local includes */
 #include "node.h"
 
-namespace Store_import {
+namespace Store_ingest {
 
 	using namespace File_system;
 
@@ -45,7 +45,7 @@ namespace Store_import {
 
 }
 
-class Store_import::Session_component : public Session_rpc_object
+class Store_ingest::Session_component : public Session_rpc_object
 {
 	private:
 
@@ -57,7 +57,7 @@ class Store_import::Session_component : public Session_rpc_object
 			MAX_NODE_HANDLES = 128U,
 
 			/*
-			 * Maximum number of import roots.
+			 * Maximum number of ingest roots.
 			 * The prefix and mask is used to return handles for virtual
 			 * symlink nodes that do not exist on the backend.
 			 */
@@ -131,11 +131,11 @@ class Store_import::Session_component : public Session_rpc_object
 
 		/**
 		 * Hash roots are the top-level nodes of this
-		 * import session.
+		 * ingest session.
 		 *
 		 * These nodes have different names on the backend
 		 * than the names the requested by clients. This is
-		 * so that stale imports are easy to find and remove.
+		 * so that stale ingests are easy to find and remove.
 		 *
 		 * Hash roots are finalized by when the client creates
 		 * a symlink at their virtualised location.
@@ -153,7 +153,7 @@ class Store_import::Session_component : public Session_rpc_object
 				if (index > MAX_ROOT_NODES)
 					throw Out_of_node_handles();
 
-				snprintf(filename, sizeof(filename), "import-%d", index);
+				snprintf(filename, sizeof(filename), "ingest-%d", index);
 			}
 
 			Symlink_handle handle() {
@@ -461,7 +461,7 @@ class Store_import::Session_component : public Session_rpc_object
 				_fs.move(_root_handle, root->filename,
 				         _root_handle, (char *)final_name);
 			} catch (File_system::Node_already_exists) {
-				/* A redundant import. */
+				/* A redundant ingest. */
 				_fs.unlink(_root_handle, root->filename);
 				/* This needs to be done recursively. */
 			}
@@ -763,8 +763,6 @@ class Store_import::Session_component : public Session_rpc_object
 
 		void sigh(Node_handle node_handle, Signal_context_capability sigh) {
 			_fs.sigh(node_handle, sigh); }
-
-		void sync() { _fs.sync(); }
 };
 
 #endif

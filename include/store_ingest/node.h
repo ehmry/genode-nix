@@ -19,7 +19,7 @@
 #include <hash/blake2s.h>
 #include <util/list.h>
 
-namespace Store_import {
+namespace Store_ingest {
 
 	using namespace File_system;
 
@@ -46,7 +46,7 @@ namespace Store_import {
 
 }
 
-class Store_import::Hash_node : public List<Hash_node>::Element {
+class Store_ingest::Hash_node : public List<Hash_node>::Element {
 
 	private:
 
@@ -77,7 +77,7 @@ class Store_import::Hash_node : public List<Hash_node>::Element {
 };
 
 
-class Store_import::File : public Hash_node
+class Store_ingest::File : public Hash_node
 {
 	private:
 
@@ -161,7 +161,7 @@ class Store_import::File : public Hash_node
 };
 
 
-class Store_import::Symlink : public Hash_node
+class Store_ingest::Symlink : public Hash_node
 {
 	public:
 
@@ -193,7 +193,7 @@ class Store_import::Symlink : public Hash_node
 };
 
 
-class Store_import::Directory : public Hash_node
+class Store_ingest::Directory : public Hash_node
 {
 	private:
 

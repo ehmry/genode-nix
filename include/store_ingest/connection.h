@@ -1,5 +1,5 @@
 /*
- * \brief  Connection to store_import
+ * \brief  Connection to store_ingest
  * \author Emery Hemingway
  * \date   2015-07-24
  *
@@ -23,13 +23,13 @@
 #include <util/arg_string.h>
 
 
-namespace Store_import {
+namespace Store_ingest {
 	using namespace File_system;
 	struct Connection;
 }
 
 
-class Store_import::Connection : public Genode::Connection<File_system::Session>, public File_system::Session_client
+class Store_ingest::Connection : public Genode::Connection<File_system::Session>, public File_system::Session_client
 {
 	private:
 
@@ -43,7 +43,7 @@ class Store_import::Connection : public Genode::Connection<File_system::Session>
 			size_t donation = _session_quota / 2;
 			Genode::Arg_string::set_arg(argbuf, sizeof(argbuf),
 			                            "ram_quota", donation);
-			PWRN("donating %s bytes to import session");
+			PWRN("donating %s bytes to ingest session");
 			Genode::env()->parent()->upgrade(cap(), argbuf);
 			_session_quota += donation;
 		}
@@ -63,7 +63,7 @@ class Store_import::Connection : public Genode::Connection<File_system::Session>
 		 */
 		Connection(Range_allocator &tx_block_alloc,
 		           size_t           tx_buf_size = 256*1024,
-		           const char      *label = "import")
+		           const char      *label = "ingest")
 		:
 			Genode::Connection<Session>(
 				session("ram_quota=%zd, tx_buf_size=%zd, label=\"%s\"",

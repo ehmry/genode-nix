@@ -14,7 +14,7 @@
 #ifndef _BUILDER__FS_POLICY_H_
 #define _BUILDER__FS_POLICY_H_
 
-#include <store_import/session.h>
+#include <store_ingest/session.h>
 #include <file_system_session/capability.h>
 
 namespace Builder { class Store_fs_policy; }
@@ -24,7 +24,7 @@ class Builder::Store_fs_policy
 	private:
 
 		Genode::Rpc_entrypoint         &_ep;
-		Store_import::Session_component _local_session;
+		Store_ingest::Session_component _local_session;
 		File_system::Session_capability _local_session_cap;
 
 		struct Local_service : public Genode::Service
@@ -73,7 +73,7 @@ class Builder::Store_fs_policy
 		~Store_fs_policy() { _ep.dissolve(&_local_session); }
 
 		/**
-		 * Finalise the derivation outputs at the import session and
+		 * Finalise the derivation outputs at the ingest session and
 		 * create a symlinks to find them with.
 		 *
 		 * If an output path listed in a derivation exists in the store
@@ -103,7 +103,7 @@ class Builder::Store_fs_policy
 				/*
 				 * If output symlinks are missing, then failure is implicit.
 				 */
-				PERR("%s not found at the import session", name);
+				PERR("%s not found at the ingest session", name);
 				return;
 			}
 
@@ -119,10 +119,10 @@ class Builder::Store_fs_policy
 				// TODO:
 				// this is just a work around for an error in the Nix port
 				char *link_name = link;
+				while (*link_name == '/')
+					++link_name;
 
-				for (char *p = link_name; *p;)
-					if (*p++ == '/')
-						link_name = p;
+				PWRN("creating symlink named %s, target %s", link_name, final);
 
 				try {
 					Symlink_handle link = fs.symlink(store_root, link_name, true);
@@ -133,7 +133,8 @@ class Builder::Store_fs_policy
 					 * A failure at this point does not
 					 * effect the validity of other outputs.
 					 */
-					PERR("error creating symlink %s to %s", link, final);
+					PERR("error creating symlink %s to %s", link_name, final);
+					throw;
 				}
 
 			}

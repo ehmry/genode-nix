@@ -9,11 +9,12 @@
 #include <libutil/util.hh>
 
 /* Genode includes. */
-#include <store_import/connection.h>
+#include <store_ingest/connection.h>
 #include <store_hash/encode.h>
 #include <hash/blake2s.h>
 #include <vfs/file_system_factory.h>
 #include <os/config.h>
+#include <dataspace/client.h>
 #include <base/printf.h>
 
 
@@ -39,7 +40,7 @@ static string hash_text(const string &name, const string &text)
 }
 
 
-static nix::Path finalize_import(File_system::Session &fs, char const *name)
+static nix::Path finalize_ingest(File_system::Session &fs, char const *name)
 {
 	using namespace File_system;
 
@@ -49,7 +50,7 @@ static nix::Path finalize_import(File_system::Session &fs, char const *name)
 		Handle_guard root_guard(fs, root);
 		link_handle = fs.symlink(root, name, true);
 	} catch (...) {
-		PERR("closing export handle for ‘%s’", name);
+		PERR("failed to close ingest handle for ‘%s’", name);
 		throw;
 	}
 	Handle_guard link_guard(fs, link_handle);
@@ -66,13 +67,13 @@ static nix::Path finalize_import(File_system::Session &fs, char const *name)
 	packet = source.get_acked_packet();
 
 	if (!packet.succeeded())
-		throw nix::Error(format("finalising import ‘%1%’") % name);
+		throw nix::Error(format("finalising ingest of ‘%1%’") % name);
 	return nix::Path(source.packet_content(packet), packet.length());
 }
 
 
 void Store_client::copy_dir(File_system::Session   &fs,
-                            File_system::Dir_handle export_dir,
+                            File_system::Dir_handle ingest_dir,
                             nix::Path const        &src_path,
                             nix::Path const        &dst_path)
 {
@@ -99,7 +100,7 @@ void Store_client::copy_dir(File_system::Session   &fs,
 			try {
 				sub_handle = fs.dir(sub_dst_path.c_str(), true);
 			} catch (...) {
-				PERR("error opening export directory handle for ‘%s’", sub_dst_path.c_str());
+				PERR("error opening ingest directory handle for ‘%s’", sub_dst_path.c_str());
 				throw;
 			}
 			File_system::Handle_guard sub_guard(fs, sub_handle);
@@ -111,10 +112,10 @@ void Store_client::copy_dir(File_system::Session   &fs,
 		case Directory_service::DIRENT_TYPE_FILE: {
 			File_system::File_handle file_handle;
 			try {
-				file_handle = fs.file(export_dir, dirent.name,
+				file_handle = fs.file(ingest_dir, dirent.name,
 				                      File_system::WRITE_ONLY, true);
 			} catch (...) {
-				PERR("error opening export file handle for ‘%s’", sub_dst_path.c_str());
+				PERR("error opening ingest file handle for ‘%s’", sub_dst_path.c_str());
 				throw;
 			}
 			File_system::Handle_guard sub_guard(fs, file_handle);
@@ -126,9 +127,9 @@ void Store_client::copy_dir(File_system::Session   &fs,
 		case Directory_service::DIRENT_TYPE_SYMLINK: {
 			File_system::Symlink_handle link_handle;
 			try {
-				link_handle = fs.symlink(export_dir, dirent.name, true);
+				link_handle = fs.symlink(ingest_dir, dirent.name, true);
 			} catch (...) {
-				PERR("error opening export symlink handle for ‘%s’", sub_dst_path.c_str());
+				PERR("error opening ingest symlink handle for ‘%s’", sub_dst_path.c_str());
 				throw;
 			}
 			File_system::Handle_guard sub_guard(fs, link_handle);
@@ -138,7 +139,7 @@ void Store_client::copy_dir(File_system::Session   &fs,
 		}
 		
 		default:
-			PERR("skipping unexportable file %s", sub_src_path.c_str());
+			PERR("skipping irregular file %s", sub_src_path.c_str());
 		}
 	}
 }
@@ -318,21 +319,21 @@ Store_client::add_file(nix::Path const &src_path)
 	Vfs_handle::Guard vfs_guard(vfs_handle);
 
 	Genode::Allocator_avl fs_block_alloc(Genode::env()->heap());
-	Store_import::Connection fs(fs_block_alloc);
+	Store_ingest::Connection fs(fs_block_alloc);
 
 	nix::Path name = src_path.substr(src_path.rfind("/")+1, src_path.size()-1);
-	File_system::File_handle export_handle;
+	File_system::File_handle ingest_handle;
 	try {
 		File_system::Dir_handle root_handle = fs.dir("/", false);
 		File_system::Handle_guard root_guard(fs, root_handle);
 
-		export_handle = fs.file(root_handle, name.c_str(),
+		ingest_handle = fs.file(root_handle, name.c_str(),
 		                        File_system::WRITE_ONLY, true);
 	} catch (...) {
-		PERR("erro opening export file handle for ‘%s’", name.c_str());
+		PERR("error opening ingest file handle for ‘%s’", name.c_str());
 		throw;
 	}
-	File_system::Handle_guard fs_guard(fs, export_handle);
+	File_system::Handle_guard fs_guard(fs, ingest_handle);
 
 	File_system::Session::Tx::Source &source = *fs.tx();
 	size_t const max_packet_size = source.bulk_buffer_size() / 2;
@@ -343,7 +344,7 @@ Store_client::add_file(nix::Path const &src_path)
 
 		File_system::Packet_descriptor
 			packet(source.alloc_packet(curr_packet_size), 0,
-			       export_handle, File_system::Packet_descriptor::WRITE,
+			       ingest_handle, File_system::Packet_descriptor::WRITE,
 			       0, offset);
 		File_system::Packet_guard guard(source, packet);
 
@@ -362,7 +363,7 @@ Store_client::add_file(nix::Path const &src_path)
 		offset    += packet.length();
 	}
 
-	return finalize_import(fs, name.c_str());
+	return finalize_ingest(fs, name.c_str());
 }
 
 
@@ -419,24 +420,24 @@ string
 Store_client::add_dir(nix::Path const &src_path)
 {
 	Genode::Allocator_avl fs_block_alloc(Genode::env()->heap());
-	Store_import::Connection fs(fs_block_alloc);
+	Store_ingest::Connection fs(fs_block_alloc);
 
 	/* The index of the begining of the last path element. */
 	int path_offset = src_path.rfind("/");
 	Path dst_path = src_path.substr(path_offset, src_path.size());
 
-	File_system::Dir_handle export_dir;
+	File_system::Dir_handle ingest_dir;
 	try {
-		export_dir = fs.dir(dst_path.c_str(), true);
+		ingest_dir = fs.dir(dst_path.c_str(), true);
 	} catch (...) {
-		PERR("opening export directory handle for ‘%s'", dst_path.c_str());
+		PERR("opening ingest directory handle for ‘%s'", dst_path.c_str());
 		throw;
 	}
-	File_system::Handle_guard dir_guard(fs, export_dir);
+	File_system::Handle_guard dir_guard(fs, ingest_dir);
 
-	copy_dir(fs, export_dir, src_path, dst_path);
+	copy_dir(fs, ingest_dir, src_path, dst_path);
 
-	return finalize_import(fs, dst_path.c_str()+1);
+	return finalize_ingest(fs, dst_path.c_str()+1);
 }
 
 
@@ -450,6 +451,7 @@ Store_client::add_dir(nix::Path const &src_path)
 bool
 nix::Store_client::isValidPath(const nix::Path & path)
 {
+	PDBG("%s", path.c_str());
 	// TODO just fix the damn double slash already
 	for (int i = 0; i < path.size(); ++i)
 		if (path[i] != '/')
@@ -582,9 +584,11 @@ Path nix::Store_client::addTextToStore(const string & name, const string & text,
 		debug(format("adding text ‘%1%’ to the store") % name);
 
 		char const *name_str = name.c_str();
+		size_t remaining = text.size();
+		size_t offset = 0;
 
 		Genode::Allocator_avl fs_block_alloc(Genode::env()->heap());
-		Store_import::Connection fs(fs_block_alloc);
+		Store_ingest::Connection fs(fs_block_alloc);
 		
 		File_handle handle;
 		try {
@@ -592,22 +596,18 @@ Path nix::Store_client::addTextToStore(const string & name, const string & text,
 			Handle_guard root_guard(fs, root);
 			handle = fs.file(root, name_str, File_system::WRITE_ONLY, true);
 		} catch (...) {
-			PERR("opening export handle for ‘%s’", name.c_str());
+			PERR("opening ingest handle for ‘%s’", name.c_str());
 			throw;
 		}
 		Handle_guard file_guard(fs, handle);
+		fs.truncate(handle, remaining);
 
-		size_t count = text.size();
-		size_t offset = 0;
 
 		File_system::Session::Tx::Source &source = *fs.tx();
-		size_t const max_packet_size =
-			Genode::min(source.bulk_buffer_size() / 2, count);
+		size_t const max_packet_size = source.bulk_buffer_size() / 2;
 
-		size_t remaining_count = count;
-
-		while (remaining_count) {
-			size_t const curr_packet_size = Genode::min(remaining_count, max_packet_size);
+		while (remaining) {
+			size_t const curr_packet_size = Genode::min(remaining, max_packet_size);
 
 			File_system::Packet_descriptor
 				packet(source.alloc_packet(curr_packet_size), 0,
@@ -622,15 +622,88 @@ Path nix::Store_client::addTextToStore(const string & name, const string & text,
 			if (!packet.succeeded())
 				throw nix::Error(format("addTextToStore: writing `%1%' failed") % name);
 
-			offset          += packet.length();
-			remaining_count -= packet.length();
+			offset    += packet.length();
+			remaining -= packet.length();
 		}
 
 		//foreach (PathSet::const_iterator, i, references)
 		//	_store.add_reference(handle, ((nix::Path)*i).c_str());
-		return "/" + finalize_import(fs, name_str);
+		return "/" + finalize_ingest(fs, name_str);
 	}
 };
+
+
+Path nix::Store_client::addDataToStore(const string & name,
+                                       void *buf, size_t len,
+                                       bool repair)
+{
+	using namespace File_system;
+
+	char *p = (char *)buf;
+	size_t offset = 0;
+
+	{
+		::Hash::Blake2s hash;
+		uint8_t path_buf[max(size_t(MAX_NAME_LEN), hash.size())];
+		/* this size should be know at compile time */
+
+		hash.update((uint8_t*)buf, len);
+		hash.update((uint8_t*)"\0d\0", 3);
+		hash.update((uint8_t*)name.data(), name.size());
+
+		hash.digest(path_buf, sizeof(path_buf));
+		Store_hash::encode(path_buf, name.c_str(), sizeof(path_buf));
+		if (_builder.valid((char *)path_buf))
+			return Path((char *)path_buf);
+	}
+	{
+		debug(format("adding dataspace ‘%1%’ to the store") % name);
+
+		char const *name_str = name.c_str();
+
+		Genode::Allocator_avl fs_block_alloc(Genode::env()->heap());
+		Store_ingest::Connection fs(fs_block_alloc);
+		
+		File_handle handle;
+		try {
+			Dir_handle root = fs.dir("/", false);
+			Handle_guard root_guard(fs, root);
+			handle = fs.file(root, name_str, File_system::WRITE_ONLY, true);
+		} catch (...) {
+			PERR("failed to aquire ingest handle for ‘%s’", name.c_str());
+			throw;
+		}
+		Handle_guard file_guard(fs, handle);
+		fs.truncate(handle, len);
+
+		File_system::Session::Tx::Source &source = *fs.tx();
+		size_t const max_packet_size = source.bulk_buffer_size() / 2;
+
+		while (len) {
+			size_t const curr_packet_size = Genode::min(len, max_packet_size);
+
+			File_system::Packet_descriptor
+				packet(source.alloc_packet(curr_packet_size), 0,
+				       handle, File_system::Packet_descriptor::WRITE,
+				       curr_packet_size, offset);
+			Packet_guard packet_guard(source, packet);
+
+			Genode::memcpy(source.packet_content(packet), p+offset,
+			               curr_packet_size);
+
+			source.submit_packet(packet);
+			packet = source.get_acked_packet();
+			if (!packet.succeeded())
+				throw nix::Error(format("addTextToStore: writing `%1%' failed") % name);
+
+			offset += packet.length();
+			len    -= packet.length();
+		}
+
+		return "/" + finalize_ingest(fs, name_str);
+	}
+};
+
 
 		/* Export a store path, that is, create a NAR dump of the store
 			 path and append its references and its deriver.	Optionally, a

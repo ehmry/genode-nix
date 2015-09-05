@@ -1,5 +1,5 @@
 /*
- * \brief  File system for importing to store
+ * \brief  File system for ingesting to a store directory
  * \author Emery Hemingway
  * \date   2015-05-28
  */
@@ -12,19 +12,19 @@
  */
 
 /* Genode includes */
-#include <store_import/session.h>
+#include <store_ingest/session.h>
 #include <root/component.h>
 #include <base/allocator_avl.h>
 #include <os/server.h>
 #include <util/list.h>
 
-namespace Store_import {
+namespace Store_ingest {
 	class Root_component;
 	struct Main;
 }
 
 
-class Store_import::Root_component : public Genode::Root_component<Session_component>
+class Store_ingest::Root_component : public Genode::Root_component<Session_component>
 {
 	private:
 
@@ -70,11 +70,33 @@ class Store_import::Root_component : public Genode::Root_component<Session_compo
 		:
 			Genode::Root_component<Session_component>(&ep.rpc_ep(), &alloc),
 			_ep(ep)
-		{ }
+		{
+			/*
+			 * create a placeholder file to be sure we have write access
+			 */
+			Genode::Allocator_avl   fs_alloc(env()->heap());
+			File_system::Connection fs(fs_alloc, 32);
+
+			static char const *placeholder = ".store";
+
+			try {
+				Dir_handle root_handle = fs.dir("/", false);
+				Handle_guard guard(fs, root_handle);
+
+				try { fs.unlink(root_handle, placeholder); }
+				catch (Lookup_failed) { }
+
+				fs.close(fs.file(
+					root_handle, placeholder, READ_WRITE, true));
+			} catch (...) {
+				PERR("access issues at backend");
+				throw;
+			}
+		}
 };
 
 
-struct Store_import::Main
+struct Store_ingest::Main
 {
 	Server::Entrypoint &ep;
 
@@ -94,10 +116,10 @@ struct Store_import::Main
 
 namespace Server {
 
-	char const* name() { return "store_import_ep"; }
+	char const* name() { return "store_ingest_ep"; }
 
 	size_t stack_size() { return 4*1024*sizeof(long); }
 
-	void construct(Entrypoint &ep) { static Store_import::Main inst(ep); }
+	void construct(Entrypoint &ep) { static Store_ingest::Main inst(ep); }
 
 }
