@@ -4,8 +4,8 @@
  * \date   2015-03-13
  */
 
-#ifndef _BUILDER__BUILDER_H_
-#define _BUILDER__BUILDER_H_
+#ifndef _BUILDER__CHILD_H_
+#define _BUILDER__CHILD_H_
 
 /* Genode includes */
 #include <store_hash/encode.h>
@@ -22,7 +22,6 @@
 #include <cli_monitor/ram.h>
 #include <os/server.h>
 #include <util/avl_string.h>
-
 
 /* Local imports */
 #include "config.h"
@@ -249,24 +248,8 @@ class Builder::Child_policy : public Genode::Child_policy
 		Parent_service             _fs_input_service;
 		Store_fs_policy            _fs_output_policy;
 		Terminal_policy            _terminal_policy;
-		Parent_service             _parent_rom_service;
 		Parent_service             _parent_fs_service;
 		Service_registry           _parent_services;
-
-		/**
-		 * Rewrite a session argument if it matches the environment.
-		 * This is how file system requests are re-rooted.
-		 */
-		void rewrite_arg(char *args, size_t args_len, char const *arg)
-		{
-			char buf[File_system::MAX_PATH_LEN+2];
-			Genode::Arg_string::find_arg(args, arg).string(buf, sizeof(buf), "");
-			if (*buf)
-				if (char const *dest = _environment.lookup(buf)) {
-					snprintf(buf, sizeof(buf), "\"%s\"", dest);
-					Arg_string::set_arg(args, args_len, arg, buf);
-				}
-		}
 
 	public:
 
@@ -291,7 +274,6 @@ class Builder::Child_policy : public Genode::Child_policy
 			_fs_input_service("File_system"),
 			_fs_output_policy(_fs_input_service, ep),
 			_terminal_policy(_log, ep.rpc_ep()),
-			_parent_rom_service("ROM"),
 			_parent_fs_service("File_system")
 		{
 			/*
@@ -301,7 +283,8 @@ class Builder::Child_policy : public Genode::Child_policy
 			 * all executables and libraries should be in the store.
 			 */
 			static char const *service_names[] = {
-				"RM", "LOG", "CAP", "SIGNAL", "PD", "CPU", "Timer", 0
+				"CAP", "CPU", "LOG", "PD", "RAM", "RM", "ROM", "SIGNAL",
+				"Timer", 0
 			};
 			for (unsigned i = 0; service_names[i]; ++i)
 				_parent_services.insert(
@@ -327,91 +310,103 @@ class Builder::Child_policy : public Genode::Child_policy
 		{
 			if (strcmp(service, "ROM") == 0) {
 				char filename[File_system::MAX_PATH_LEN] = { 0 };
+				char label_buf[64];
+
 				Genode::Arg_string::find_arg(args, "filename").string(
 					filename, sizeof(filename), "");
 
-				if (*filename) {
-
-					if (strcmp(filename, "binary")) {
-						Arg_string::set_arg(args, args_len,
-						                    "filename", _drv.builder());
-
-					} else if (char const *dest = _environment.lookup(filename)) {
-						snprintf(filename, sizeof(filename), "\"%s\"", dest);
-						Arg_string::set_arg(args, args_len, "filename", filename);
-					}
-
-					/* XXX: invalidate this request, it does not match */
+				if (!*filename) {
+					PERR("invalid ROM request");
+					return;
 				}
 
-				char label_buf[Parent::Session_args::MAX_SIZE];
+				if (strcmp(filename, "binary") == 0) {
+					Arg_string::set_arg(args, args_len,
+					                    "filename", _drv.builder());
+
+				} else if (char const *dest = _environment.lookup(filename)) {
+					snprintf(filename, sizeof(filename), "\"%s\"", dest);
+
+					Arg_string::set_arg(args, args_len, "filename", filename);
+				} else {
+					PERR("impure ROM request for %s, invalidating", filename);
+					*args = '\0';
+				}
+
 				Genode::snprintf(label_buf, sizeof(label_buf),
 				                 "\"%s\"", rom_label());
 				Arg_string::set_arg(args, args_len, "label", label_buf);
-
-			} else if (strcmp(service, "File_system") == 0) {
-				rewrite_arg(args, args_len, "root");
-
-				char label_buf[Parent::Session_args::MAX_SIZE];
-				Genode::snprintf(label_buf, sizeof(label_buf),
-				                 "\"%s\"", fs_label());
-				Arg_string::set_arg(args, args_len, "label", label_buf);
-
-			} else {
-				char label_buf[Parent::Session_args::MAX_SIZE];
-				Arg_string::find_arg(args, "label").string(label_buf, sizeof(label_buf), "");
-
-				char value_buf[Parent::Session_args::MAX_SIZE];
-				Genode::snprintf(value_buf, sizeof(value_buf),
-				                 "\"%s%s%s\"",
-				                 _name,
-				                 Genode::strcmp(label_buf, "") == 0 ? "" : " -> ",
-				                 label_buf);
-
-				Arg_string::set_arg(args, args_len, "label", value_buf);
+				return;
 			}
+
+			if (strcmp(service, "File_system") == 0) {
+				char root[File_system::MAX_PATH_LEN] = { 0 };
+				Genode::Arg_string::find_arg(args, "root").string(
+					root, sizeof(root), "/");
+
+				if (strcmp(root, "/") != 0) {
+					char root[File_system::MAX_PATH_LEN];
+					char label_buf[64];
+
+					if (char const *dest = _environment.lookup(root)) {
+						snprintf(root, sizeof(root), "\"%s\"", dest);
+						Arg_string::set_arg(args, args_len, "root", root);
+					} else {
+						PERR("impure FS request for root %s, invalidating", root);
+						*args = '\0';
+					}
+
+					Genode::snprintf(label_buf, sizeof(label_buf),
+					                 "\"%s\"", fs_label());
+					Arg_string::set_arg(args, args_len, "label", label_buf);
+				}
+				return;
+
+			}
+
+			char label_buf[Parent::Session_args::MAX_SIZE];
+			Arg_string::find_arg(args, "label").string(label_buf, sizeof(label_buf), "");
+
+			char value_buf[Parent::Session_args::MAX_SIZE];
+			Genode::snprintf(value_buf, sizeof(value_buf),
+			                 "\"%s%s%s\"",
+			                 _name,
+			                 Genode::strcmp(label_buf, "") == 0 ? "" : " -> ",
+			                 label_buf);
+
+			Arg_string::set_arg(args, args_len, "label", value_buf);
 		}
 
 		Service *resolve_session_request(const char *service_name,
 		                                 const char *args)
 		{
 			Service *service = 0;
-			if (!strcmp("ROM", service_name)) {
-				char filename[File_system::MAX_PATH_LEN];
-				Arg_string::find_arg(args, "filename").string(filename, sizeof(filename), "");
+			if (!*args) /* invalidated by filter_session_args */
+				return service;
 
-				/* XXX
-				if (!_inputs.contains(filename))
-					PERR("violating purity with ROM %s", filename);
-				*/
-
-				return &_parent_rom_service;
-			}
-
-			if (!strcmp("File_system", service_name)) {
+			if (strcmp("File_system", service_name) == 0) {
 				char root[File_system::MAX_PATH_LEN];
-				Arg_string::find_arg(args, "root").string(root, sizeof(root), "");
+				Arg_string::find_arg(args, "root").string(root, sizeof(root), "/");
 
-				if (strcmp("/", root, sizeof(root)) == 0) {
+				if (strcmp("/", root, sizeof(root)) == 0)
 					/* this is a session for writing the derivation outputs */
 					return _fs_output_policy.service();
-				}
 
-				if (!_inputs.contains(root))
-					PERR("violating purity with FS root %s", root);
 				return &_parent_fs_service;
 			}
 
+			/*
+			 * This will go away, Noux will have to run under init
+			 * with its own terminal_log.
+			 */
 			if (strcmp("Terminal", service_name) == 0)
 				return _terminal_policy.service();
 
 			/* get it from the parent if it is allowed */
 			service = _parent_services.find(service_name);
 
-			if (!service) {
-				PERR("illegal %s request from %s", service_name, _name);
-				exit(-1);
-			}
+			if (!service)
+				PERR("%s request from %s rejected", service_name, _name);
 			return service;
 		}
 
@@ -419,14 +414,13 @@ class Builder::Child_policy : public Genode::Child_policy
 		{
 			if (exit_value) {
 				PERR("failure: %s", _name);
-				// TODO: write a store placeholder that marks failure
+				/* TODO: write a store placeholder that marks failure */
 			} else {
 				_fs_output_policy.finalize(_fs, _drv);
 			}
 
 			Signal_transmitter(_exit_sigh).submit();
 		}
-
 };
 
 

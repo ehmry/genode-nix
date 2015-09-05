@@ -23,9 +23,9 @@ class Builder::Store_fs_policy
 {
 	private:
 
-		Genode::Rpc_entrypoint         &_ep;
-		Store_ingest::Session_component _local_session;
-		File_system::Session_capability _local_session_cap;
+		Genode::Rpc_entrypoint          &_ep;
+		Store_ingest::Session_component  _local_session;
+		File_system::Session_capability  _local_session_cap;
 
 		struct Local_service : public Genode::Service
 		{
@@ -63,9 +63,7 @@ class Builder::Store_fs_policy
 			_local_session_cap(_ep.manage(&_local_session)),
 			_local_service(_local_session_cap),
 			_parent_service(fs_backend)
-		{
-			PDBG("constructed Store_fs_policy");
-		}
+		{ }
 
 		/**
 		 * Destructor
@@ -78,8 +76,7 @@ class Builder::Store_fs_policy
 		 *
 		 * If an output path listed in a derivation exists in the store
 		 * as a symlink, and the target of that symlink can be verified
-		 * by replicating the hashing process over its contents, then
-		 * that derivation output is verified.
+		 * by replicating the hashing process over its contents.
 		 */
 		void finalize(File_system::Session &fs, Derivation &drv)
 		{
@@ -116,13 +113,9 @@ class Builder::Store_fs_policy
 				PDBG("final path is %s", final);
 				out->path.value(link, sizeof(link));
 
-				// TODO:
-				// this is just a work around for an error in the Nix port
 				char *link_name = link;
 				while (*link_name == '/')
 					++link_name;
-
-				PWRN("creating symlink named %s, target %s", link_name, final);
 
 				try {
 					Symlink_handle link = fs.symlink(store_root, link_name, true);
