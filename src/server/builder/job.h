@@ -236,6 +236,9 @@ class Builder::Job_queue : private Genode::List<Job>
 				job = new (env()->heap())
 					Job(_ep, env()->heap(), _fs, drv_name);
 				insert(job);
+			} catch (Aterm::Parser::Malformed_element) {
+				PERR("canceling job with malformed derivation file at %s", drv_name);
+				throw Invalid_derivation();
 			} catch (...) {
 				PERR("error queueing %s", drv_name);
 				throw;
@@ -253,8 +256,10 @@ class Builder::Job_queue : private Genode::List<Job>
 
 			try {
 				for (Job *job = first(); job; job = job->next()) {
-					if (job->waiting())
+					if (job->waiting()) {
 						job->start(_fs, _cap, _ram); //, yield_response_sig_cap);
+						remove(job);
+					}
 					else if (!job->wanted())
 						job->end(0);
 				}

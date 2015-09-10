@@ -78,7 +78,7 @@ class Builder::Store_fs_policy
 		 * as a symlink, and the target of that symlink can be verified
 		 * by replicating the hashing process over its contents.
 		 */
-		void finalize(File_system::Session &fs, Derivation &drv)
+		bool finalize(File_system::Session &fs, Derivation &drv)
 		{
 			using namespace File_system;
 
@@ -101,12 +101,13 @@ class Builder::Store_fs_policy
 				 * If output symlinks are missing, then failure is implicit.
 				 */
 				PERR("%s not found at the ingest session", name);
-				return;
+				return false;
 			}
 
 			Dir_handle store_root = fs.dir("/", false);
 			Handle_guard root_guard(fs, store_root);
 
+			bool success = true;
 			for (Derivation::Output *out = drv.output(); out; out = out->next()) {
 				out->id.value(name, sizeof(name));
 				char const *final = _local_session.final(name);
@@ -121,16 +122,21 @@ class Builder::Store_fs_policy
 					Symlink_handle link = fs.symlink(store_root, link_name, true);
 					Handle_guard link_guard(fs, link);
 					write(fs, link, final, strlen(final));
+				} catch (Node_already_exists) {
+					PWRN("a symlink was already found at %s", link_name);
+					Symlink_handle link = fs.symlink(store_root, link_name, false);
+					Handle_guard link_guard(fs, link);
+					write(fs, link, final, strlen(final));
 				} catch (...) {
 					/*
 					 * A failure at this point does not
 					 * effect the validity of other outputs.
 					 */
 					PERR("error creating symlink %s to %s", link_name, final);
-					throw;
+					success = false;
 				}
-
 			}
+			return success;
 		}
 
 		Genode::Service *service() { return &_local_service; }

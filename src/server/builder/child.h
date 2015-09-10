@@ -27,7 +27,6 @@
 #include "config.h"
 #include "derivation.h"
 #include "fs_policy.h"
-#include "terminal_policy.h"
 
 namespace Builder {
 
@@ -183,10 +182,9 @@ class Builder::Child_policy : public Genode::Child_policy
 
 				~Inputs()
 				{
-					while (Avl_string_base *node = first()) {
-						remove(node);
-						Input *input = static_cast<Input *>(node);
-						delete(env()->heap(), input);
+					while(Input *input = (Input *)first()) {
+						remove(input);
+						destroy(env()->heap(), input);
 					}
 				}
 
@@ -223,10 +221,9 @@ class Builder::Child_policy : public Genode::Child_policy
 
 				~Environment()
 				{
-					while (Avl_string_base *node = first()) {
-						Mapping *map = static_cast<Mapping *>(node);
+					while(Mapping *map = (Mapping *)first()) {
 						remove(map);
-						delete(env()->heap(), map);
+						destroy(env()->heap(), map);
 					}
 				}
 
@@ -247,7 +244,6 @@ class Builder::Child_policy : public Genode::Child_policy
 		Resources                 &_resources;
 		Parent_service             _fs_input_service;
 		Store_fs_policy            _fs_output_policy;
-		Terminal_policy            _terminal_policy;
 		Parent_service             _parent_fs_service;
 		Service_registry           _parent_services;
 
@@ -273,7 +269,6 @@ class Builder::Child_policy : public Genode::Child_policy
 			_resources(resources),
 			_fs_input_service("File_system"),
 			_fs_output_policy(_fs_input_service, ep),
-			_terminal_policy(_log, ep.rpc_ep()),
 			_parent_fs_service("File_system")
 		{
 			/*
@@ -395,13 +390,6 @@ class Builder::Child_policy : public Genode::Child_policy
 				return &_parent_fs_service;
 			}
 
-			/*
-			 * This will go away, Noux will have to run under init
-			 * with its own terminal_log.
-			 */
-			if (strcmp("Terminal", service_name) == 0)
-				return _terminal_policy.service();
-
 			/* get it from the parent if it is allowed */
 			service = _parent_services.find(service_name);
 
@@ -412,12 +400,12 @@ class Builder::Child_policy : public Genode::Child_policy
 
 		void exit(int exit_value)
 		{
-			if (exit_value) {
+			if (exit_value == 0 && _fs_output_policy.finalize(_fs, _drv))
+				PINF("success: %s", _name);
+			else
 				PERR("failure: %s", _name);
-				/* TODO: write a store placeholder that marks failure */
-			} else {
-				_fs_output_policy.finalize(_fs, _drv);
-			}
+
+			/* TODO: write a store placeholder that marks a failure */
 
 			Signal_transmitter(_exit_sigh).submit();
 		}
