@@ -140,6 +140,13 @@ class nix::Store_client : public nix::StoreAPI
 		Path addTextToStore(const string & name, const string & s,
 				const PathSet & references, bool repair = false);
 
+		/**
+		 * Add raw data to the store.
+		 */
+		Path addDataToStore(const string & name,
+		                         void *buf, size_t len,
+		                         bool repair);
+
 		/* Export a store path, that is, create a NAR dump of the store
 			 path and append its references and its deriver.	Optionally, a
 			 cryptographic signature (created by OpenSSL) of the preceding

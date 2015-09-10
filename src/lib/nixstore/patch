@@ -7599,10 +7599,22 @@ index d3cbd1e..813bce3 100644
 +	return &_store;
  }
 diff --git a/src/libstore/store-api.hh b/src/libstore/store-api.hh
-index 3109f10..d764cdf 100644
+index 3109f10..0ae017d 100644
 --- a/src/libstore/store-api.hh
 +++ b/src/libstore/store-api.hh
-@@ -259,12 +259,6 @@ public:
+@@ -173,6 +173,11 @@ public:
+     virtual Path addTextToStore(const string & name, const string & s,
+         const PathSet & references, bool repair = false) = 0;
+ 
++    /* Add raw data to the store. */
++    virtual Path addDataToStore(const string & name,
++        void *buf, size_t len,
++        bool repair = false) = 0;
++
+     /* Export a store path, that is, create a NAR dump of the store
+        path and append its references and its deriver.  Optionally, a
+        cryptographic signature (created by OpenSSL) of the preceding
+@@ -259,12 +264,6 @@ public:
  
  /* !!! These should be part of the store API, I guess. */
  
@@ -7615,7 +7627,7 @@ index 3109f10..d764cdf 100644
  /* Extract the name part of the given store path. */
  string storePathToName(const Path & path);
      
-@@ -338,14 +332,8 @@ Path addPermRoot(StoreAPI & store, const Path & storePath,
+@@ -338,14 +337,8 @@ Path addPermRoot(StoreAPI & store, const Path & storePath,
  Paths topoSortPaths(StoreAPI & store, const PathSet & paths);
  
  
