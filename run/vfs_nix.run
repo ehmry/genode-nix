@@ -1,0 +1,233 @@
+#
+# Test of the Nix VFS plugin
+#
+
+source ${genode_dir}/repos/base/run/platform_drv.inc
+#
+# On OMAP4 where no PS/2 is available, we rely on USB HID
+#
+proc use_usb_input { } { return [expr ![have_spec ps2] && [have_spec usb]] }
+
+set build_components {
+	core init drivers/timer
+	drivers/framebuffer drivers/input
+	server/terminal server/ram_fs
+	server/vfs
+	server/store_ingest
+	server/builder
+	server/fs_rom
+	lib/vfs/nix
+
+	test/libports/ncurses
+	test/libports/nixexpr
+	noux/minimal lib/libc_noux
+}
+
+#
+# Build Noux packages only once
+#
+foreach pkg {bash coreutils} {
+	lappend_if [expr ![file exists bin/$pkg]] build_components noux-pkg/$pkg }
+
+source ${genode_dir}/repos/base/run/platform_drv.inc
+append_platform_drv_build_components
+
+build $build_components
+
+# strip all binaries prior archiving
+exec sh -c "find bin/bash/ bin/coreutils/ -type f | (xargs [cross_dev_prefix]strip || true) 2>/dev/null"
+
+exec tar cfv bin/bash.tar      -h -C bin/bash .
+exec tar cfv bin/coreutils.tar -h -C bin/coreutils .
+
+create_boot_directory
+
+append config {
+<config>
+	<parent-provides>
+		<service name="ROM"/>
+		<service name="RAM"/>
+		<service name="IRQ"/>
+		<service name="IO_MEM"/>
+		<service name="IO_PORT"/>
+		<service name="CAP"/>
+		<service name="PD"/>
+		<service name="RM"/>
+		<service name="CPU"/>
+		<service name="LOG"/>
+		<service name="SIGNAL"/>
+	</parent-provides>
+	<default-route>
+		<service name="ROM">
+			<if-arg key="label" value="store"/>
+			<child name="store_rom"/>
+		</service>
+		<any-service>
+			<child name="vfs"/>
+			<parent/> <any-child/>
+		</any-service>
+	</default-route>
+	<start name="timer">
+		<resource name="RAM" quantum="1M"/>
+		<provides><service name="Timer"/></provides>
+	</start>}
+
+append_platform_drv_config
+
+append_if [have_spec framebuffer] config {
+	<start name="fb_drv">
+		<resource name="RAM" quantum="4M"/>
+		<provides><service name="Framebuffer"/></provides>
+	</start>}
+
+append_if [have_spec ps2] config {
+	<start name="ps2_drv">
+		<resource name="RAM" quantum="1M"/>
+		<provides><service name="Input"/></provides>
+	</start> }
+
+append_if [have_spec gpio] config {
+	<start name="gpio_drv">
+		<resource name="RAM" quantum="4M"/>
+		<provides><service name="Gpio"/></provides>
+		<config/>
+	</start>}
+
+append_if [use_usb_input] config {
+	<start name="usb_drv">
+		<resource name="RAM" quantum="12M"/>
+		<provides><service name="Input"/></provides>
+		<config uhci="yes" ehci="yes" xhci="yes"> <hid/> </config>
+	</start> }
+
+append config {
+	<start name="vfs">
+		<binary name="vfs"/>
+		<resource name="RAM" quantum="32M"/>
+		<provides><service name="File_system"/></provides>
+		<config>
+			<vfs>
+				<dir name="noux-pkg">
+					<dir name="bash">
+						<tar name="bash.tar" />
+					</dir>
+					<dir name="coreutils">
+						<tar name="coreutils.tar" />
+					</dir>
+				</dir>
+				<dir name="store"> <ram quota="28M"/> </dir>
+			</vfs>
+			<policy label="store_ingest" writeable="yes" root="/store"/>
+			<policy label="builder" writeable="yes" root="/store"/>
+			<policy label="store_rom" root="/store"/>
+			<policy label="noux -> store" root="/store"/>
+			<policy label="" root="/"/>
+		</config>
+	</start>
+
+	<start name="store_rom">
+		<binary name="fs_rom"/>
+		<resource name="RAM" quantum="8M"/>
+		<provides><service name="ROM"/></provides>
+	</start>
+
+	<start name="store_ingest">
+		<resource name="RAM" quantum="2M"/>
+		<provides><service name="File_system"/></provides>
+	</start>
+
+	<start name="builder">
+		<resource name="RAM" quantum="32M"/>
+		<provides><service name="Builder"/></provides>
+	</start>
+
+	<start name="terminal">
+		<resource name="RAM" quantum="2M"/>
+		<provides><service name="Terminal"/></provides>
+		<config>
+			<keyboard layout="dvorak"/>
+			<font size="12" />
+		</config>
+	</start>
+
+	<start name="noux">
+		<resource name="RAM" quantum="64M"/>
+		<provides> <service name="File_system"/> </provides>
+		<route>
+			<service name="ROM">
+				<if-arg key="label" value="store"/>
+				<child name="store_rom"/>
+			</service>
+			<service name="File_system">
+				<if-arg key="label" value="ingest"/>
+				<child name="store_ingest"/>
+			</service>
+			<service name="File_system">
+				<child name="vfs"/>
+			</service>
+			<any-service>
+				<parent/> <any-child/>
+			</any-service>
+		</route>
+		<config>
+			<nix>
+				<vfs>
+					<dir name="corepkgs"> <tar name="nix_corepkgs.tar"/> </dir>
+					<rom name="noux-result.nix"/>
+					<fs/>
+				</vfs>
+				<search-path name="nix" path="/corepkgs"/>
+			</nix>
+			<fstab>
+				<fs root="/noux-pkg/bash" />
+				<fs root="/noux-pkg/coreutils" />
+				<dir name="store"> <fs/> </dir>
+				<dir name="result">
+					<nix file="/noux-result.nix"/>
+				</dir>
+				<dir name="dev"> <log/> </dir>
+			</fstab>
+			<start name="/bin/bash">
+				<env name="TERM" value="linux" />
+			</start>
+		</config>
+	</start>
+
+</config>
+}
+
+install_config $config
+
+set boot_modules {
+	core init ld.lib.so timer vfs fs_rom
+	libc.lib.so libm.lib.so stdcxx.lib.so libc_noux.lib.so
+	nixexpr.lib.so nixformat.lib.so nixmain.lib.so nixstore.lib.so nixutil.lib.so
+	vfs_nix.lib.so
+	builder store_ingest noux
+	nix_corepkgs.tar
+
+	terminal
+	libc.lib.so libm.lib.so libc_noux.lib.so ncurses.lib.so
+	bash.tar coreutils.tar
+	noux-result.nix
+}
+
+file copy -force [genode_dir]/repos/nix/expr/noux-result.nix bin
+
+# platform-specific modules
+lappend_if [have_spec       linux] boot_modules fb_sdl
+lappend_if [have_spec         ps2] boot_modules ps2_drv
+lappend_if [have_spec framebuffer] boot_modules fb_drv
+lappend_if [use_usb_input]         boot_modules usb_drv
+lappend_if [have_spec gpio]        boot_modules gpio_drv
+
+append_platform_drv_boot_modules
+
+build_boot_image $boot_modules
+
+if {[have_spec x86_64]} {
+	# bash.tar is really huge when built for x86_64
+	append qemu_args " -m 320 "
+}
+
+run_genode_until forever
