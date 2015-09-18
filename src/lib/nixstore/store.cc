@@ -1,18 +1,17 @@
 /*
- * \brief  Nix Store-api to Genode sessions glue
+ * \brief  Store-api interface to Genode component sessions
  * \author Emery Hemingway
  * \date   2015-05-27
  */
 
-/* Upstream Nix includes. */
-#include "nichts_store.h"
+/* Nix includes */
+#include "store.hh"
 #include <libutil/util.hh>
 
-/* Genode includes. */
+/* Genode includes */
 #include <store_ingest/connection.h>
 #include <store_hash/encode.h>
 #include <hash/blake2s.h>
-#include <vfs/file_system_factory.h>
 #include <os/config.h>
 #include <dataspace/client.h>
 #include <base/printf.h>
@@ -72,20 +71,18 @@ static nix::Path finalize_ingest(File_system::Session &fs, char const *name)
 }
 
 
-void Store_client::copy_dir(File_system::Session   &fs,
+void Store::copy_dir(File_system::Session   &fs,
                             File_system::Dir_handle ingest_dir,
                             nix::Path const        &src_path,
                             nix::Path const        &dst_path)
 {
-	("%s", src_path.c_str());
-
 	using namespace Vfs;
 	using namespace File_system;
 
 	Directory_service::Dirent dirent;
 
 	for (file_offset i = 0;; ++i) {
-		_vfs_root.dirent(src_path.c_str(), i, dirent);
+		_vfs_root.fs().dirent(src_path.c_str(), i, dirent);
 		if (dirent.type == Directory_service::DIRENT_TYPE_END) break;
 
 		Path sub_src_path = src_path + "/";
@@ -145,19 +142,19 @@ void Store_client::copy_dir(File_system::Session   &fs,
 }
 
 
-void Store_client::copy_file(File_system::Session    &fs,
+void Store::copy_file(File_system::Session    &fs,
                              File_system::File_handle file_handle,
                              Path const              &src_path,
                              Path const              &dst_path)
 {
 	using namespace Vfs;
 
-	Directory_service::Stat stat = status(src_path);
+	Directory_service::Stat stat = _vfs_root.status(src_path);
 	file_size remaining_count    = stat.size;
 	file_size seek_offset        = 0;
 
 	Vfs_handle *vfs_handle = nullptr;
-	if (_vfs_root.open(src_path.c_str(),
+	if (_vfs_root.fs().open(src_path.c_str(),
 	                   Directory_service::OPEN_MODE_RDONLY,
 	                   &vfs_handle) != Directory_service::OPEN_OK)
 		throw Error(format("getting handle on file ‘%1%’") % dst_path);
@@ -206,7 +203,7 @@ void Store_client::copy_file(File_system::Session    &fs,
 }
 
 
-void Store_client::copy_symlink(File_system::Session       &fs,
+void Store::copy_symlink(File_system::Session       &fs,
                                 File_system::Symlink_handle symlink_handle,
                                 nix::Path const            &src_path,
                                 nix::Path const            &dst_path)
@@ -226,8 +223,8 @@ void Store_client::copy_symlink(File_system::Session       &fs,
 
 	/* Read from the VFS to a packet. */
 	file_size vfs_count;
-	if (_vfs_root.readlink(src_path.c_str(), source.packet_content(packet),
-	                       packet.size(), vfs_count) != Directory_service::READLINK_OK)
+	if (_vfs_root.fs().readlink(src_path.c_str(), source.packet_content(packet),
+	                            packet.size(), vfs_count) != Directory_service::READLINK_OK)
 		throw Error(format("reading symlink ‘%1%’") % src_path);
 	packet.length(vfs_count);
 
@@ -241,7 +238,7 @@ void Store_client::copy_symlink(File_system::Session       &fs,
 
 
 void
-Store_client::hash_file(uint8_t *buf, nix::Path const &src_path)
+Store::hash_file(uint8_t *buf, nix::Path const &src_path)
 {
 	using namespace Vfs;
 
@@ -249,14 +246,14 @@ Store_client::hash_file(uint8_t *buf, nix::Path const &src_path)
 	file_size       remaining;
 	file_size       pos = 0;
 
-	Directory_service::Stat stat = status(src_path);
+	Directory_service::Stat stat = _vfs_root.status(src_path);
 
 	uint8_t data[Genode::min(4096, stat.size)];
 
 	Vfs_handle *vfs_handle = nullptr;
-	if (_vfs_root.open(src_path.c_str(),
-	                   Directory_service::OPEN_MODE_RDONLY,
-	                   &vfs_handle) != Directory_service::OPEN_OK)
+	if (_vfs_root.fs().open(src_path.c_str(),
+	                        Directory_service::OPEN_MODE_RDONLY,
+	                        &vfs_handle) != Directory_service::OPEN_OK)
 		throw Error(format("getting handle on file ‘%1%’") % src_path);
 	Vfs_handle::Guard vfs_guard(vfs_handle);
 
@@ -280,7 +277,7 @@ Store_client::hash_file(uint8_t *buf, nix::Path const &src_path)
 }
 
 void
-Store_client::hash_symlink(uint8_t *buf, nix::Path const &src_path)
+Store::hash_symlink(uint8_t *buf, nix::Path const &src_path)
 {
 	using namespace Vfs;
 
@@ -288,8 +285,8 @@ Store_client::hash_symlink(uint8_t *buf, nix::Path const &src_path)
 	uint8_t         data[File_system::MAX_PATH_LEN];
 
 	file_size vfs_count;
-	if (_vfs_root.readlink(src_path.c_str(), (char *)data,
-	                       sizeof(data), vfs_count) != Directory_service::READLINK_OK)
+	if (_vfs_root.fs().readlink(src_path.c_str(), (char *)data,
+	                            sizeof(data), vfs_count) != Directory_service::READLINK_OK)
 		throw Error(format("reading symlink ‘%1%’") % src_path);
 
 	hash.update(data, vfs_count);
@@ -303,18 +300,18 @@ Store_client::hash_symlink(uint8_t *buf, nix::Path const &src_path)
 }
 
 string
-Store_client::add_file(nix::Path const &src_path)
+Store::add_file(nix::Path const &src_path)
 {
 	using namespace Vfs;
 
-	Directory_service::Stat stat = status(src_path);
+	Directory_service::Stat stat = _vfs_root.status(src_path);
 	file_size remaining = stat.size;;
 	file_size offset    = 0;
 
 	Vfs_handle *vfs_handle = nullptr;
-	if (_vfs_root.open(src_path.c_str(),
-	                   Directory_service::OPEN_MODE_RDONLY,
-	                   &vfs_handle) != Directory_service::OPEN_OK)
+	if (_vfs_root.fs().open(src_path.c_str(),
+	                       Directory_service::OPEN_MODE_RDONLY,
+	                       &vfs_handle) != Directory_service::OPEN_OK)
 		throw Error(format("getting handle on file ‘%1%’") % src_path);
 	Vfs_handle::Guard vfs_guard(vfs_handle);
 
@@ -368,7 +365,7 @@ Store_client::add_file(nix::Path const &src_path)
 
 
 void
-Store_client::hash_dir(uint8_t *buf, nix::Path const &src_path)
+Store::hash_dir(uint8_t *buf, nix::Path const &src_path)
 {
 	using namespace Vfs;
 
@@ -379,7 +376,7 @@ Store_client::hash_dir(uint8_t *buf, nix::Path const &src_path)
 	std::map<string, unsigned char> entries;
 
 	for (file_offset i = 0;; ++i) {
-		_vfs_root.dirent(src_path.c_str(), i, dirent);
+		_vfs_root.fs().dirent(src_path.c_str(), i, dirent);
 		if (dirent.type == Directory_service::DIRENT_TYPE_END) break;
 
 		entries.insert(
@@ -417,7 +414,7 @@ Store_client::hash_dir(uint8_t *buf, nix::Path const &src_path)
 
 
 string
-Store_client::add_dir(nix::Path const &src_path)
+Store::add_dir(nix::Path const &src_path)
 {
 	Genode::Allocator_avl fs_block_alloc(Genode::env()->heap());
 	Store_ingest::Connection fs(fs_block_alloc);
@@ -449,7 +446,7 @@ Store_client::add_dir(nix::Path const &src_path)
  * Check whether a path is valid.
  */
 bool
-nix::Store_client::isValidPath(const nix::Path & path)
+nix::Store::isValidPath(const nix::Path & path)
 {
 	PDBG("%s", path.c_str());
 	// TODO just fix the damn double slash already
@@ -461,64 +458,64 @@ nix::Store_client::isValidPath(const nix::Path & path)
 
 /* Query which of the given paths is valid. */
 PathSet
-Store_client::queryValidPaths(const PathSet & paths) {
+Store::queryValidPaths(const PathSet & paths) {
 			NOT_IMP; return PathSet(); };
 
 /* Query the set of all valid paths. */
-PathSet nix::Store_client::queryAllValidPaths() {
+PathSet nix::Store::queryAllValidPaths() {
 	NOT_IMP; return PathSet(); };
 
 /* Query information about a valid path. */
-ValidPathInfo nix::Store_client::queryPathInfo(const Path & path) {
+ValidPathInfo nix::Store::queryPathInfo(const Path & path) {
 	NOT_IMP; return ValidPathInfo(); };
 
 /* Query the hash of a valid path. */
-nix::Hash nix::Store_client::queryPathHash(const Path & path) {
+nix::Hash nix::Store::queryPathHash(const Path & path) {
 	NOT_IMP; return Hash(); };
 
 /* Query the set of outgoing FS references for a store path.	The
 	 result is not cleared. */
-void nix::Store_client::queryReferences(const Path & path,
+void nix::Store::queryReferences(const Path & path,
 		PathSet & references) { NOT_IMP; };
 
 	/* Queries the set of incoming FS references for a store path.
 	 The result is not cleared. */
-void nix::Store_client::queryReferrers(const Path & path,
+void nix::Store::queryReferrers(const Path & path,
 		PathSet & referrers) { NOT_IMP; };
 
 /* Query the deriver of a store path.	Return the empty string if
 	 no deriver has been set. */
-Path nix::Store_client::queryDeriver(const Path & path) {
+Path nix::Store::queryDeriver(const Path & path) {
 	NOT_IMP; return Path(); };
 
 /* Return all currently valid derivations that have `path' as an
 	 output.	(Note that the result of `queryDeriver()' is the
 	 derivation that was actually used to produce `path', which may
 	 not exist anymore.) */
-PathSet nix::Store_client::queryValidDerivers(const Path & path) {
+PathSet nix::Store::queryValidDerivers(const Path & path) {
 	NOT_IMP; return PathSet(); };
 
 /* Query the outputs of the derivation denoted by `path'. */
-PathSet nix::Store_client::queryDerivationOutputs(const Path & path) {
+PathSet nix::Store::queryDerivationOutputs(const Path & path) {
 	NOT_IMP; return PathSet(); };
 
 /* Query the output names of the derivation denoted by `path'. */
-StringSet nix::Store_client::queryDerivationOutputNames(const Path & path) {
+StringSet nix::Store::queryDerivationOutputNames(const Path & path) {
 	NOT_IMP; return StringSet(); };
 
 /* Query the full store path given the hash part of a valid store
 	 path, or "" if the path doesn't exist. */
-Path nix::Store_client::queryPathFromHashPart(const string & hashPart) {
+Path nix::Store::queryPathFromHashPart(const string & hashPart) {
 	NOT_IMP; return Path(); };
 
 /* Query which of the given paths have substitutes. */
-PathSet nix::Store_client::querySubstitutablePaths(const PathSet & paths) {
+PathSet nix::Store::querySubstitutablePaths(const PathSet & paths) {
 	NOT_IMP; return PathSet(); };
 
 /* Query substitute info (i.e. references, derivers and download
 	 sizes) of a set of paths.	If a path does not have substitute
 	 info, it's omitted from the resulting ‘infos’ map. */
-void nix::Store_client::querySubstitutablePathInfos(const PathSet & paths,
+void nix::Store::querySubstitutablePathInfos(const PathSet & paths,
 	                                                SubstitutablePathInfos & infos) {
 	NOT_IMP; };
 
@@ -529,7 +526,7 @@ void nix::Store_client::querySubstitutablePathInfos(const PathSet & paths,
  * libutil/archive.hh).
  */
 Path
-Store_client::addToStore(const Path & srcPath,
+Store::addToStore(const Path & srcPath,
                          bool recursive, HashType hashAlgo,
                          PathFilter & filter, bool repair)
 {
@@ -539,7 +536,7 @@ Store_client::addToStore(const Path & srcPath,
 
 	char const *path_str = srcPath.c_str();
 
-	Directory_service::Stat stat = status(srcPath);
+	Directory_service::Stat stat = _vfs_root.status(srcPath);
 
 	uint8_t buf[Builder::MAX_NAME_LEN];
 
@@ -570,7 +567,7 @@ Store_client::addToStore(const Path & srcPath,
  * Like addToStore, but the contents written to the output path is
  * a regular file containing the given string.
  */
-Path nix::Store_client::addTextToStore(const string & name, const string & text,
+Path nix::Store::addTextToStore(const string & name, const string & text,
 	                                      const PathSet & references, bool repair)
 {
 	using namespace File_system;
@@ -633,7 +630,7 @@ Path nix::Store_client::addTextToStore(const string & name, const string & text,
 };
 
 
-Path nix::Store_client::addDataToStore(const string & name,
+Path nix::Store::addDataToStore(const string & name,
                                        void *buf, size_t len,
                                        bool repair)
 {
@@ -709,29 +706,29 @@ Path nix::Store_client::addDataToStore(const string & name,
 			 path and append its references and its deriver.	Optionally, a
 			 cryptographic signature (created by OpenSSL) of the preceding
 			 data is attached. */
-		void nix::Store_client::exportPath(const Path & path, bool sign,
+		void nix::Store::exportPath(const Path & path, bool sign,
 				Sink & sink) { NOT_IMP; };
 
 		/* Import a sequence of NAR dumps created by exportPaths() into
 			 the Nix store. */
-		Paths nix::Store_client::importPaths(bool requireSignature, Source & source) {
+		Paths nix::Store::importPaths(bool requireSignature, Source & source) {
 			NOT_IMP; return Paths(); };
 
 		/* Ensure that a path is valid.	If it is not currently valid, it
 			 may be made valid by running a substitute (if defined for the
 			 path). */
-		void nix::Store_client::ensurePath(const Path & path) { NOT_IMP; };
+		void nix::Store::ensurePath(const Path & path) { NOT_IMP; };
 
 		/* Add a store path as a temporary root of the garbage collector.
 			 The root disappears as soon as we exit. */
-		void nix::Store_client::addTempRoot(const Path & path) { NOT_IMP; };
+		void nix::Store::addTempRoot(const Path & path) { NOT_IMP; };
 
 		/* Add an indirect root, which is merely a symlink to `path' from
 			 /nix/var/nix/gcroots/auto/<hash of `path'>.	`path' is supposed
 			 to be a symlink to a store path.	The garbage collector will
 			 automatically remove the indirect root when it finds that
 			 `path' has disappeared. */
-		void nix::Store_client::addIndirectRoot(const Path & path) { NOT_IMP; };
+		void nix::Store::addIndirectRoot(const Path & path) { NOT_IMP; };
 
 		/* Acquire the global GC lock, then immediately release it.	This
 			 function must be called after registering a new permanent root,
@@ -751,28 +748,28 @@ Path nix::Store_client::addDataToStore(const string & name,
 				 permanent root and sees our's.
 
 			 In either case the permanent root is seen by the collector. */
-		void nix::Store_client::syncWithGC() { NOT_IMP; };
+		void nix::Store::syncWithGC() { NOT_IMP; };
 
 		/* Find the roots of the garbage collector.	Each root is a pair
 			 (link, storepath) where `link' is the path of the symlink
 			 outside of the Nix store that point to `storePath'.	*/
-		Roots nix::Store_client::findRoots() { NOT_IMP; return Roots(); };
+		Roots nix::Store::findRoots() { NOT_IMP; return Roots(); };
 
 		/* Perform a garbage collection. */
-		void nix::Store_client::collectGarbage(const GCOptions & options, GCResults & results) { NOT_IMP; };
+		void nix::Store::collectGarbage(const GCOptions & options, GCResults & results) { NOT_IMP; };
 
 		/* Return the set of paths that have failed to build.*/
-		PathSet nix::Store_client::queryFailedPaths() {
+		PathSet nix::Store::queryFailedPaths() {
 			NOT_IMP; return PathSet(); };
 
 		/* Clear the "failed" status of the given paths.	The special
 			 value `*' causes all failed paths to be cleared. */
-		void nix::Store_client::clearFailedPaths(const PathSet & paths) { NOT_IMP; };
+		void nix::Store::clearFailedPaths(const PathSet & paths) { NOT_IMP; };
 
 		/* Return a string representing information about the path that
 			 can be loaded into the database using `nix-store --load-db' or
 			 `nix-store --register-validity'. */
-		string nix::Store_client::makeValidityRegistration(const PathSet & paths,
+		string nix::Store::makeValidityRegistration(const PathSet & paths,
 				bool showDerivers, bool showHash) { NOT_IMP; return string(); }
 
 /**
@@ -780,4 +777,4 @@ Path nix::Store_client::addDataToStore(const string & name,
  * with the same contents.
   */
 void
-nix::Store_client::optimiseStore() { NOT_IMP; };
+nix::Store::optimiseStore() { NOT_IMP; };

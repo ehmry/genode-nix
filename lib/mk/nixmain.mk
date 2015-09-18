@@ -4,7 +4,7 @@ LIBS += stdcxx nixstore jitterentropy
 
 SRC_CC = shared.cc dummy.cc
 
-INC_DIR += $(NIX_DIR)/libutil $(NIX_DIR)/libstore
+INC_DIR += $(NIX_DIR)/libutil
 
 vpath %.cc $(NIX_DIR)/libmain
 vpath %.cc $(REP_DIR)/src/lib/nixmain

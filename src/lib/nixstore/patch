@@ -1,5 +1,5 @@
 diff --git a/src/libstore/build.cc b/src/libstore/build.cc
-index 08f44b3..b38f0ef 100644
+index 08f44b3..45187af 100644
 --- a/src/libstore/build.cc
 +++ b/src/libstore/build.cc
 @@ -4,66 +4,20 @@
@@ -11,7 +11,7 @@ index 08f44b3..b38f0ef 100644
  #include "archive.hh"
  #include "affinity.hh"
  
-+#include "nichts_store.h"
++#include "store.hh"
 +
  #include <map>
  #include <sstream>
@@ -232,7 +232,7 @@ index 08f44b3..b38f0ef 100644
      bool timedOut;
  
 -    LocalStore & store;
-+    Store_client & store;
++    Store & store;
 +
 +    Builder::Session & builder;
  
@@ -240,7 +240,7 @@ index 08f44b3..b38f0ef 100644
 +    Genode::Signal_receiver sig_rec;
  
 -    Worker(LocalStore & store);
-+    Worker(Store_client & store, Builder::Session & builder);
++    Worker(Store & store, Builder::Session & builder);
      ~Worker();
  
      /* Make a goal (with caching). */
@@ -2879,7 +2879,7 @@ index 08f44b3..b38f0ef 100644
  
  
 -Worker::Worker(LocalStore & store)
-+Worker::Worker(Store_client & store, Builder::Session & builder)
++Worker::Worker(Store & store, Builder::Session & builder)
      : store(store)
 +    , builder(builder)
  {
@@ -3223,7 +3223,7 @@ index 08f44b3..b38f0ef 100644
  
  
 -void LocalStore::buildPaths(const PathSet & drvPaths, BuildMode buildMode)
-+void Store_client::buildPaths(const PathSet & drvPaths, BuildMode buildMode)
++void Store::buildPaths(const PathSet & drvPaths, BuildMode buildMode)
  {
      startNest(nest, lvlDebug,
          format("building %1%") % showPaths(drvPaths));
@@ -4095,7 +4095,7 @@ index 7959a59..0000000
 -
 -}
 diff --git a/src/libstore/globals.cc b/src/libstore/globals.cc
-index c5abeee..04686aa 100644
+index c5abeee..e275219 100644
 --- a/src/libstore/globals.cc
 +++ b/src/libstore/globals.cc
 @@ -6,7 +6,6 @@
@@ -4117,10 +4117,30 @@ index c5abeee..04686aa 100644
      keepLog = true;
      compressLog = true;
      maxLogSize = 0;
-@@ -80,39 +75,6 @@ void Settings::processEnvironment()
+@@ -60,59 +55,11 @@ Settings::Settings()
+     gcKeepDerivations = true;
+     autoOptimiseStore = false;
+     envKeepDerivations = false;
+-    lockCPU = getEnv("NIX_AFFINITY_HACK", "1") == "1";
+     showTrace = false;
+     enableImportNative = false;
  }
  
  
+-void Settings::processEnvironment()
+-{
+-    nixStore = canonPath(getEnv("NIX_STORE_DIR", getEnv("NIX_STORE", NIX_STORE_DIR)));
+-    nixDataDir = canonPath(getEnv("NIX_DATA_DIR", NIX_DATA_DIR));
+-    nixLogDir = canonPath(getEnv("NIX_LOG_DIR", NIX_LOG_DIR));
+-    nixStateDir = canonPath(getEnv("NIX_STATE_DIR", NIX_STATE_DIR));
+-    nixDBPath = getEnv("NIX_DB_DIR", nixStateDir + "/db");
+-    nixConfDir = canonPath(getEnv("NIX_CONF_DIR", NIX_CONF_DIR));
+-    nixLibexecDir = canonPath(getEnv("NIX_LIBEXEC_DIR", NIX_LIBEXEC_DIR));
+-    nixBinDir = canonPath(getEnv("NIX_BIN_DIR", NIX_BIN_DIR));
+-    nixDaemonSocketFile = canonPath(nixStateDir + DEFAULT_SOCKET_PATH);
+-}
+-
+-
 -void Settings::loadConfFile()
 -{
 -    Path settingsFile = (format("%1%/%2%") % nixConfDir % "nix.conf").str();
@@ -4157,7 +4177,7 @@ index c5abeee..04686aa 100644
  void Settings::set(const string & name, const string & value)
  {
      settings[name] = value;
-@@ -157,9 +119,6 @@ void Settings::update()
+@@ -157,9 +104,6 @@ void Settings::update()
      _get(useSQLiteWAL, "use-sqlite-wal");
      _get(syncBeforeRegistering, "sync-before-registering");
      _get(useSubstitutes, "build-use-substitutes");
@@ -4167,7 +4187,7 @@ index c5abeee..04686aa 100644
      _get(keepLog, "build-keep-log");
      _get(compressLog, "build-compress-log");
      _get(maxLogSize, "build-max-log-size");
-@@ -170,25 +129,9 @@ void Settings::update()
+@@ -170,25 +114,9 @@ void Settings::update()
      _get(gcKeepDerivations, "gc-keep-derivations");
      _get(autoOptimiseStore, "auto-optimise-store");
      _get(envKeepDerivations, "env-keep-derivations");
@@ -4194,7 +4214,7 @@ index c5abeee..04686aa 100644
  
  
 diff --git a/src/libstore/globals.hh b/src/libstore/globals.hh
-index c17e10d..8eedc3e 100644
+index c17e10d..5f752e3 100644
 --- a/src/libstore/globals.hh
 +++ b/src/libstore/globals.hh
 @@ -3,7 +3,6 @@
@@ -4205,16 +4225,18 @@ index c17e10d..8eedc3e 100644
  
  
  namespace nix {
-@@ -17,8 +16,6 @@ struct Settings {
+@@ -15,10 +14,6 @@ struct Settings {
  
-     void processEnvironment();
+     Settings();
  
+-    void processEnvironment();
+-
 -    void loadConfFile();
 -
      void set(const string & name, const string & value);
  
      string get(const string & name, const string & def);
-@@ -142,21 +139,6 @@ struct Settings {
+@@ -142,21 +137,6 @@ struct Settings {
      /* Whether to use substitutes. */
      bool useSubstitutes;
  
@@ -4235,6 +4257,16 @@ index c17e10d..8eedc3e 100644
 -
      /* Whether to store build logs. */
      bool keepLog;
+ 
+@@ -193,9 +173,6 @@ struct Settings {
+        (to prevent them from being GCed). */
+     bool envKeepDerivations;
+ 
+-    /* Whether to lock the Nix client and worker to the same CPU. */
+-    bool lockCPU;
+-
+     /* Whether to show a stack trace if Nix evaluation fails. */
+     bool showTrace;
  
 diff --git a/src/libstore/local-store.cc b/src/libstore/local-store.cc
 deleted file mode 100644
@@ -6748,6 +6780,28 @@ index 9db37e8..00531c5 100644
          Path path = *i;
          Path lockPath = path + ".lock";
  
+diff --git a/src/libstore/references.cc b/src/libstore/references.cc
+index 521244a..9d1ef1a 100644
+--- a/src/libstore/references.cc
++++ b/src/libstore/references.cc
+@@ -80,7 +80,7 @@ void RefScanSink::operator () (const unsigned char * data, size_t len)
+ }
+ 
+ 
+-PathSet scanForReferences(const string & path,
++PathSet scanForReferences(Vfs_root &vfs, const string & path,
+     const PathSet & refs, HashResult & hash)
+ {
+     RefScanSink sink;
+@@ -103,7 +103,7 @@ PathSet scanForReferences(const string & path,
+     }
+ 
+     /* Look for the hashes in the NAR dump of the path. */
+-    dumpPath(path, sink);
++    dumpPath(vfs, path, sink);
+ 
+     /* Map the hashes found back to their store paths. */
+     PathSet found;
 diff --git a/src/libstore/remote-store.cc b/src/libstore/remote-store.cc
 deleted file mode 100644
 index d089132..0000000
@@ -7490,10 +7544,10 @@ index 98774c1..0000000
 -
 -}
 diff --git a/src/libstore/store-api.cc b/src/libstore/store-api.cc
-index d3cbd1e..813bce3 100644
+index d3cbd1e..3e14442 100644
 --- a/src/libstore/store-api.cc
 +++ b/src/libstore/store-api.cc
-@@ -16,47 +16,26 @@ GCOptions::GCOptions()
+@@ -16,62 +16,9 @@ GCOptions::GCOptions()
  }
  
  
@@ -7517,39 +7571,38 @@ index d3cbd1e..813bce3 100644
 -}
 -
 -
- Path toStorePath(const Path & path)
- {
+-Path toStorePath(const Path & path)
+-{
 -    if (!isInStore(path))
-+	PDBG("modified call");
-+    if (!store()->isValidPath(path))
-         throw Error(format("path ‘%1%’ is not in the Nix store") % path);
+-        throw Error(format("path ‘%1%’ is not in the Nix store") % path);
 -    Path::size_type slash = path.find('/', settings.nixStore.size() + 1);
 -    if (slash == Path::npos)
 -        return path;
 -    else
 -        return Path(path, 0, slash);
-+    return path;
- }
- 
- 
- Path followLinksToStore(const Path & _path)
- {
-+	PDBG("modified call");
-     Path path = absPath(_path);
+-}
+-
+-
+-Path followLinksToStore(const Path & _path)
+-{
+-    Path path = absPath(_path);
 -    while (!isInStore(path)) {
-+    while (!store()->isValidPath(path)) {
-         if (!isLink(path)) break;
-+        PDBG("%s is a symlink", path.c_str());
-         string target = readLink(path);
-         path = absPath(target, dirOf(path));
-     }
+-        if (!isLink(path)) break;
+-        string target = readLink(path);
+-        path = absPath(target, dirOf(path));
+-    }
 -    if (!isInStore(path))
-+    if (!store()->isValidPath(path))
-         throw Error(format("path ‘%1%’ is not in the Nix store") % path);
-     return path;
- }
-@@ -70,8 +49,7 @@ Path followLinksToStorePath(const Path & path)
- 
+-        throw Error(format("path ‘%1%’ is not in the Nix store") % path);
+-    return path;
+-}
+-
+-
+-Path followLinksToStorePath(const Path & path)
+-{
+-    return toStorePath(followLinksToStore(path));
+-}
+-
+-
  string storePathToName(const Path & path)
  {
 -    assertStorePath(path);
@@ -7558,7 +7611,7 @@ index d3cbd1e..813bce3 100644
  }
  
  
-@@ -169,8 +147,8 @@ Path makeStorePath(const string & type,
+@@ -169,8 +116,8 @@ Path makeStorePath(const string & type,
      const Hash & hash, const string & name)
  {
      /* e.g., "source:sha256:1abc...:/nix/store:foo.tar.gz" */
@@ -7569,7 +7622,21 @@ index d3cbd1e..813bce3 100644
  
      checkStoreName(name);
  
-@@ -308,24 +286,13 @@ void exportPaths(StoreAPI & store, const Paths & paths,
+@@ -200,11 +147,11 @@ Path makeFixedOutputPath(bool recursive,
+ }
+ 
+ 
+-std::pair<Path, Hash> computeStorePathForPath(const Path & srcPath,
++std::pair<Path, Hash> computeStorePathForPath(Vfs_root &vfs, const Path & srcPath,
+     bool recursive, HashType hashAlgo, PathFilter & filter)
+ {
+     HashType ht(hashAlgo);
+-    Hash h = recursive ? hashPath(ht, srcPath, filter).first : hashFile(ht, srcPath);
++    Hash h = recursive ? hashPath(vfs, ht, srcPath, filter).first : hashFile(vfs, ht, srcPath);
+     string name = baseNameOf(srcPath);
+     Path dstPath = makeFixedOutputPath(recursive, hashAlgo, h, name);
+     return std::pair<Path, Hash>(dstPath, h);
+@@ -308,24 +255,4 @@ void exportPaths(StoreAPI & store, const Paths & paths,
  }
  
  
@@ -7580,14 +7647,12 @@ index d3cbd1e..813bce3 100644
 -
 -namespace nix {
 -
- 
+-
 -std::shared_ptr<StoreAPI> store;
- 
-+#include "nichts_store.h"
- 
+-
+-
 -std::shared_ptr<StoreAPI> openStore(bool reserveSpace)
-+nix::StoreAPI *nix::store()
- {
+-{
 -    if (getEnv("NIX_REMOTE") == "")
 -        return std::shared_ptr<StoreAPI>(new LocalStore(reserveSpace));
 -    else
@@ -7595,11 +7660,9 @@ index d3cbd1e..813bce3 100644
 -}
 -
 -
-+	static Store_client _store(*vfs_root());
-+	return &_store;
- }
+-}
 diff --git a/src/libstore/store-api.hh b/src/libstore/store-api.hh
-index 3109f10..0ae017d 100644
+index 3109f10..f65e8bb 100644
 --- a/src/libstore/store-api.hh
 +++ b/src/libstore/store-api.hh
 @@ -173,6 +173,11 @@ public:
@@ -7614,7 +7677,7 @@ index 3109f10..0ae017d 100644
      /* Export a store path, that is, create a NAR dump of the store
         path and append its references and its deriver.  Optionally, a
         cryptographic signature (created by OpenSSL) of the preceding
-@@ -259,12 +264,6 @@ public:
+@@ -259,27 +264,11 @@ public:
  
  /* !!! These should be part of the store API, I guess. */
  
@@ -7627,7 +7690,31 @@ index 3109f10..0ae017d 100644
  /* Extract the name part of the given store path. */
  string storePathToName(const Path & path);
      
-@@ -338,14 +337,8 @@ Path addPermRoot(StoreAPI & store, const Path & storePath,
+ void checkStoreName(const string & name);
+ 
+-
+-/* Chop off the parts after the top-level store name, e.g.,
+-   /nix/store/abcd-foo/bar => /nix/store/abcd-foo. */
+-Path toStorePath(const Path & path);
+-
+-
+-/* Follow symlinks until we end up with a path in the Nix store. */
+-Path followLinksToStore(const Path & path);
+-
+-
+ /* Same as followLinksToStore(), but apply toStorePath() to the
+    result. */
+ Path followLinksToStorePath(const Path & path);
+@@ -300,7 +289,7 @@ Path makeFixedOutputPath(bool recursive,
+    it computes the store path to which srcPath is to be copied.
+    Returns the store path and the cryptographic hash of the
+    contents of srcPath. */
+-std::pair<Path, Hash> computeStorePathForPath(const Path & srcPath,
++std::pair<Path, Hash> computeStorePathForPath(Vfs_root &vfs, const Path & srcPath,
+     bool recursive = true, HashType hashAlgo = htSHA256,
+     PathFilter & filter = defaultPathFilter);
+ 
+@@ -338,16 +327,6 @@ Path addPermRoot(StoreAPI & store, const Path & storePath,
  Paths topoSortPaths(StoreAPI & store, const PathSet & paths);
  
  
@@ -7639,8 +7726,8 @@ index 3109f10..0ae017d 100644
 -/* Factory method: open the Nix database, either through the local or
 -   remote implementation. */
 -std::shared_ptr<StoreAPI> openStore(bool reserveSpace = true);
-+/* Retrieve the static store API object. */
-+StoreAPI *store();
- 
- 
+-
+-
  /* Display a set of paths in human-readable form (i.e., between quotes
+    and separated by commas). */
+ string showPaths(const PathSet & paths);

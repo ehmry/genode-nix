@@ -1,426 +1,236 @@
+/*
+ * \brief  Store-api interface to Genode component sessions
+ * \author Emery Hemingway
+ * \date   2015-05-27
+ */
 
-#pragma once
+#ifndef __NIXSTORE__STORE_H_
+#define __NIXSTORE__STORE_H_
+
+/* Nix includes */
+#include <nix/types.h>
+#include <util.hh>
 
 /* Genode includes */
-#include <base/allocator_avl.h>
-#include <file_system_session/connection.h>
-
-/* Stdcxx includes */
-#include <string>
-#include <list>
-#include <map>
-#include <unordered_set>
-
-/* Nix native includes */
-#include <nichts_store_session/nichts_store_session.h>
-#include "pathlocks.hh"
-
-/* Nix upstream includes */
+#include <libstore/derivations.hh>
 #include <libstore/store-api.hh>
-#include <libutil/hash.hh>
-#include <libutil/util.hh>
+#include <builder_session/connection.h>
+#include <file_system/util.h>
+#include <vfs/file_system.h>
+#include <base/allocator_avl.h>
+#include <base/lock.h>
+#include <os/path.h>
 
-
-class sqlite3;
-class sqlite3_stmt;
 
 
 namespace nix {
 
-extern string drvsLogDir;
+	bool willBuildLocally(const Derivation & drv);
+	void canonicaliseTimestampAndPermissions(std::string const&);
 
+	class Store;
 
-typedef std::map<Path, Path> Roots;
+}
 
+using namespace nix;
 
-struct Derivation;
-
-
-struct OptimiseStats
+/**
+ * Stores fulfils nix::StoreAPI but imports files to the store
+ * using a file system session and builds with a Builder sessions.
+ */
+class nix::Store : public nix::StoreAPI
 {
-    unsigned long filesLinked;
-    unsigned long long bytesFreed;
-    unsigned long long blocksFreed;
-    OptimiseStats()
-    {
-        filesLinked = 0;
-        bytesFreed = blocksFreed = 0;
-    }
-};
-
-
-struct RunningSubstituter
-{
-    Path program;
-    AutoCloseFD to, from, error;
-    bool disabled;
-    RunningSubstituter() : disabled(false) { };
-};
-
-
-typedef std::map<Path, SubstitutablePathInfo> SubstitutablePathInfos;
-
-
-typedef list<ValidPathInfo> ValidPathInfos;
-
-
-/* Wrapper object to close the SQLite database automatically. */
-struct SQLite
-{
-    sqlite3 * db;
-    SQLite() { db = 0; }
-    ~SQLite();
-    operator sqlite3 * () { return db; }
-};
-
-
-/* Wrapper object to create and destroy SQLite prepared statements. */
-struct SQLiteStmt
-{
-    sqlite3 * db;
-    sqlite3_stmt * stmt;
-    unsigned int curArg;
-    SQLiteStmt() { stmt = 0; }
-    void create(sqlite3 * db, const string & s);
-    void reset();
-    ~SQLiteStmt();
-    operator sqlite3_stmt * () { return stmt; }
-    void bind(const string & value);
-    void bind(int value);
-    void bind64(long long value);
-    void bind();
-};
-
-
-class Store : public StoreAPI
-{
-
 	private:
 
-		Genode::Allocator_avl    _fs_block_alloc;
-		File_system::Connection  _fs;
+		Vfs_root            &_vfs_root;
+		Builder::Connection  _builder;
+		Genode::Lock         _packet_lock;
 
-		void create_dir(const char *path);
+		void hash_dir(uint8_t *buf, nix::Path const &src_path);
+		void hash_file(uint8_t *buf, nix::Path const &src_path);
+		void hash_symlink(uint8_t *buf, nix::Path const &src_path);
 
-		/**
-		 * Open a directory, creating missing parents if specified.
-		 */
-		File_system::Dir_handle dir_of(const char *path, bool create = false);
+		void copy_dir(File_system::Session   &fs,
+		              File_system::Dir_handle handle,
+		              nix::Path const         &src_path,
+		              nix::Path const         &dst_path);
 
-		/**
-		 * Create a symlink using an atomic operation.
-		 */
-		void create_symlink(const char *link, const char *target);
+		void copy_file(File_system::Session  &fs,
+		               File_system::File_handle handle,
+		               nix::Path const         &src_path,
+		               nix::Path const         &dst_path);
 
-		bool path_exists(char const *path);
-		bool path_exists(std::string const &path);
+		void copy_symlink(File_system::Session       &fs,
+		                  File_system::Symlink_handle symlink_handle,
+		                  nix::Path const            &src_path,
+		                  nix::Path const            &dst_path);
 
-		std::string read_file(char const *path);
-		std::string read_file(std::string const &path);
-
-		void write_file(Path &path, std::string);
-		void write_file(const char *path, std::string);
-
-		void delete_path(char const *path);
-		void delete_path(std::string const &path);
-
-		Path readStorePath(Source & from);
-		PathSet readStorePaths(Source & from);
-
-private:
-    typedef std::map<Path, RunningSubstituter> RunningSubstituters;
-    RunningSubstituters runningSubstituters;
-
-    Path linksDir;
+		string add_file(const nix::Path &path);
+		string add_dir(const nix::Path &path);
 
 	public:
 
-		/* Initialise the local store, upgrading the schema if necessary. */
-		Store(bool reserve_space = true, bool read_only = false);
+		Store(Vfs_root &vfs_root)
+		: _vfs_root(vfs_root) { };
 
-   	 	~Store();
+		/************************
+		 ** StoreAPI interface **
+		 ************************/
+
+		/* Check whether a path is valid. */ 
+		bool isValidPath(const nix::Path & path);
+
+		/* Query which of the given paths is valid. */
+		PathSet queryValidPaths(const PathSet & paths);
+
+		/* Query the set of all valid paths. */
+		PathSet queryAllValidPaths();
+
+		/* Query information about a valid path. */
+		ValidPathInfo queryPathInfo(const nix::Path & path);
+
+		/* Query the hash of a valid path. */ 
+		Hash queryPathHash(const nix::Path & path);
+
+		/* Query the set of outgoing FS references for a store path.	The
+			 result is not cleared. */
+		void queryReferences(const nix::Path & path,
+				PathSet & references);
+
+		/* Queries the set of incoming FS references for a store path.
+			 The result is not cleared. */
+		void queryReferrers(const nix::Path & path,
+				PathSet & referrers);
+
+		/* Query the deriver of a store path.	Return the empty string if
+			 no deriver has been set. */
+		nix::Path queryDeriver(const nix::Path & path);
+
+		/* Return all currently valid derivations that have `path' as an
+			 output.	(Note that the result of `queryDeriver()' is the
+			 derivation that was actually used to produce `path', which may
+			 not exist anymore.) */
+		PathSet queryValidDerivers(const nix::Path & path);
+
+		/* Query the outputs of the derivation denoted by `path'. */
+		PathSet queryDerivationOutputs(const nix::Path & path);
+
+		/* Query the output names of the derivation denoted by `path'. */
+		StringSet queryDerivationOutputNames(const nix::Path & path);
+
+		/* Query the full store path given the hash part of a valid store
+			 path, or "" if the path doesn't exist. */
+		nix::Path queryPathFromHashPart(const string & hashPart);
+
+		/* Query which of the given paths have substitutes. */
+		PathSet querySubstitutablePaths(const PathSet & paths);
+
+		/* Query substitute info (i.e. references, derivers and download
+			 sizes) of a set of paths.	If a path does not have substitute
+			 info, it's omitted from the resulting ‘infos’ map. */
+		void querySubstitutablePathInfos(const PathSet & paths,
+				SubstitutablePathInfos & infos);
+
+		Path addToStore(const Path & srcPath,
+				bool recursive = true, HashType hashAlgo = htSHA256,
+				PathFilter & filter = defaultPathFilter, bool repair = false);
 
 		/**
-		 * Open and return a file handle that closes itself on destruction.
+		 * Like addToStore, but the contents written to the output path is
+		 * a regular file containing the given string.
 		 */
+		Path addTextToStore(const string & name, const string & s,
+				const PathSet & references, bool repair = false);
+
+		/**
+		 * Add raw data to the store.
+		 */
+		Path addDataToStore(const string & name,
+		                         void *buf, size_t len,
+		                         bool repair);
+
+		/* Export a store path, that is, create a NAR dump of the store
+			 path and append its references and its deriver.	Optionally, a
+			 cryptographic signature (created by OpenSSL) of the preceding
+			 data is attached. */
+		void exportPath(const nix::Path & path, bool sign,
+				Sink & sink);
+
+		/* Import a sequence of NAR dumps created by exportPaths() into
+			 the Nix store. */
+		Paths importPaths(bool requireSignature, Source & source);
+
+		/* For each path, if it's a derivation, build it.	Building a
+			 derivation means ensuring that the output paths are valid.	If
+			 they are already valid, this is a no-op.	Otherwise, validity
+			 can be reached in two ways.	First, if the output paths is
+			 substitutable, then build the path that way.	Second, the
+			 output paths can be created by running the builder, after
+			 recursively building any sub-derivations. For inputs that are
+			 not derivations, substitute them. */
+		void buildPaths(const PathSet & paths, BuildMode buildMode = bmNormal);
+
+		/* Ensure that a path is valid.	If it is not currently valid, it
+			 may be made valid by running a substitute (if defined for the
+			 path). */
+		void ensurePath(const nix::Path & path);
+
+		/* Add a store path as a temporary root of the garbage collector.
+			 The root disappears as soon as we exit. */
+		void addTempRoot(const nix::Path & path);
+
+		/* Add an indirect root, which is merely a symlink to `path' from
+			 /nix/var/nix/gcroots/auto/<hash of `path'>.	`path' is supposed
+			 to be a symlink to a store path.	The garbage collector will
+			 automatically remove the indirect root when it finds that
+			 `path' has disappeared. */
+		void addIndirectRoot(const nix::Path & path);
+
+		/* Acquire the global GC lock, then immediately release it.	This
+			 function must be called after registering a new permanent root,
+			 but before exiting.	Otherwise, it is possible that a running
+			 garbage collector doesn't see the new root and deletes the
+			 stuff we've just built.	By acquiring the lock briefly, we
+			 ensure that either:
+
+			 - The collector is already running, and so we block until the
+				 collector is finished.	The collector will know about our
+				 *temporary* locks, which should include whatever it is we
+				 want to register as a permanent lock.
+
+			 - The collector isn't running, or it's just started but hasn't
+				 acquired the GC lock yet.	In that case we get and release
+				 the lock right away, then exit.	The collector scans the
+				 permanent root and sees our's.
+
+			 In either case the permanent root is seen by the collector. */
+		void syncWithGC();
+
+		/* Find the roots of the garbage collector.	Each root is a pair
+			 (link, storepath) where `link' is the path of the symlink
+			 outside of the Nix store that point to `storePath'.	*/
+		Roots findRoots();
+
+		/* Perform a garbage collection. */
+		void collectGarbage(const GCOptions & options, GCResults & results);
+
+		/* Return the set of paths that have failed to build.*/
+		PathSet queryFailedPaths();
+
+		/* Clear the "failed" status of the given paths.	The special
+			 value `*' causes all failed paths to be cleared. */
+		void clearFailedPaths(const PathSet & paths);
+
+		/* Return a string representing information about the path that
+			 can be loaded into the database using `nix-store --load-db' or
+			 `nix-store --register-validity'. */
+		string makeValidityRegistration(const PathSet & paths,
+				bool showDerivers, bool showHash);
+
+		/* Optimise the disk space usage of the Nix store by hard-linking files
+			 with the same contents. */
+		void optimiseStore();
 
-		void close_handle(File_system::Node_handle &);
-
-    /* Implementations of abstract store API methods. */
-
-    bool isValidPath(const Path & path);
-
-    PathSet queryValidPaths(const PathSet & paths);
-
-    PathSet queryAllValidPaths();
-
-    ValidPathInfo queryPathInfo(const Path & path);
-
-    Hash queryPathHash(const Path & path);
-
-    void queryReferences(const Path & path, PathSet & references);
-
-    void queryReferrers(const Path & path, PathSet & referrers);
-
-    Path queryDeriver(const Path & path);
-
-    PathSet queryValidDerivers(const Path & path);
-
-    PathSet queryDerivationOutputs(const Path & path);
-
-    StringSet queryDerivationOutputNames(const Path & path);
-
-    Path queryPathFromHashPart(const string & hashPart);
-
-    PathSet querySubstitutablePaths(const PathSet & paths);
-
-    void querySubstitutablePathInfos(const Path & substituter,
-        PathSet & paths, SubstitutablePathInfos & infos);
-
-    void querySubstitutablePathInfos(const PathSet & paths,
-        SubstitutablePathInfos & infos);
-
-    Path addToStore(const Path & srcPath,
-        bool recursive = true, HashType hashAlgo = htSHA256,
-        PathFilter & filter = defaultPathFilter, bool repair = false);
-
-    /* Like addToStore(), but the contents of the path are contained
-       in `dump', which is either a NAR serialisation (if recursive ==
-       true) or simply the contents of a regular file (if recursive ==
-       false). */
-    Path addToStoreFromDump(const string & dump, const string & name,
-        bool recursive = true, HashType hashAlgo = htSHA256, bool repair = false);
-
-    Path addTextToStore(const string & name, const string & s,
-        const PathSet & references, bool repair = false);
-
-    void exportPath(const Path & path, bool sign,
-        Sink & sink);
-
-    Paths importPaths(bool requireSignature, Source & source);
-
-    void buildPaths(const PathSet & paths, Nichts_store::Mode mode);
-    void buildPaths(const PathSet & paths, nix::BuildMode);
-
-	void buildPath(const char *path, Nichts_store::Mode mode);
-
-    void ensurePath(const Path & path);
-
-    void addTempRoot(const Path & path);
-
-    void addIndirectRoot(const Path & path);
-
-    void syncWithGC();
-
-    Roots findRoots();
-
-    void collectGarbage(const GCOptions & options, GCResults & results);
-
-    /* Optimise the disk space usage of the Nix store by hard-linking
-       files with the same contents. */
-    void optimiseStore(OptimiseStats & stats);
-
-    /* Generic variant of the above method.  */
-    void optimiseStore();
-
-    /* Optimise a single store path. */
-    void optimisePath(const Path & path);
-
-    /* Check the integrity of the Nix store.  Returns true if errors
-       remain. */
-    bool verifyStore(bool checkContents, bool repair);
-
-    /* Register the validity of a path, i.e., that `path' exists, that
-       the paths referenced by it exists, and in the case of an output
-       path of a derivation, that it has been produced by a successful
-       execution of the derivation (or something equivalent).  Also
-       register the hash of the file system contents of the path.  The
-       hash must be a SHA-256 hash. */
-    void registerValidPath(const ValidPathInfo & info);
-
-    void registerValidPaths(const ValidPathInfos & infos);
-
-    /* Register that the build of a derivation with output `path' has
-       failed. */
-    void registerFailedPath(const Path & path);
-
-    /* Query whether `path' previously failed to build. */
-    bool hasPathFailed(const Path & path);
-
-    PathSet queryFailedPaths();
-
-    void clearFailedPaths(const PathSet & paths);
-
-    void vacuumDB();
-
-    /* Repair the contents of the given path by redownloading it using
-       a substituter (if available). */
-    void repairPath(const Path & path);
-
-    /* Check whether the given valid path exists and has the right
-       contents. */
-    bool pathContentsGood(const Path & path);
-
-    void markContentsGood(const Path & path);
-
-    void setSubstituterEnv();
-
-	/* Read a derivation, after ensuring its existence through
-   	 * ensurePath().
-	 */
-	Derivation derivationFromPath(const Path & drvPath);
-
-	/* Place in `paths' the set of all store paths in the file system
-	 * closure of `storePath'; that is, all paths than can be directly or
-	 * indirectly reached from it.  `paths' is not cleared.  If
-	 * `flipDirection' is true, the set of paths that can reach
-	 * `storePath' is returned; that is, the closures under the
-	 * `referrers' relation instead of the `references' relation is
-	 * returned. 
-	 */
-	void computeFSClosure(const Path & path, PathSet & paths,
-	                      bool flipDirection = false,
-	                      bool includeOutputs = false,
-	                      bool includeDerivers = false);
-
-	/* Throw an exception if `path' is not directly in the Nix store. */
-	void assertStorePath(const Path & path);
-
-	bool isInStore(const Path & path);
-	bool isStorePath(const Path & path);
-
-private:
-
-    Path schemaPath;
-
-    /* Lock file used for upgrading. */
-    AutoCloseFD globalLock;
-
-    /* The SQLite database object. */
-    SQLite db;
-
-    /* Some precompiled SQLite statements. */
-    SQLiteStmt stmtRegisterValidPath;
-    SQLiteStmt stmtUpdatePathInfo;
-    SQLiteStmt stmtAddReference;
-    SQLiteStmt stmtQueryPathInfo;
-    SQLiteStmt stmtQueryReferences;
-    SQLiteStmt stmtQueryReferrers;
-    SQLiteStmt stmtInvalidatePath;
-    SQLiteStmt stmtRegisterFailedPath;
-    SQLiteStmt stmtHasPathFailed;
-    SQLiteStmt stmtQueryFailedPaths;
-    SQLiteStmt stmtClearFailedPath;
-    SQLiteStmt stmtAddDerivationOutput;
-    SQLiteStmt stmtQueryValidDerivers;
-    SQLiteStmt stmtQueryDerivationOutputs;
-    SQLiteStmt stmtQueryPathFromHashPart;
-
-    /* Cache for pathContentsGood(). */
-    std::map<Path, bool> pathContentsGoodCache;
-
-    bool didSetSubstituterEnv;
-
-    /* The file to which we write our temporary roots. */
-    Path fnTempRoots;
-    AutoCloseFD fdTempRoots;
-
-    int getSchema();
-
-    void openDB(bool create);
-
-    void makeStoreWritable();
-
-    unsigned long long queryValidPathId(const Path & path);
-
-    unsigned long long addValidPath(const ValidPathInfo & info, bool checkOutputs = true);
-
-    void addReference(unsigned long long referrer, unsigned long long reference);
-
-    void appendReferrer(const Path & from, const Path & to, bool lock);
-
-    void rewriteReferrers(const Path & path, bool purge, PathSet referrers);
-
-    void invalidatePath(const Path & path);
-
-    /* Delete a path from the Nix store. */
-    void invalidatePathChecked(const Path & path);
-
-    void verifyPath(const Path & path, const PathSet & store,
-        PathSet & done, PathSet & validPaths, bool repair, bool & errors);
-
-    void updatePathInfo(const ValidPathInfo & info);
-
-    PathSet queryValidPathsOld();
-    ValidPathInfo queryPathInfoOld(const Path & path);
-
-    struct GCState;
-
-    void deleteGarbage(GCState & state, const Path & path);
-
-    void tryToDelete(GCState & state, const Path & path);
-
-    bool canReachRoot(GCState & state, PathSet & visited, const Path & path);
-
-    void deletePathRecursive(GCState & state, const Path & path);
-
-    bool isActiveTempFile(const GCState & state,
-        const Path & path, const string & suffix);
-
-    int openGCLock(LockType lockType);
-
-    void removeUnusedLinks(const GCState & state);
-
-    void startSubstituter(const Path & substituter,
-        RunningSubstituter & runningSubstituter);
-
-    string getLineFromSubstituter(RunningSubstituter & run);
-
-    template<class T> T getIntLineFromSubstituter(RunningSubstituter & run);
-
-    Path createTempDirInStore();
-
-    Path importPath(bool requireSignature, Source & source);
-
-    void checkDerivationOutputs(const Path & drvPath, const Derivation & drv);
-
-    typedef std::unordered_set<ino_t> InodeHash;
-
-    InodeHash loadInodeHash();
-    Strings readDirectoryIgnoringInodes(const Path & path, const InodeHash & inodeHash);
-    void optimisePath_(OptimiseStats & stats, const Path & path, InodeHash & inodeHash);
-
-    // Internal versions that are not wrapped in retry_sqlite.
-    bool isValidPath_(const Path & path);
-    void queryReferrers_(const Path & path, PathSet & referrers);
 };
 
-
-typedef std::pair<dev_t, ino_t> Inode;
-
-
-/* "Fix", or canonicalise, the meta-data of the files in a store path
-   after it has been built.  In particular:
-   - the last modification date on each file is set to 1 (i.e.,
-     00:00:01 1/1/1970 UTC)
-   - the permissions are set of 444 or 555 (i.e., read-only with or
-     without execute permission; setuid bits etc. are cleared)
-   - the owner and group are set to the Nix user and group, if we're
-     running as root. */
-void canonicalisePathMetaData(const Path & path, uid_t fromUid);
-
-void canonicaliseTimestampAndPermissions(const Path & path);
-
-
-MakeError(PathInUse, Error);
-
-struct LocalStore {
-	LocalStore(bool);
-	void invalidatePathChecked(const Path & path);
-};
-
-struct RemoteStore {
-	RemoteStore();
-};
-
-}
+#endif
