@@ -315,17 +315,20 @@ class Builder::Child_policy : public Genode::Child_policy
 					return;
 				}
 
+				/* XXX: make a set_string method on Arg_string:: */
 				if (strcmp(filename, "binary") == 0) {
+					snprintf(filename, sizeof(filename), "\"%s\"", _drv.builder());
 					Arg_string::set_arg(args, args_len,
-					                    "filename", _drv.builder());
+					                    "filename", filename);
 
 				} else if (char const *dest = _environment.lookup(filename)) {
 					snprintf(filename, sizeof(filename), "\"%s\"", dest);
 
 					Arg_string::set_arg(args, args_len, "filename", filename);
 				} else {
-					PERR("impure ROM request for %s, invalidating", filename);
+					PERR("impure ROM request for '%s'", filename);
 					*args = '\0';
+					return;
 				}
 
 				Genode::snprintf(label_buf, sizeof(label_buf),
@@ -347,8 +350,9 @@ class Builder::Child_policy : public Genode::Child_policy
 						snprintf(root, sizeof(root), "\"%s\"", dest);
 						Arg_string::set_arg(args, args_len, "root", root);
 					} else {
-						PERR("impure FS request for root %s, invalidating", root);
+						PERR("impure FS request for '%s'", root);
 						*args = '\0';
+						return;
 					}
 
 					Genode::snprintf(label_buf, sizeof(label_buf),
@@ -356,7 +360,6 @@ class Builder::Child_policy : public Genode::Child_policy
 					Arg_string::set_arg(args, args_len, "label", label_buf);
 				}
 				return;
-
 			}
 
 			char label_buf[Parent::Session_args::MAX_SIZE];
@@ -376,7 +379,7 @@ class Builder::Child_policy : public Genode::Child_policy
 		                                 const char *args)
 		{
 			Service *service = 0;
-			if (!*args) /* invalidated by filter_session_args */
+			if (!(*args)) /* invalidated by filter_session_args */
 				return service;
 
 			if (strcmp("File_system", service_name) == 0) {
