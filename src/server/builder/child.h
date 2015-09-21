@@ -336,27 +336,22 @@ class Builder::Child_policy : public Genode::Child_policy
 			}
 
 			if (strcmp(service, "File_system") == 0) {
-				char root[File_system::MAX_PATH_LEN] = { 0 };
+				char root[File_system::MAX_PATH_LEN] = { '\0' };
+
 				Genode::Arg_string::find_arg(args, "root").string(
 					root, sizeof(root), "/");
 
-				if (strcmp(root, "/") != 0) {
-					char root[File_system::MAX_PATH_LEN];
-					char label_buf[64];
+				if ((strcmp(root, "", sizeof(root))==0) || (strcmp(root, "/", sizeof(root))==0))
+					return;
 
-					if (char const *dest = _environment.lookup(root)) {
-						snprintf(root, sizeof(root), "\"%s\"", dest);
-						Arg_string::set_arg(args, args_len, "root", root);
-					} else {
-						PERR("impure FS request for '%s'", root);
-						*args = '\0';
-						return;
-					}
-
-					Genode::snprintf(label_buf, sizeof(label_buf),
-					                 "\"%s\"", fs_label());
-					Arg_string::set_arg(args, args_len, "label", label_buf);
+				if (char const *dest = _environment.lookup(root)) {
+					snprintf(root, sizeof(root), "\"%s\"", dest);
+					Arg_string::set_arg(args, args_len, "root", root);
+				} else {
+					PERR("impure FS request for '%s'", root);
+					*args = '\0';
 				}
+
 				return;
 			}
 
