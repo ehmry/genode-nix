@@ -135,7 +135,7 @@ class Store_ingest::File : public Hash_node
 
 				while (_offset < size) {
 					File_system::Packet_descriptor
-						packet(raw_packet, 0, handle,
+						packet(raw_packet, handle,
 						       File_system::Packet_descriptor::READ,
 						       count, _offset);
 

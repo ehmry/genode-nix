@@ -57,7 +57,7 @@ static nix::Path finalize_ingest(File_system::Session &fs, char const *name)
 	File_system::Session::Tx::Source &source = *fs.tx();
 
 	File_system::Packet_descriptor
-		packet(source.alloc_packet(MAX_NAME_LEN), 0,
+		packet(source.alloc_packet(MAX_NAME_LEN),
 		       link_handle, File_system::Packet_descriptor::READ,
 		       MAX_NAME_LEN, 0);
 	Packet_guard packet_guard(source, packet);
@@ -172,7 +172,6 @@ void Store::copy_file(File_system::Session    &fs,
 
 		File_system::Packet_descriptor
 			packet(source.alloc_packet(curr_packet_size),
-			       0,
 			       file_handle,
 			       File_system::Packet_descriptor::WRITE,
 			       0, seek_offset);
@@ -215,7 +214,6 @@ void Store::copy_symlink(File_system::Session       &fs,
 	collect_acknowledgements(source);
 	File_system::Packet_descriptor
 		packet(source.alloc_packet(File_system::MAX_PATH_LEN),
-		       0,
 		       symlink_handle,
 		       File_system::Packet_descriptor::WRITE,
 		       0, 0);
@@ -340,7 +338,7 @@ Store::add_file(nix::Path const &src_path)
 		size_t const curr_packet_size = Genode::min(remaining, max_packet_size);
 
 		File_system::Packet_descriptor
-			packet(source.alloc_packet(curr_packet_size), 0,
+			packet(source.alloc_packet(curr_packet_size),
 			       ingest_handle, File_system::Packet_descriptor::WRITE,
 			       0, offset);
 		File_system::Packet_guard guard(source, packet);
@@ -607,7 +605,7 @@ Path nix::Store::addTextToStore(const string & name, const string & text,
 			size_t const curr_packet_size = Genode::min(remaining, max_packet_size);
 
 			File_system::Packet_descriptor
-				packet(source.alloc_packet(curr_packet_size), 0,
+				packet(source.alloc_packet(curr_packet_size),
 				       handle, File_system::Packet_descriptor::WRITE,
 				       curr_packet_size, offset);
 			Packet_guard packet_guard(source, packet);
@@ -680,7 +678,7 @@ Path nix::Store::addDataToStore(const string & name,
 			size_t const curr_packet_size = Genode::min(len, max_packet_size);
 
 			File_system::Packet_descriptor
-				packet(source.alloc_packet(curr_packet_size), 0,
+				packet(source.alloc_packet(curr_packet_size),
 				       handle, File_system::Packet_descriptor::WRITE,
 				       curr_packet_size, offset);
 			Packet_guard packet_guard(source, packet);

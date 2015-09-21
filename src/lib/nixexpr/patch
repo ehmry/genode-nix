@@ -1,3 +1,17 @@
+diff --git a/src/libexpr/attr-path.cc b/src/libexpr/attr-path.cc
+index fdd61a5..389c1d4 100644
+--- a/src/libexpr/attr-path.cc
++++ b/src/libexpr/attr-path.cc
+@@ -37,9 +37,6 @@ Value * findAlongAttrPath(EvalState & state, const string & attrPath,
+ {
+     Strings tokens = parseAttrPath(attrPath);
+ 
+-    Error attrError =
+-        Error(format("attribute selection path ‘%1%’ does not match expression") % attrPath);
+-
+     Value * v = &vIn;
+ 
+     foreach (Strings::iterator, i, tokens) {
 diff --git a/src/libexpr/common-opts.cc b/src/libexpr/common-opts.cc
 index c03d720..52cfeb0 100644
 --- a/src/libexpr/common-opts.cc
@@ -33,7 +47,7 @@ index c275f7b..3191758 100644
          } catch (Error & e) {
              v.type = tThunk;
 diff --git a/src/libexpr/eval.cc b/src/libexpr/eval.cc
-index 298f6a3..e7baacb 100644
+index 298f6a3..a3a1a3b 100644
 --- a/src/libexpr/eval.cc
 +++ b/src/libexpr/eval.cc
 @@ -8,9 +8,6 @@
@@ -68,7 +82,20 @@ index 298f6a3..e7baacb 100644
      , sOutPath(symbols.create("outPath"))
      , sDrvPath(symbols.create("drvPath"))
      , sType(symbols.create("type"))
-@@ -234,11 +235,19 @@ EvalState::EvalState(const Strings & _searchPath)
+@@ -190,6 +191,12 @@ EvalState::EvalState(const Strings & _searchPath)
+     , staticBaseEnv(false, 0)
+     , baseEnvDispl(0)
+ {
++    /*
++     * Set the verbosity global variable here, not the right thing to do,
++     * but easier than rewriting logging for now.
++     */
++    verbosity = Verbosity(config_node.attribute_value("verbosity", 0U));
++
+     nrEnvs = nrValuesInEnvs = nrValues = nrListElems = 0;
+     nrAttrsets = nrAttrsInAttrsets = nrOpUpdates = nrOpUpdateValuesCopied = 0;
+     nrListConcats = nrPrimOpCalls = nrFunctionCalls = 0;
+@@ -234,11 +241,19 @@ EvalState::EvalState(const Strings & _searchPath)
      }
  #endif
  
@@ -93,7 +120,7 @@ index 298f6a3..e7baacb 100644
  
      createBaseEnv();
  }
-@@ -548,7 +557,7 @@ void EvalState::evalFile(const Path & path, Value & v)
+@@ -548,7 +563,7 @@ void EvalState::evalFile(const Path & path, Value & v)
          return;
      }
  
@@ -102,7 +129,7 @@ index 298f6a3..e7baacb 100644
      if ((i = fileEvalCache.find(path2)) != fileEvalCache.end()) {
          v = i->second;
          return;
-@@ -1307,7 +1316,7 @@ string EvalState::coerceToString(const Pos & pos, Value & v, PathSet & context,
+@@ -1307,7 +1322,7 @@ string EvalState::coerceToString(const Pos & pos, Value & v, PathSet & context,
      }
  
      if (v.type == tPath) {
@@ -111,7 +138,7 @@ index 298f6a3..e7baacb 100644
          return copyToStore ? copyPathToStore(context, path) : path;
      }
  
-@@ -1357,8 +1366,8 @@ string EvalState::copyPathToStore(PathSet & context, const Path & path)
+@@ -1357,8 +1372,8 @@ string EvalState::copyPathToStore(PathSet & context, const Path & path)
          dstPath = srcToStore[path];
      else {
          dstPath = settings.readOnlyMode
@@ -122,7 +149,7 @@ index 298f6a3..e7baacb 100644
          srcToStore[path] = dstPath;
          printMsg(lvlChatty, format("copied source ‘%1%’ -> ‘%2%’")
              % path % dstPath);
-@@ -1372,8 +1381,8 @@ string EvalState::copyPathToStore(PathSet & context, const Path & path)
+@@ -1372,8 +1387,8 @@ string EvalState::copyPathToStore(PathSet & context, const Path & path)
  Path EvalState::coerceToPath(const Pos & pos, Value & v, PathSet & context)
  {
      string path = coerceToString(pos, v, context, false, false);
@@ -133,7 +160,7 @@ index 298f6a3..e7baacb 100644
      return path;
  }
  
-@@ -1455,16 +1464,12 @@ void EvalState::printStats()
+@@ -1455,16 +1470,12 @@ void EvalState::printStats()
      Verbosity v = showStats ? lvlInfo : lvlDebug;
      printMsg(v, "evaluation statistics:");
  

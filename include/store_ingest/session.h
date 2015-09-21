@@ -61,12 +61,12 @@ class Store_ingest::Session_component : public Session_rpc_object
 			 * The prefix and mask is used to return handles for virtual
 			 * symlink nodes that do not exist on the backend.
 			 */
-			MAX_ROOT_NODES = 64,
+			MAX_ROOT_NODES     = 64,
 			ROOT_HANDLE_PREFIX = 0x80,
-			ROOT_HANDLE_MASK = 0X3F
+			ROOT_HANDLE_MASK   = 0X3F
 		};
 
-		Genode::Allocator_guard              _alloc;
+		Genode::Allocator_guard  _alloc;
 
 		/**
 		 * This registry maps node handles from the backend
@@ -225,6 +225,9 @@ class Store_ingest::Session_component : public Session_rpc_object
 
 		} _root_registry;
 
+		/* a queue of packets from the client awaiting backend processing */
+		File_system::Packet_descriptor _packet_queue[TX_QUEUE_SIZE];
+
 		Genode::Allocator_avl                _fs_tx_alloc;
 		File_system::Connection              _fs;
 		Signal_rpc_member<Session_component> _process_packet_dispatcher;
@@ -236,8 +239,10 @@ class Store_ingest::Session_component : public Session_rpc_object
 		 ******************************/
 
 		/**
-		 * Process and incoming client packet, return true if a
-		 * response is needed from the backend.
+		 * Process and incoming client packet
+		 *
+		 * Return true if a response is needed from the backend, otherwise
+		 * the packet may be immediately acknowledged as failed.
 		 */
 		bool _process_incoming_packet(File_system::Packet_descriptor &theirs)
 		{
@@ -248,10 +253,7 @@ class Store_ingest::Session_component : public Session_rpc_object
 				void *content = tx_sink()->packet_content(theirs);
 				size_t const length = theirs.length();
 
-				if (!content || (length > theirs.size()))
-					return false;
-
-				if (!length)
+				if (!content || (length > theirs.size()) || (length == 0))
 					return false;
 
 				/* Reading the entries of the root is not allowed. */
@@ -269,6 +271,7 @@ class Store_ingest::Session_component : public Session_rpc_object
 							theirs.succeeded(true);
 						}
 					}
+					/* we read from a local virtual node, so ack immediately */
 					return false;
 				}
 
@@ -280,7 +283,6 @@ class Store_ingest::Session_component : public Session_rpc_object
 				File_system::Packet_descriptor::Opcode op = theirs.operation();
 				File_system::Packet_descriptor
 					ours(source.alloc_packet(length),
-					     (Packet_ref *)&theirs,
 					     theirs.handle(),
 					     op,
 					     length,
@@ -305,25 +307,46 @@ class Store_ingest::Session_component : public Session_rpc_object
 			return false;
 		}
 
-		void _process_outgoing_packet()
+		/**
+		 * Read responses from the backend, return true if a client packet was matched
+		 *
+		 * We only hash packet conent after is acknowledged by the backend.
+		 * We do not trust our client not to change the content of its shared
+		 * packet buffer, but we have no choice but to trust the storage backend.
+		 */
+		bool _process_outgoing_packet(int const queue_size)
 		{
 			using namespace File_system;
 
 			File_system::Session::Tx::Source &source = *_fs.tx();
 			File_system::Packet_descriptor ours = source.get_acked_packet();
-			File_system::Packet_descriptor *theirs =
-				(File_system::Packet_descriptor *)ours.ref();
-			if (!theirs) {
-				PERR("null packet reference received from the backend");
-				source.release_packet(ours);
+
+			int i = 0;
+			for (; i < queue_size; ++i) {
+				if (
+				    (_packet_queue[i].handle()    == ours.handle()) &&
+				    (_packet_queue[i].operation() == ours.operation()) &&
+					(_packet_queue[i].position()  == ours.position())) {
+					break;
+				}
 			}
+			if (i == queue_size) {
+				/* this is bad, now there is probably a stuck packet */
+				PERR("unknown packet received from the backend");
+				source.release_packet(ours);
+				return false;
+			}
+
+			File_system::Packet_descriptor &theirs = _packet_queue[i];
 
 			size_t length = ours.length();
 			uint8_t const *content = (uint8_t const *)source.packet_content(ours);
 			if (!content) {
-				tx_sink()->acknowledge_packet(*theirs);
+				tx_sink()->acknowledge_packet(theirs);
 				source.release_packet(ours);
-				return;
+				/* invalidate the packet in the queue */
+				memset(&_packet_queue[i], 0xFF, sizeof(File_system::Packet_descriptor));
+				return true;
 			}
 
 			switch (ours.operation()) {
@@ -343,23 +366,32 @@ class Store_ingest::Session_component : public Session_rpc_object
 					}
 					break;
 				case File_system::Packet_descriptor::READ:
-					void *dst = tx_sink()->packet_content(*theirs);
+					void *dst = tx_sink()->packet_content(theirs);
 					if (!dst)
 						length = 0;
 
 					memcpy(dst, content, length);
 					break;
 			}
-			theirs->length(length);
-			theirs->succeeded(length > 0);
+			theirs.length(length);
+			theirs.succeeded(length > 0);
 
-			tx_sink()->acknowledge_packet(*theirs);
+			tx_sink()->acknowledge_packet(theirs);
 			source.release_packet(ours);
+			/* invalidate the packet in the queue */
+			memset(&_packet_queue[i], 0xFF, sizeof(File_system::Packet_descriptor));
+			return true;
 		}
 
 		/**
 		 * Called by signal dispatcher, executed in the context of the main
 		 * thread (not serialized with the RPC functions).
+		 *
+		 * There is as fair amount of logic here to deal with multiple incoming
+		 * packets from the client, but in practice there is always just
+		 * one. Nix is purely functional so in theory we can process elements
+		 * of the concrete syntax tree and import objects in parallel, but for
+		 * now its one thread and one packet at a time.
 		 */
 		void _process_packets(unsigned)
 		{
@@ -369,26 +401,39 @@ class Store_ingest::Session_component : public Session_rpc_object
 			 */
 			Lock::Guard packet_guard(_packet_lock);
 
-			File_system::Packet_descriptor queue[TX_QUEUE_SIZE];
+			/*
+			 * Queue what client packets are available then
+			 * send our own packets to the backend.
+			 */
 			int n = 0;
-
 			while (tx_sink()->packet_avail() && n < TX_QUEUE_SIZE) {
-				queue[n] = tx_sink()->get_packet();
-				if (_process_incoming_packet(queue[n])) ++n;
-				else {
-					tx_sink()->acknowledge_packet(queue[n]);
-				}
+				_packet_queue[n] = tx_sink()->get_packet();
+				if (_process_incoming_packet(_packet_queue[n])) 
+					++n;
+				else /* no action required at backend */
+					tx_sink()->acknowledge_packet(_packet_queue[n]);
 			}
 
 			/*
 			 * Block while waiting on the server.
-			 * Not great but I haven't found an
-			 * altenative to creating another
-			 * thread.
 			 */
+			int outstanding = n;
+			while (n)
+				if (_process_outgoing_packet(n--))
+					--outstanding;
 
-			while (n--)
-				_process_outgoing_packet();
+			/*
+			 * Acknowledge client packets that could not be matched
+			 * to backend packets, this should never happen.
+			 */
+			while (outstanding--)
+				for (int i = 0; i < TX_QUEUE_SIZE; ++i)
+					if (_packet_queue[i].handle().valid()) {
+						tx_sink()->acknowledge_packet(_packet_queue[i]);
+						memset(&_packet_queue[i], 0xFF,
+						       sizeof(File_system::Packet_descriptor));
+						break;
+					}
 		}
 
 	public:
@@ -409,6 +454,10 @@ class Store_ingest::Session_component : public Session_rpc_object
 				_process_packet_dispatcher(ep, *this, &Session_component::_process_packets)
 			{
 				_root_handle = _fs.dir("/", false);
+
+				/* invalidate the packet queue */
+				memset(&_packet_queue, 0xFF,
+				       sizeof(File_system::Packet_descriptor)*TX_QUEUE_SIZE);
 
 				/*
 				 * Register '_process_packets' dispatch function as signal

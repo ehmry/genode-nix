@@ -90,7 +90,6 @@ class Builder::Child_policy : public Genode::Child_policy
 	private:
 
 		char const                *_name;
-		Log_connection             _log;
 		File_system::Session      &_fs;
 		Derivation                &_drv;
 
@@ -260,7 +259,6 @@ class Builder::Child_policy : public Genode::Child_policy
 		             Signal_context_capability exit_sigh)
 		:
 			_name(name),
-			_log(name),
 			_fs(fs),
 			_drv(drv),
 			_inputs(drv),
