@@ -1,31 +1,22 @@
 /*
- * \brief  Builder child
+ * \brief  Job queuing
  * \author Emery Hemingway
  * \date   2015-03-13
  *
- * ********************
- * ** Ram allocation **
- * ********************
- *
- * TODO:
- * Each job's quota is [R / (2^N)] where
- * R is total ram available and N is the
- * position of the job in the queue.
- *
- * TODO: put a timeout on jobs
+ * Jobs are queued in simplex FIFO to keep the implementation
+ * simple. By not defining an internal resource sharing policy,
+ * the user is free to set affinity, memory, and priority
+ * policy externally in the parent or in a job multiplexer.
  */
 
 #ifndef _BUILDER__JOB_H_
 #define _BUILDER__JOB_H_
 
 /* Genode includes */
-#include <cli_monitor/ram.h>
-#include <cap_session/connection.h>
 #include <os/signal_rpc_dispatcher.h>
 #include <base/lock.h>
-#include <util/list.h>
+#include <util/fifo.h>
 #include <util/string.h>
-
 
 /* Nix includes */
 #include <nix/types.h>
@@ -40,7 +31,7 @@ namespace Builder {
 
 	class Listener;
 	class Job;
-	class Job_queue;
+	class Jobs;
 
 };
 
@@ -63,211 +54,267 @@ class Builder::Listener : public Genode::List<Listener>::Element
 		Listener(Genode::Signal_context_capability sigh)
 		: _sigh(sigh) { }
 
-		void notify()
+		~Listener()
 		{
 			if (_sigh.valid())
 				Signal_transmitter(_sigh).submit();
-		}
+		};
 
 		bool valid() const { return _sigh.valid(); }
 };
 
 
 /**
- * A job wraps a child and informs its listeners
- * of the childs completion.
- *
- * This or some other class ought be abstracted
- * for Noux jobs, native jobs, and fetch jobs.
+ * A job wraps a child and informs its
+ * listeners of the childs completion.
  */
-class Builder::Job : public List<Job>::Element
+class Builder::Job : public Fifo<Job>::Element
 {
+	/* Job is thread-safe if methods are only exported to Jobs */
+	friend Jobs;
+
 	private:
 
 		char                   _name[MAX_NAME_LEN];
 		Derivation             _drv;
-		Lock                   _lock;
 		List<Listener>         _listeners;
-		Signal_rpc_member<Job> _exit_dispatcher;
 		Child                 *_child;
 
-	public:
+	protected:
 
-		/**
-		 * Constructor
-		 * \param ep   entrypoint for child exit signal dispatcher
-		 * \param drv  derivation that this job realizes
-		 */
-		Job(Server::Entrypoint &ep,
-
-		    /* Arguments for Derivation. */
-		    Genode::Allocator    *alloc,
-		    File_system::Session &store_fs,
-		    char           const *name)
-		:
-			_drv(alloc, store_fs, name),
-			_exit_dispatcher(ep, *this, &Job::end),
-			_child(0)
-		{
-			strncpy(_name, name, sizeof(_name));
-		};
-
-		/**
-		 * Handler for the child exit.
-		 */
-		void end(unsigned)
-		{
-			Lock::Guard guard(_lock);
-
-			if (_child) {
-				destroy(Genode::env()->heap(), _child);
-				_child = 0;
-			}
-			/*
-			 * Notify the listeners then remove them.
-			 */
-			for (Listener *curr = _listeners.first(); curr; curr = curr->next()) {
-				curr->notify();
-				destroy(Genode::env()->heap(), curr);
-			}
-		}
-
-		~Job() { end(0); }
-
-		char const *name() { return _name; };
+		bool match(char const *name) {
+			return Genode::strcmp(_name, name, MAX_NAME_LEN) == 0; }
 
 		void add_listener(Genode::Signal_context_capability sigh)
 		{
-			Genode::Lock::Guard guard(_lock);
-
 			Listener *listener = new (Genode::env()->heap())
 				Listener(sigh);
 			_listeners.insert(listener);
 		}
 
-		bool waiting()
+		bool abandoned()
 		{
-			Genode::Lock::Guard guard(_lock);
-
-			if (_child)
-				return false;
-
 			for (Listener *l = _listeners.first(); l; l = l->next()) {
 				if (l->valid())
-					return true;
+					return false;
 				else
-					_listeners.remove(l);
 					destroy(Genode::env()->heap(), l);
 			}
-			return false;
+			return true;
 		}
 
-		bool wanted()
+		void start(File_system::Session              &fs,
+		           Genode::Signal_context_capability  exit_sigh)
 		{
-			Genode::Lock::Guard guard(_lock);
-
-			for (Listener *l = _listeners.first(); l; l = l->next()) {
-				if (l->valid())
-					return true;
-				else
-					_listeners.remove(l);
-					destroy(Genode::env()->heap(), l);
-			}
-			return false;
-		}
-
-		void start(File_system::Session &fs,
-		           Cap_session          &cap,
-		           Ram                  &ram)
-		{
-			if (_child) return;
-
 			_child = new (Genode::env()->heap())
-				Child(_name, fs, cap, _drv, ram, _exit_dispatcher);
+				Child(_name, fs, _drv, exit_sigh);
 		}
-};
 
-
-// TODO: jobs need to be removed when they are done, do it on yield
-class Builder::Job_queue : private Genode::List<Job>
-{
-	private:
-
-		Cap_connection        _cap;
-		Signal_receiver       _sig_rec;
-		Signal_context        _yield_broadcast_sig_ctx;
-		Signal_context        _resource_avail_sig_ctx;
-		//Signal_context        _yield_response_sig_ctx;
-		Ram                   _ram;
-		Lock                  _lock;
-		Server::Entrypoint   &_ep;
-		File_system::Session &_fs;
-
-		//Signal_context_capability _yield_response_sig_cap;
-
-		Job *lookup_name(char const *name)
+		void kill()
 		{
-			for (Job *curr = first(); curr; curr = curr->next())
-				if (strcmp(name, curr->name(), MAX_NAME_LEN) == 0)
-					return curr;
-			return 0;
+			if (_child) {
+				destroy(Genode::env()->heap(), _child);
+				_child = nullptr;
+				return;
+			}
 		}
 
 	public:
 
-		Job_queue(Server::Entrypoint   &ep,
-		          File_system::Session &fs)
+		/**
+		 * Constructor
+		 */
+		Job(Genode::Allocator    *alloc,
+		    File_system::Session &store_fs,
+		    char           const *name)
 		:
-			_ram(0, // TODO: add and subtract session donation to preservation?
-			     _sig_rec.manage(&_yield_broadcast_sig_ctx),
-			     _sig_rec.manage(&_resource_avail_sig_ctx)),
-			//_yield_response_sig_cap(_sig_rec.manage(&_yield_response_sig_ctx)),
-			_ep(ep),
-			_fs(fs)
-		{ }
-
-		void queue(char const                       *drv_name,
-		           Genode::Signal_context_capability sigh)
+			_drv(alloc, store_fs, name),
+			_child(nullptr)
 		{
-			Lock::Guard guard(_lock);
+			strncpy(_name, name, sizeof(_name));
+		};
 
-			Job *job = lookup_name(drv_name);
-			if (!job) try {
-				job = new (env()->heap())
-					Job(_ep, env()->heap(), _fs, drv_name);
-				insert(job);
-			} catch (Aterm::Parser::Malformed_element) {
-				PERR("canceling job with malformed derivation file at %s", drv_name);
-				throw Invalid_derivation();
-			} catch (...) {
-				PERR("error queueing %s", drv_name);
-				throw;
+		/**
+		 * Destructor
+		 */
+		~Job()
+		{
+			if (_child)
+				destroy(Genode::env()->heap(), _child);
+
+			/* Listener destructor notifies */
+			for (Listener *l = _listeners.first(); l; l = l->next())
+				destroy(Genode::env()->heap(), l);
+		}
+
+		char const *name() { return _name; }
+
+		/**
+		 * Upgrade and notify the child
+		 */
+		void upgrade_ram() { _child->upgrade_ram(); }
+};
+
+
+class Builder::Jobs : private Genode::Fifo<Job>
+{
+	private:
+
+		Signal_rpc_member<Jobs>  _resource_dispatcher;
+		Signal_rpc_member<Jobs>  _yield_dispatcher;
+		Signal_rpc_member<Jobs>  _exit_dispatcher;
+		Lock                     _lock;
+		File_system::Session    &_fs;
+		bool                     _pending;
+
+		/**
+		 * Handle resource announcement from parent
+		 */
+		void _resource_handler(unsigned count)
+		{
+			{
+				Lock::Guard guard(_lock);
+				if (_pending) {
+					head()->upgrade_ram();
+					return;
+				}
 			}
 
-			job->add_listener(sigh);
+			process();
 		}
 
 		/**
-		 * Start new jobs
+		 * Handle yield signal from parent
+		 */
+		void _yield_handler(unsigned)
+		{
+			Genode::Parent::Resource_args args =
+				Genode::env()->parent()->yield_request();
+
+			size_t quota_request =
+				Arg_string::find_arg(args.string(), "ram_quota").ulong_value(0);
+
+			/*
+			 * If we are low on memory, kill the job and schedule a restart,
+			 * otherwise let the parent withdrawl what is available.
+			 *
+			 * Note that a yield signal is not sent to the child because that
+			 * would violate the purity of the child environment.
+			 */
+			if ((Genode::env()->ram_session()->avail() < QUOTA_STEP) &&
+			    (quota_request > QUOTA_STEP))
+			{
+				Lock::Guard guard(_lock);
+
+				/* get the job on top of the queue, but don't remove it */
+				Job *job = head();
+				if (job) {
+					job->kill();
+					PERR("%s killed to yield resources", job->name());
+					_pending = false;
+				}
+			}
+
+			Genode::env()->parent()->yield_response();
+		}
+
+		/**
+		 * Handle exit signal from the child
+		 */
+		void _exit_handler(unsigned)
+		{
+			{
+				Lock::Guard guard(_lock);
+
+				/* Job destructor notifies listeners */
+				destroy(env()->heap(), dequeue());
+
+				_pending = false;
+			}
+
+			process();
+		}
+
+	public:
+
+		Jobs(Server::Entrypoint &ep, File_system::Session &fs)
+		:
+			_resource_dispatcher(ep, *this, &Jobs::_resource_handler),
+			_yield_dispatcher(   ep, *this, &Jobs::_yield_handler),
+			_exit_dispatcher(    ep, *this, &Jobs::_exit_handler),
+			_fs(fs),
+			_pending(false)
+		{
+			Genode::env()->parent()->resource_avail_sigh(_resource_dispatcher);
+			Genode::env()->parent()->yield_sigh(_yield_dispatcher);
+		}
+
+		/**
+		 * Process the queue
 		 */
 		void process()
 		{
 			Lock::Guard guard(_lock);
 
-			try {
-				for (Job *job = first(); job; job = job->next()) {
-					if (job->waiting()) {
-						job->start(_fs, _cap, _ram); //, yield_response_sig_cap);
-						remove(job);
-					}
-					else if (!job->wanted())
-						job->end(0);
-				}
-			} catch (Ram::Transfer_quota_failed) {
-				Ram::Status status = _ram.status();
-				PERR("%lu/%lu bytes of quota used, cannot start more jobs",
-				     status.used, status.quota);
+			if (_pending || empty()) return;
+
+			Job *job = head();
+			while (job->abandoned()) {
+				dequeue();
+				destroy(Genode::env()->heap(), job);
+				job = head();
+				if (!job) return;
 			}
+
+			/*
+			 * If RAM quota is sufficient then start a job,
+			 * otherwise make a non-blocking upgrade request.
+			 */
+			if (Genode::env()->ram_session()->avail() >
+			    QUOTA_STEP+QUOTA_RESERVE)
+			{
+				job->start(_fs, _exit_dispatcher);
+				_pending = true;
+				return;
+			}
+
+			PLOG("requesting more RAM before starting job...");
+
+			char arg_buf[32];
+			Genode::snprintf(arg_buf, sizeof(arg_buf),
+			                 "ram_quota=%ld", QUOTA_STEP);
+			Genode::env()->parent()->resource_request(arg_buf);
+		}
+
+		void queue(char const                       *drv_name,
+		           Genode::Signal_context_capability sigh)
+		{
+			{
+				Lock::Guard guard(_lock);
+
+				Job *job = nullptr;
+				for (Job *j = head(); job; job = job->next())
+					if (j->match(drv_name)) {
+						job = j;
+						break;
+					}
+
+				if (!job) try {
+					job = new (env()->heap())
+						Job(env()->heap(), _fs, drv_name);
+					enqueue(job);
+				} catch (Aterm::Parser::Malformed_element) {
+					PERR("canceling job with malformed derivation file at %s", drv_name);
+					throw Invalid_derivation();
+				} catch (...) {
+					PERR("error queueing %s", drv_name);
+					throw;
+				}
+
+				job->add_listener(sigh);
+			}
+
+			process();
 		}
 };
 

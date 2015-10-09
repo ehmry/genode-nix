@@ -20,6 +20,8 @@
 #include <root/component.h>
 #include <os/config.h>
 #include <os/server.h>
+#include <dataspace/client.h>
+#include <rom_session/connection.h>
 #include <cap_session/cap_session.h>
 
 /* Local includes */
@@ -34,69 +36,46 @@ class Builder::Session_component : public Genode::Rpc_object<Session>
 		Genode::Allocator_guard  _session_alloc;
 		File_system::Session    &_store_fs;
 		File_system::Dir_handle  _store_dir;
-		Job_queue               &_job_queue;
+		Jobs                    &_jobs;
 
 	public:
 
 		/**
 		 * Constructor
 		 */
-		Session_component(char const           *label,
-		                  Server::Entrypoint   &ep,
+		Session_component(Server::Entrypoint   &ep,
 		                  Allocator            *session_alloc,
 		                  size_t                ram_quota,
 		                  File_system::Session &fs,
-		                  Job_queue            &job_queue)
+		                  Jobs                 &jobs)
 		:
 			_session_alloc(session_alloc, ram_quota),
 			_store_fs(fs),
-			_job_queue(job_queue)
-		{
-			// TODO donate to queue preservation
-			_store_dir = _store_fs.dir("/", false);
-		}
-
-		~Session_component()
-		{
-			/* Clean out unwanted jobs */
-			_job_queue.process();
-		}
+			_store_dir(_store_fs.dir("/", false)),
+			_jobs(jobs)
+		{ }
 
 		/**
-		 * Read a derivation into memory and check that given
-		 * output id is valid.
+		 * Read a derivation and check that given output id is valid.
 		 *
-		 * TODO: cache derivations as ROM?
+		 * A ROM connection is made rather than a file system request
+		 * because the client presumably has the same file as a ROM
+		 * dataspace from the same server, so caching is possible.
+		 * The build child will be requesting ROMs from the store,
+		 * so this also ensures that ROM requests are properly routed.
 		 */
 		void check_output(char const *name, char const *id)
 		{
-			using namespace File_system;
+			Genode::Rom_connection drv_rom(name, "store");
+			Genode::Rom_dataspace_capability drv_ds = drv_rom.dataspace();
+			if (!drv_ds.valid())
+				throw Missing_dependency();
 
-			File_handle file;
-			try {
-				Dir_handle root = _store_fs.dir("/", false);
-				Handle_guard root_guard(_store_fs, root);
-
-				file = _store_fs.file(root, name, READ_ONLY, false);
-			} catch (File_system::Lookup_failed) {
-				PERR("derivation not found in store for %s", name);
-				throw Invalid_derivation();
-			}
-			Handle_guard file_guard(_store_fs, file);
-
-			file_size_t file_size = _store_fs.status(file).size;
-			// TODO enforce a maximum derivation size
-			char data[file_size];
-
-			size_t n = read(_store_fs, file, data, sizeof(data), 0);
-			if (n != file_size) {
-				PERR("I/O error reading derivation");
-				throw Invalid_derivation();
-			}
+			char const *data = Genode::env()->rm_session()->attach(drv_ds);
 
 			struct Done { };
 
-			Aterm::Parser parser(data, n);
+			Aterm::Parser parser(data, Dataspace_client(drv_ds).size());
 
 			try { parser.constructor("Derive", [&]
 			{
@@ -113,13 +92,11 @@ class Builder::Session_component : public Genode::Rpc_object<Session>
 							char output_name[MAX_NAME_LEN];
 							parser.string().value(output_name, sizeof(output_name));
 
-							/*
-							 * TODO: silly hack to deal with '//'
-							 */
-							int i = 0;
+							/* XXX : slash hack */
+							size_t i = 0;
 							while (output_name[i] == '/') ++i;
 
-							if (!valid(&output_name[i]))
+							if (!valid(output_name))
 								throw Missing_dependency();
 
 							parser.string(); /* Algo */
@@ -133,38 +110,18 @@ class Builder::Session_component : public Genode::Rpc_object<Session>
 		}
 
 		/**
-		 * Read a derivation into memory and check that its
-		 * inputs are valid.
-		 *
-		 * TODO: cache derivations as ROM?
+		 * Read a derivation and check that its inputs are valid.
 		 */
 		void check_inputs(char const *name)
 		{
-			using namespace File_system;
+			Genode::Rom_connection drv_rom(name, "store");
+			Genode::Rom_dataspace_capability drv_ds = drv_rom.dataspace();
+			if (!drv_ds.valid())
+				throw Missing_dependency();
 
-			File_handle file;
-			try {
-				Dir_handle root = _store_fs.dir("/", false);
-				Handle_guard root_guard(_store_fs, root);
+			char const *data = Genode::env()->rm_session()->attach(drv_ds);
 
-				file = _store_fs.file(root, name, READ_ONLY, false);
-			} catch (File_system::Lookup_failed) {
-				PERR("derivation not found in store for %s", name);
-				throw Invalid_derivation();
-			}
-			Handle_guard file_guard(_store_fs, file);
-
-			file_size_t file_size = _store_fs.status(file).size;
-			// TODO enforce a maximum derivation size
-			char data[file_size];
-
-			size_t n = read(_store_fs, file, data, sizeof(data), 0);
-			if (n != file_size) {
-				PERR("I/O error reading derivation");
-				throw Invalid_derivation();
-			}
-
-			Aterm::Parser parser(data, n);
+			Aterm::Parser parser(data, Dataspace_client(drv_ds).size());
 
 			struct Done { };
 
@@ -236,8 +193,10 @@ class Builder::Session_component : public Genode::Rpc_object<Session>
 				Handle_guard node_guard(_store_fs, node);
 
 				switch (_store_fs.status(node).mode) {
-				case Status::MODE_FILE:      return true;
-				case Status::MODE_DIRECTORY: return true;
+				case Status::MODE_FILE:
+					return true;
+				case Status::MODE_DIRECTORY:
+					return true;
 				case Status::MODE_SYMLINK: {
 					Symlink_handle link = _store_fs.symlink(_store_dir, path+1, false);
 					Handle_guard link_guard(_store_fs, link);
@@ -258,7 +217,6 @@ class Builder::Session_component : public Genode::Rpc_object<Session>
 		void realize(Name const &drv_name, Genode::Signal_context_capability sigh)
 		{
 			using namespace File_system;
-
 			char const *name = drv_name.string();
 
 			if (File_system::string_contains(name, '/'))
@@ -267,19 +225,14 @@ class Builder::Session_component : public Genode::Rpc_object<Session>
 			/* Prevent packet mixups. */
 			collect_acknowledgements(*_store_fs.tx());
 
-			try {
-				check_inputs(name);
-			} catch (File_system::Lookup_failed) {
-				throw Missing_dependency();
-			}
-
 			/*
-			 * TODO: check that immediate dependencies are present,
-			 * trigger a yield event if memory is low
+			 * Check that the derivation inputs are present,
+			 * we don't take care of dependencies or scheduling,
+			 * just keep a queue.
 			 */
+			check_inputs(name);
 
-			_job_queue.queue(name, sigh);
-			_job_queue.process();
+			_jobs.queue(name, sigh);
 		}
 
 };

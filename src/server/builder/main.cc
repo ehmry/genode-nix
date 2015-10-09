@@ -6,7 +6,6 @@
 
 /* Local includes */
 #include "aterm_parser.h"
-#include "config.h"
 #include "session.h"
 
 /* Genode includes */
@@ -39,7 +38,7 @@ class Builder::Root_component : public Genode::Root_component<Session_component>
 		Ram_session_capability  _ram;
 		Genode::Allocator_avl   _fs_block_alloc;
 		File_system::Connection _fs;
-		Job_queue               _job_queue;
+		Jobs                    _jobs;
 
 	protected:
 
@@ -60,11 +59,10 @@ class Builder::Root_component : public Genode::Root_component<Session_component>
 			}
 
 			return new(md_alloc())
-				Session_component(fs_label(),
-				                  _ep,
+				Session_component(_ep,
 				                  md_alloc(), ram_quota,
 				                  _fs,
-				                  _job_queue);
+				                  _jobs);
 		}
 
 	public:
@@ -80,8 +78,8 @@ class Builder::Root_component : public Genode::Root_component<Session_component>
 			_ep(ep),
 			_ram(ram),
 			_fs_block_alloc(env()->heap()),
-			_fs(_fs_block_alloc, 128*1024, fs_label()),
-			_job_queue(_ep, _fs)
+			_fs(_fs_block_alloc, 128*1024, "store"),
+			_jobs(_ep, _fs)
 		{
 			/* look for dynamic linker */
 			try {

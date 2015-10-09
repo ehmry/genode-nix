@@ -19,12 +19,10 @@
 #include <cpu_session/connection.h>
 #include <rm_session/connection.h>
 #include <init/child_policy.h>
-#include <cli_monitor/ram.h>
 #include <os/server.h>
 #include <util/avl_string.h>
 
 /* Local imports */
-#include "config.h"
 #include "derivation.h"
 #include "fs_policy.h"
 
@@ -36,6 +34,13 @@ namespace Builder {
 	class  Child_policy;
 	class  Child;
 
+	enum Quota : size_t {
+		MEGABYTE      = 1 << 20,
+		QUOTA_STEP    = 8*MEGABYTE,
+		QUOTA_RESERVE = 1*MEGABYTE,
+
+		ENTRYPOINT_STACK_SIZE = 8*1024*sizeof(long)
+	};
 }
 
 /**
@@ -43,49 +48,30 @@ namespace Builder {
  */
 struct Builder::Resources
 {
-	enum { MINIMUM_QUOTA = 8 * 1024 * sizeof(long) };
-
 	Genode::Pd_connection  pd;
 	Genode::Ram_connection ram;
 	Genode::Cpu_connection cpu;
 	Genode::Rm_connection  rm;
 
-	Ram &ram_manager;
-
 	/**
 	 * Constructor
 	 */
 	Resources(char const               *label,
-	          Ram                      &jobs_ram,
 	          Signal_context_capability exit_sigh)
 	:
-		pd(label), ram(label), cpu(label), /* TODO: priority */
-		ram_manager(jobs_ram)
+		pd(label), ram(label), cpu(label)
 	{
 		cpu.exception_handler(Thread_capability(), exit_sigh);
 		rm.fault_handler(exit_sigh);
 
-		Ram::Status status = ram_manager.status();
-
-		/*
-		 * TODO: dynamic quota
-		 */
-		Genode::size_t ram_quota = status.avail / 2;
-		if (ram_quota < MINIMUM_QUOTA)
-			throw Ram::Transfer_quota_failed();
-
 		ram.ref_account(Genode::env()->ram_session_cap());
-		PLOG("transfering %lu bytes to %s ram quota", ram_quota, label);
-		Genode::env()->ram_session()->transfer_quota(ram.cap(), ram_quota);
+
+		Genode::env()->ram_session()->transfer_quota(ram.cap(), QUOTA_STEP);
 	}
-
-	void transfer_ram(size_t amount) {
-		ram_manager.transfer_to(ram.cap(), amount); }
-
 };
 
 
-class Builder::Child_policy : public Genode::Child_policy
+class Builder::Child : public Genode::Child_policy
 {
 	private:
 
@@ -240,23 +226,25 @@ class Builder::Child_policy : public Genode::Child_policy
 		} _environment;
 
 		Signal_context_capability  _exit_sigh;
-		Resources                 &_resources;
+		Resources                  _resources;
+		Rom_connection             _binary_rom;
+		Server::Entrypoint         _entrypoint;
 		Parent_service             _fs_input_service;
 		Store_fs_policy            _fs_output_policy;
 		Parent_service             _parent_fs_service;
 		Service_registry           _parent_services;
+
+		Genode::Child  _child;
 
 	public:
 
 		/**
 		 * Constructor
 		 */
-		Child_policy(char const               *name,
-		             File_system::Session     &fs,
-		             Resources                &resources,
-		             Server::Entrypoint       &ep,
-		             Derivation               &drv,
-		             Signal_context_capability exit_sigh)
+		Child(char const               *name,
+		      File_system::Session     &fs,
+		      Derivation               &drv,
+		      Signal_context_capability exit_sigh)
 		:
 			_name(name),
 			_fs(fs),
@@ -264,10 +252,18 @@ class Builder::Child_policy : public Genode::Child_policy
 			_inputs(drv),
 			_environment(drv, _inputs),
 			_exit_sigh(exit_sigh),
-			_resources(resources),
+			_resources(name, exit_sigh),
+			_binary_rom(drv.builder(), "store"),
 			_fs_input_service("File_system"),
-			_fs_output_policy(_fs_input_service, ep),
-			_parent_fs_service("File_system")
+			_fs_output_policy(_fs_input_service, _entrypoint),
+			_parent_fs_service("File_system"),
+			_child(_binary_rom.dataspace(),
+			       _resources.pd.cap(),
+			       _resources.ram.cap(),
+			       _resources.cpu.cap(),
+			       _resources.rm.cap(),
+			      &_entrypoint.rpc_ep(),
+			        this)
 		{
 			/*
 			 * A whitelist of services to forward from our parent.
@@ -285,9 +281,6 @@ class Builder::Child_policy : public Genode::Child_policy
 						Parent_service(service_names[i]));
 		}
 
-		/*
-		 * TODO: actually implement resource trading
-		 */
 
 		/****************************
 		 ** Child policy interface **
@@ -303,7 +296,6 @@ class Builder::Child_policy : public Genode::Child_policy
 		{
 			if (strcmp(service, "ROM") == 0) {
 				char filename[File_system::MAX_PATH_LEN] = { 0 };
-				char label_buf[64];
 
 				Genode::Arg_string::find_arg(args, "filename").string(
 					filename, sizeof(filename), "");
@@ -329,9 +321,7 @@ class Builder::Child_policy : public Genode::Child_policy
 					return;
 				}
 
-				Genode::snprintf(label_buf, sizeof(label_buf),
-				                 "\"%s\"", rom_label());
-				Arg_string::set_arg(args, args_len, "label", label_buf);
+				Arg_string::set_arg(args, args_len, "label", "store");
 				return;
 			}
 
@@ -405,48 +395,45 @@ class Builder::Child_policy : public Genode::Child_policy
 
 			Signal_transmitter(_exit_sigh).submit();
 		}
-};
 
+		void resource_request(Parent::Resource_args const &args)
+		{
+			size_t ram_request =
+				Arg_string::find_arg(args.string(), "ram_quota").ulong_value(0);
 
-class Builder::Child
-{
-	public:
+			if (!ram_request) return;
 
-		class Quota_exceeded : public Genode::Exception { };
+			ram_request = max(size_t(QUOTA_STEP), size_t(ram_request));
 
-	private:
+			size_t ram_avail =
+				Genode::env()->ram_session()->avail() - QUOTA_RESERVE;
 
-		enum { ENTRYPOINT_STACK_SIZE  =   8*1024*sizeof(long) };
+			if (ram_avail > ram_request) {
 
-		Resources           _resources;
-		Rom_connection      _binary_rom;
-		Server::Entrypoint  _entrypoint;
-		Child_policy        _child_policy;
-		Genode::Child       _child;
+				Genode::env()->ram_session()->transfer_quota(
+					_resources.ram.cap(), ram_avail);
 
-	public:
+				_child.notify_resource_avail();
+				return;
+			}
 
-		/**
-		 * Constructor
-		 */
-		Child(char const               *label,
-		      File_system::Session     &fs,
-		      Cap_session              &cap_session,
-		      Derivation               &drv,
-		      Ram                      &ram_manager,
-		      Signal_context_capability exit_sigh)
-		:
-			_resources(label, ram_manager, exit_sigh),
-			_binary_rom(drv.builder(), rom_label()),
-			_child_policy(label, fs, _resources,  _entrypoint, drv, exit_sigh),
-			_child(_binary_rom.dataspace(),
-			       _resources.pd.cap(),
-			       _resources.ram.cap(),
-			       _resources.cpu.cap(),
-			       _resources.rm.cap(),
-			      &_entrypoint.rpc_ep(),
-			      &_child_policy)
-		{ }
+			char arg_buf[32];
+			snprintf(arg_buf, sizeof(arg_buf),
+			         "ram_quota=%ld", ram_request);
+
+			Genode::env()->parent()->resource_request(arg_buf);
+		}
+
+		void upgrade_ram()
+		{
+			size_t quota_avail =
+				Genode::env()->ram_session()->avail() - QUOTA_RESERVE;
+
+				Genode::env()->ram_session()->transfer_quota(
+					_resources.ram.cap(), quota_avail);
+
+			_child.notify_resource_avail();
+		}
 };
 
 #endif
