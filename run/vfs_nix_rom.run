@@ -159,8 +159,8 @@ append config {
 		</route>
 	</start>
 
-	<start name="wm_report_rom" priority="-1">
-		<binary name="report_rom" />
+	<start name="wm_report_rom">
+		<binary name="report_rom"/>
 		<resource name="RAM" quantum="4M"/>
 		<provides>
 			<service name="Report"/>
@@ -169,6 +169,7 @@ append config {
 		<config>
 			<rom>
 				<policy label="layouter -> window_list"     report="wm -> window_list"/>
+				<policy label="layouter -> focus_request"   report="wm -> focus_request"/>
 				<policy label="decorator -> window_layout"  report="layouter -> window_layout"/>
 				<policy label="wm -> resize_request"        report="layouter -> resize_request"/>
 				<policy label="decorator -> pointer"        report="wm -> pointer"/>
@@ -267,7 +268,7 @@ append config {
 			</any-service>
 		</route>
 		<config>
-			<nix>
+			<nix verbosity="9">
 				<vfs>
 					<dir name="corepkgs"> <tar name="nix_corepkgs.tar"/> </dir>
 					<rom name="cli_monitor.nix"/>
