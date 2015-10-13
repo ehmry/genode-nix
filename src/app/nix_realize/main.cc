@@ -56,15 +56,8 @@ int main(void)
 	nix::handleExceptions("nix_realize", [&] {
 	using namespace nix;
 
-	Genode::Xml_node config_node;
-	Genode::Xml_node vfs_node;
-	try {
-		config_node = Genode::config()->xml_node().sub_node("nix");
-		vfs_node = config_node.sub_node("vfs");
-	} catch (...) {
-		PERR("failed to get nix configuration");
-		throw;
-	}
+	Genode::Xml_node config_node= Genode::config()->xml_node().sub_node("nix");
+	Genode::Xml_node vfs_node = config_node.sub_node("vfs");
 
 	Vfs::Dir_file_system vfs(
 		vfs_node, Vfs::global_file_system_factory());
