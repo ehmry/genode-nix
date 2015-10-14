@@ -150,7 +150,7 @@ class Nix_factory : public Vfs::File_system_factory
 			/* top-level store symlinks don't contain any slashes */
 			char target[Builder::MAX_NAME_LEN] = { '/' };
 			if (read(fs, link, &target[1], sizeof(target)-1) == 0) {
-				PERR("failed to determine final path of %s", path);
+				PERR("failed to read symlink at %s", path);
 				return nullptr;
 			}
 
@@ -175,6 +175,7 @@ class Nix_factory : public Vfs::File_system_factory
 
 		Vfs::File_system *from_file(char const *path)
 		{
+			// XXX: slash hack
 			while (*path == '/') ++path;
 
 			char const *name = path;
@@ -220,8 +221,14 @@ class Nix_factory : public Vfs::File_system_factory
 			nix::handleExceptions("nix_realize", [&] {
 				out_path = realise(node);
 			});
+
 			if (out_path == "")
 				return nullptr;
+
+			// XXX: slash hack
+			if (out_path.front() != '/')
+				out_path.insert(0, 1, '/');
+
 			char const *path = out_path.c_str();
 
 			/* return an appropriate file system for the output */
@@ -230,7 +237,7 @@ class Nix_factory : public Vfs::File_system_factory
 
 				Genode::Allocator_avl alloc(env()->heap());
 				::File_system::Connection fs(
-					alloc, DEFAULT_TX_BUF_SIZE, _store_label);
+					alloc, DEFAULT_TX_BUF_SIZE, _store_label, "", false);
 
 				/*
 				 * The handles we open are closed when
@@ -247,6 +254,24 @@ class Nix_factory : public Vfs::File_system_factory
 					return from_directory(path);
 
 				return from_file(path);
+
+			} catch (::File_system::Permission_denied) {
+				PERR("permission denied");
+
+			} catch (::File_system::Name_too_long) {
+				PERR("name too long");
+
+			} catch (::File_system::No_space) {
+				PERR("no space");
+
+			} catch (::File_system::Out_of_node_handles) {
+				PERR("out of node handles");
+
+			} catch (::File_system::Invalid_name) {
+				PERR("invalid_name");
+
+			} catch (::File_system::Size_limit_reached) {
+				PERR("size limit reached");
 
 			} catch (...) {
 				PERR("failed to determinal final path of %s", out_path.c_str());
