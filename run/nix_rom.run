@@ -1,0 +1,152 @@
+#
+# Test of the Nix ROM server
+#
+
+
+set build_components {
+	core init drivers/timer
+	server/vfs
+	server/store_ingest
+	server/builder
+	server/fs_rom
+	server/nix
+	test/libports/ncurses
+	test/libports/nixexpr
+	test/timer
+}
+
+build $build_components
+
+create_boot_directory
+
+append config {
+<config>
+	<parent-provides>
+		<service name="ROM"/>
+		<service name="RAM"/>
+		<service name="CAP"/>
+		<service name="PD"/>
+		<service name="RM"/>
+		<service name="CPU"/>
+		<service name="LOG"/>
+		<service name="SIGNAL"/>
+	</parent-provides>
+	<default-route>
+		<service name="ROM">
+			<if-arg key="label" value="store"/>
+			<child name="store_rom"/>
+		</service>
+		<any-service>
+			<child name="vfs"/>
+			<parent/> <any-child/>
+		</any-service>
+	</default-route>
+	<start name="timer">
+		<resource name="RAM" quantum="1M"/>
+		<provides><service name="Timer"/></provides>
+	</start>
+
+	<start name="vfs">
+		<resource name="RAM" quantum="8M"/>
+		<provides><service name="File_system"/></provides>
+		<config>
+			<vfs> <ram/> </vfs>
+			<policy label="store_ingest" writeable="yes"/>
+			<policy label="builder" writeable="yes"/>
+			<policy label=""/>
+		</config>
+	</start>
+
+	<start name="store_rom">
+		<binary name="fs_rom"/>
+		<resource name="RAM" quantum="8M"/>
+		<provides><service name="ROM"/></provides>
+	</start>
+
+	<start name="store_ingest">
+		<resource name="RAM" quantum="2M"/>
+		<provides><service name="File_system"/></provides>
+	</start>
+
+	<start name="builder">
+		<resource name="RAM" quantum="8M"/>
+		<provides><service name="Builder"/></provides>
+	</start>
+
+	<start name="nix">
+		<resource name="RAM" quantum="8M"/>
+		<provides>
+			<service name="ROM"/>
+		</provides>
+		<route>
+			<service name="ROM">
+				<if-arg key="label" value="store"/>
+				<child name="store_rom"/>
+			</service>
+			<service name="File_system">
+				<if-arg key="label" value="ingest"/>
+				<child name="store_ingest"/>
+			</service>
+			<any-service>
+				<parent/> <any-child/>
+			</any-service>
+		</route>
+		<config>
+			<nix>
+				<vfs>
+					<dir name="corepkgs"> <tar name="nix_corepkgs.tar"/> </dir>
+					<inline name="default.nix">
+name:
+
+builtins.trace
+  "requesting '${name}' from parent and serving from the store"
+  builtins.getRom name
+					</inline>
+				</vfs>
+				<search-path name="nix" path="/corepkgs"/>
+			</nix>
+			<policy label=""/>
+		</config>
+	</start>
+
+	<start name="init">
+		<resource name="RAM" quantum="2M"/>
+		<route>
+			<any-service>
+				<child name="nix"/>
+				<parent/>
+			</any-service>
+		</route>
+		<config>
+			<parent-provides>
+				<service name="LOG"/>
+				<service name="RM"/>
+			</parent-provides>
+			<default-route>
+				<any-service> <parent/> </any-service>
+			</default-route>
+			<start name="test-printf">
+				<resource name="RAM" quantum="1M"/>
+			</start>
+		</config>
+	</start>
+
+</config>
+}
+
+install_config $config
+
+set boot_modules {
+	core init ld.lib.so timer vfs fs_rom nix
+	libc.lib.so libm.lib.so stdcxx.lib.so libc_noux.lib.so
+	nixexpr.lib.so nixformat.lib.so nixmain.lib.so nixstore.lib.so nixutil.lib.so
+	builder store_ingest noux
+	nix_corepkgs.tar
+	test-printf
+}
+
+build_boot_image $boot_modules
+
+append qemu_args " -nographic"
+
+run_genode_until {child "test-printf" exited with exit value 0} 20
