@@ -643,7 +643,7 @@ Path nix::Store::addDataToStore(const string & name,
 		/* this size should be know at compile time */
 
 		hash.update((uint8_t*)buf, len);
-		hash.update((uint8_t*)"\0d\0", 3);
+		hash.update((uint8_t*)"\0f\0", 3);
 		hash.update((uint8_t*)name.data(), name.size());
 
 		hash.digest(path_buf, sizeof(path_buf));
