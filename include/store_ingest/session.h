@@ -51,8 +51,6 @@ class Store_ingest::Session_component : public Session_rpc_object
 
 		enum {
 
-			verbose = false,
-
 			/* maximum number of open nodes per session */
 			MAX_NODE_HANDLES = 128U,
 
@@ -551,8 +549,6 @@ class Store_ingest::Session_component : public Session_rpc_object
 				throw No_space();
 
 			char const *path_str = path.string();
-			if (verbose)
-				PINF("%s", path_str);
 
 			if (is_root(path)) {
 				if (create) throw Node_already_exists();
@@ -611,8 +607,6 @@ class Store_ingest::Session_component : public Session_rpc_object
 				throw No_space();
 
 			char const *name_str = name.string();
-			if (verbose)
-				PINF("%s", name_str);
 
 			File_handle handle;
 			File *file_node;

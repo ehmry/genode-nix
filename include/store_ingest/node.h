@@ -229,17 +229,16 @@ class Store_ingest::Directory : public Hash_node
 		{
 			char const *new_name = node->name();
 
-			for (Hash_node *cur = _children.first(); cur; cur = cur->next()) {
-				char const *cur_name = cur->name();
-				for (int i = 0; i < MAX_NAME_LEN; ++i) {
-					if (cur_name[i] > new_name[i])
-						break;
-					if (cur_name[i] < new_name[i])
-						return _children.insert(node, cur);
-				}
+			Hash_node *prev = 0;
+			Hash_node *cur = _children.first();
+
+			while (cur) {
+				if (strcmp(new_name, cur->name()) < 0)
+					break;
+				prev = cur; cur = cur->next();
 			}
-			/* list was empty */
-			_children.insert(node);
+
+			_children.insert(node, prev);
 		}
 
 	public:

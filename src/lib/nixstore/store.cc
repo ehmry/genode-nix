@@ -446,7 +446,6 @@ Store::add_dir(nix::Path const &src_path)
 bool
 nix::Store::isValidPath(const nix::Path & path)
 {
-	PDBG("%s", path.c_str());
 	// TODO just fix the damn double slash already
 	for (int i = 0; i < path.size(); ++i)
 		if (path[i] != '/')
@@ -539,6 +538,7 @@ Store::addToStore(const Path & srcPath,
 	uint8_t buf[Builder::MAX_NAME_LEN];
 
 	string name = srcPath.substr(srcPath.rfind("/")+1, srcPath.size()-1);
+	string final_name;
 
 	if (stat.mode & Directory_service::STAT_MODE_DIRECTORY) {
 		hash_dir(buf, srcPath);
@@ -546,7 +546,7 @@ Store::addToStore(const Path & srcPath,
 		if (_builder.valid((char *) buf))
 			return "/" + string((char *) buf);
 
-		name = add_dir(srcPath);
+		final_name = add_dir(srcPath);
 
 	} else if (stat.mode & Directory_service::STAT_MODE_FILE) {
 		hash_file(buf, srcPath);
@@ -554,11 +554,14 @@ Store::addToStore(const Path & srcPath,
 		if (_builder.valid((char *) buf))
 			return "/" + string((char *) buf);
 
-		name = add_file(srcPath);
+		final_name = add_file(srcPath);
 	} else
 		throw nix::Error(format("addToStore: `%1%' has an inappropriate file type") % name);
 
-	return "/" + name;
+	if (final_name.compare((char *)buf))
+		throw nix::Error(format("addToStore: %1% hashed locally to '%2%' but ingest reports `%3%' ") % name % buf % final_name);
+
+	return "/" + final_name;
 }
 
 /**
@@ -570,11 +573,10 @@ Path nix::Store::addTextToStore(const string & name, const string & text,
 {
 	using namespace File_system;
 
-	{
-		string object_name = hash_text(name, text);
-		if (_builder.valid(object_name.c_str()))
-			return object_name;
-	}
+	string hashed_name = hash_text(name, text);
+	if (_builder.valid(hashed_name.c_str()))
+		return hashed_name;
+
 	{
 		debug(format("adding text ‘%1%’ to the store") % name);
 
@@ -621,9 +623,12 @@ Path nix::Store::addTextToStore(const string & name, const string & text,
 			remaining -= packet.length();
 		}
 
-		//foreach (PathSet::const_iterator, i, references)
-		//	_store.add_reference(handle, ((nix::Path)*i).c_str());
-		return "/" + finalize_ingest(fs, name_str);
+
+		nix::Path final_name = finalize_ingest(fs, name_str);
+		if (final_name != hashed_name)
+			throw nix::Error(format("addTextToStore: %1% hashed locally to '%2%' but ingest reports `%3%' ") % name % hashed_name % final_name);
+
+		return "/" + final_name;
 	}
 };
 
@@ -637,20 +642,17 @@ Path nix::Store::addDataToStore(const string & name,
 	char *p = (char *)buf;
 	size_t offset = 0;
 
-	{
-		::Hash::Blake2s hash;
-		uint8_t path_buf[max(size_t(MAX_NAME_LEN), hash.size())];
-		/* this size should be know at compile time */
+	::Hash::Blake2s hash;
+	uint8_t path_buf[max(size_t(MAX_NAME_LEN), hash.size())];
 
-		hash.update((uint8_t*)buf, len);
-		hash.update((uint8_t*)"\0f\0", 3);
-		hash.update((uint8_t*)name.data(), name.size());
+	hash.update((uint8_t*)buf, len);
+	hash.update((uint8_t*)"\0f\0", 3);
+	hash.update((uint8_t*)name.data(), name.size());
 
-		hash.digest(path_buf, sizeof(path_buf));
-		Store_hash::encode(path_buf, name.c_str(), sizeof(path_buf));
-		if (_builder.valid((char *)path_buf))
-			return Path((char *)path_buf);
-	}
+	hash.digest(path_buf, sizeof(path_buf));
+	Store_hash::encode(path_buf, name.c_str(), sizeof(path_buf));
+	if (_builder.valid((char *)path_buf))
+		return Path((char *)path_buf);
 	{
 		debug(format("adding dataspace ‘%1%’ to the store") % name);
 
@@ -695,7 +697,12 @@ Path nix::Store::addDataToStore(const string & name,
 			len    -= packet.length();
 		}
 
-		return "/" + finalize_ingest(fs, name_str);
+		nix::Path final_name = finalize_ingest(fs, name_str);
+
+		if (final_name.compare((char *)path_buf))
+			throw nix::Error(format("addDataToStore: %1% hashed locally to '%2%' but ingest reports `%3%' ") % name % (char *)path_buf % final_name);
+
+		return "/" + final_name;
 	}
 };
 

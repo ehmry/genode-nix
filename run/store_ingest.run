@@ -1,0 +1,170 @@
+#
+# Test of the store_ingest server
+#
+
+set platform_base_dir "base-nova"
+
+set build_components {
+	core init drivers/timer
+	server/vfs
+	server/store_ingest
+	server/builder
+	server/fs_rom
+	server/nix
+	test/libports/nixexpr
+	test/timer
+	test/rom
+	noux/minimal server/log_terminal lib/libc_noux
+	noux-pkg/findutils
+}
+
+build $build_components
+
+exec tar cfv bin/findutils.tar -h -C bin/findutils .
+
+create_boot_directory
+
+append config {
+<config verbose="yes">
+	<parent-provides>
+		<service name="ROM"/>
+		<service name="RAM"/>
+		<service name="CAP"/>
+		<service name="PD"/>
+		<service name="RM"/>
+		<service name="CPU"/>
+		<service name="LOG"/>
+		<service name="SIGNAL"/>
+	</parent-provides>
+	<default-route>
+		<service name="ROM">
+			<if-arg key="label" value="store"/>
+			<child name="store_rom"/>
+		</service>
+		<service name="File_system">
+			<if-arg key="label" value="ingest"/>
+			<child name="store_ingest"/>
+		</service>
+		<service name="File_system">
+			<if-arg key="label" value="store"/>
+			<child name="store_fs"/>
+		</service>
+		<any-service>
+			<parent/> <any-child/>
+		</any-service>
+	</default-route>
+	<start name="timer">
+		<resource name="RAM" quantum="1M"/>
+		<provides><service name="Timer"/></provides>
+	</start>
+
+	<start name="store_fs">
+		<binary name="vfs"/>
+		<resource name="RAM" quantum="8M"/>
+		<provides><service name="File_system"/></provides>
+		<config>
+			<vfs> <ram/> </vfs>
+			<policy label="store_ingest" writeable="yes"/>
+			<policy label="builder" writeable="yes"/>
+			<policy label=""/>
+		</config>
+	</start>
+
+	<start name="store_rom">
+		<binary name="fs_rom"/>
+		<resource name="RAM" quantum="4M"/>
+		<provides><service name="ROM"/></provides>
+		<route>
+			<any-service>
+				<child name="store_fs"/>
+				<parent/>
+			</any-service>
+		</route>
+	</start>
+
+	<start name="store_ingest">
+		<resource name="RAM" quantum="2M"/>
+		<provides><service name="File_system"/></provides>
+		<route>
+			<any-service>
+				<child name="store_fs"/>
+				<parent/>
+			</any-service>
+		</route>
+	</start>
+
+	<start name="builder">
+		<resource name="RAM" quantum="8M"/>
+		<provides><service name="Builder"/></provides>
+	</start>
+
+	<start name="nix">
+		<resource name="RAM" quantum="8M"/>
+		<provides>
+			<service name="ROM"/>
+			<service name="File_system"/>
+		</provides>
+		<config>
+			<nix>
+				<vfs>
+					<dir name="corepkgs"> <tar name="nix_corepkgs.tar"/> </dir>
+					<dir name="test">
+						<inline name="z">bar</inline>
+						<inline name="x">foo</inline>
+						<inline name="y"/>
+					</dir>
+					<inline name="default.nix">root: /test</inline>
+				</vfs>
+				<search-path name="nix" path="/corepkgs"/>
+			</nix>
+		</config>
+	</start>
+
+	<start name="terminal">
+		<binary name="log_terminal" />
+		<resource name="RAM" quantum="1M"/>
+		<provides><service name="Terminal"/></provides>
+	</start>
+
+	<start name="noux">
+		<resource name="RAM" quantum="16M"/>
+		<route>
+			<service name="File_system">
+				<child name="nix"/>
+			</service>
+			<any-service>
+				<parent/> <any-child/>
+			</any-service>
+		</route>
+		<config verbose="yes">
+			<fstab>
+				<tar name="findutils.tar" /> 
+				<dir name="result"> <fs root="test"/> </dir>
+			</fstab>
+			<start name="/bin/find">
+				<arg value="/result/x"/>
+				<arg value="/result/y"/>
+				<arg value="/result/z"/>
+			</start>
+		</config>
+	</start>
+
+</config>
+}
+
+install_config $config
+
+set boot_modules {
+	core init ld.lib.so timer vfs fs_rom nix
+	libc.lib.so libm.lib.so stdcxx.lib.so
+	nixexpr.lib.so nixformat.lib.so nixmain.lib.so nixstore.lib.so nixutil.lib.so
+	builder store_ingest
+	nix_corepkgs.tar
+	log_terminal libc_noux.lib.so noux findutils.tar
+}
+
+build_boot_image $boot_modules
+
+append qemu_args " -nographic"
+
+run_genode_until {child "noux" exited with exit value 0} 45

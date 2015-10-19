@@ -602,7 +602,7 @@ index 6a6f028..d8a10fd 100644
  struct StringSink : Sink
  {
 diff --git a/src/libutil/types.hh b/src/libutil/types.hh
-index 160884e..e3e2ded 100644
+index 160884e..dce1863 100644
 --- a/src/libutil/types.hh
 +++ b/src/libutil/types.hh
 @@ -8,14 +8,8 @@
@@ -622,7 +622,7 @@ index 160884e..e3e2ded 100644
  
  
  namespace nix {
-@@ -38,27 +32,39 @@ struct FormatOrString
+@@ -38,27 +32,37 @@ struct FormatOrString
  };
  
  
@@ -651,9 +651,7 @@ index 160884e..e3e2ded 100644
 +        std::runtime_error(fs.s),
 +        err(fs.s),
 +        status(status)
-+    {
-+        PERR("%s%s", prefix_.c_str(), fs.s.c_str());
-+    }
++    { }
 +
      const char * what() const noexcept { return err.c_str(); }
 -#endif
@@ -673,7 +671,7 @@ index 160884e..e3e2ded 100644
  #define MakeError(newClass, superClass) \
      class newClass : public superClass                  \
      {                                                   \
-@@ -66,15 +72,6 @@ public:
+@@ -66,15 +70,6 @@ public:
          newClass(const FormatOrString & fs, unsigned int status = 1) : superClass(fs, status) { }; \
      };
  
