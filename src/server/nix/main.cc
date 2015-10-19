@@ -1,12 +1,12 @@
 /*
- * \brief  Serve Nix expressions as ROM dataspaces
+ * \brief  Serve Nix expressions
  * \author Emery Hemingway
  * \date   2015-10-13
  *
  * This component can barely be called a server.
  * Incoming session requestes are rewritten with
  * the result of a Nix evaulation and forwarded
- * to a ROM session provided by the parent.
+ * by the parent to a ROM or File_system service.
  */
 
 /*
@@ -43,51 +43,118 @@
 namespace Nix {
 	using namespace Genode;
 
+	struct State_handle;
 	struct State;
-	class  Rom_root;
+
+	template <typename SESSION_TYPE> class Service_proxy;
+
+	class Rom_root;
+	class File_system_root;
 }
 
+
 /**
- * Nix evaluation state and service connections
- *
- * This struct allows the evaluator to be destroyed at a yield
- * request or re-instantiated with configuration changes.
+ * Handle that prevents the state from being destroyed
  */
-struct Nix::State
-{
-	Vfs::Dir_file_system vfs;
-	nix::Vfs_root        vfs_root;
-	nix::Store           store;
-	nix::EvalState       eval_state;
-
-	State()
-	:
-		vfs(config()->xml_node().sub_node("nix").sub_node("vfs"),
-		    Vfs::global_file_system_factory()),
-		vfs_root(vfs),
-		store(vfs_root),
-		eval_state(vfs_root, store, config()->xml_node().sub_node("nix"))
-	{ }
-
-};
-
-
-class Nix::Rom_root : public Genode::Rpc_object<Genode::Typed_root<Genode::Rom_session>>
+class Nix::State_handle
 {
 	private:
 
-		Parent_service  _backend;
-		Lock           &_lock;
-		State          *_state;
+		Lock           &lock;
 
-		nix::Path _realise(Genode::Xml_node policy, char const *rom_filename)
+	public:
+
+		nix::Store     &store;
+		nix::EvalState &eval_state;
+
+		State_handle(Lock &lock, nix::Store &store, nix::EvalState &eval)
+		: lock(lock), store(store), eval_state(eval) { }
+
+		~State_handle() { lock.unlock(); }
+};
+
+
+/**
+ * Allocates and destroys state
+ */
+class Nix::State
+{
+	private:
+
+		Lock &_lock;
+
+		struct Internal_state
 		{
-			Lock::Guard guard(_lock);
+			Vfs::Dir_file_system  vfs;
+			nix::Vfs_root         vfs_root;
+			nix::Store            store;
+			nix::EvalState        eval_state;
 
+			Internal_state()
+			:
+				vfs(config()->xml_node().sub_node("nix").sub_node("vfs"),
+				    Vfs::global_file_system_factory()),
+				vfs_root(vfs),
+				store(vfs_root),
+				eval_state(vfs_root, store, config()->xml_node().sub_node("nix"))
+			{ }
+		};
+
+		Internal_state *_state;
+
+	public:
+
+		State(Lock &lock) : _lock(lock), _state(nullptr) { }
+
+		~State()
+		{
+			_lock.lock();
+			if (_state != nullptr)
+				destroy (env()->heap(), _state);
+		}
+
+		State_handle lock()
+		{
+			_lock.lock();
 			if (_state == nullptr)
-				_state = new (env()->heap()) State;
+				_state = new (env()->heap()) Internal_state;
 
+			return State_handle(_lock, _state->store, _state->eval_state);
+		}
+
+		/**
+		 * Called from the main thread after locking
+		 */
+		void free()
+		{
+			if (_state == nullptr) return;
+
+			destroy(env()->heap(), _state);
+			_state = nullptr;
+		}
+};
+
+
+template <typename SESSION_TYPE>
+class Nix::Service_proxy : public Genode::Rpc_object<Typed_root<SESSION_TYPE>>
+{
+	protected:
+
+		virtual void read_nix_arg(char *arg, size_t arg_len,
+		                          Root::Session_args const &args) = 0;
+		virtual void rewrite_args(char *args, size_t args_len, nix::Path &out) = 0;
+
+
+	private:
+
+		Parent_service  _backend;
+		State          &_state;
+
+		nix::Path _realise(Genode::Xml_node policy, char const *nix_arg)
+		{
 			using namespace nix;
+
+			State_handle state = _state.lock();
 
 			enum { TMP_BUF_LEN = 256 };
 			char tmp_buf[TMP_BUF_LEN] = { '\0' };
@@ -103,12 +170,12 @@ class Nix::Rom_root : public Genode::Rpc_object<Genode::Typed_root<Genode::Rom_s
 			/* XXX: use the string methods from Xml_node */
 			try {
 				policy.attribute("file").value(tmp_buf, sizeof(tmp_buf));
-				e = _state->eval_state.parseExprFromFile(nix::Path(tmp_buf));
+				e = state.eval_state.parseExprFromFile(nix::Path(tmp_buf));
 
 			} catch (Xml_node::Nonexistent_attribute) {
-				e = _state->eval_state.parseExprFromFile("/default.nix");
+				e = state.eval_state.parseExprFromFile("/default.nix");
 			}
-			_state->eval_state.eval(e, root_value);
+			state.eval_state.eval(e, root_value);
 
 
 			/***********************
@@ -125,17 +192,7 @@ class Nix::Rom_root : public Genode::Rpc_object<Genode::Typed_root<Genode::Rom_s
 				arg_map[name] = value;
 			});
 
-			/* enclose value in quotes as a convienence*/
-			policy.for_each_sub_node("argstr", [&arg_map] (Xml_node arg_node) {
-				char  name[64] = { '\0' };
-				char value[64] = { '"' };
-
-				arg_node.attribute("name").value(name, sizeof(name));
-				arg_node.attribute("value").value(value+1, sizeof(value)-1);
-				arg_map[name] = value;
-			});
-
-			Bindings &args(*evalAutoArgs(_state->eval_state, arg_map));
+			Bindings &args(*evalAutoArgs(state.eval_state, arg_map));
 
 
 			/********************
@@ -146,10 +203,10 @@ class Nix::Rom_root : public Genode::Rpc_object<Genode::Typed_root<Genode::Rom_s
 			try {
 				policy.attribute("attr").value(tmp_buf, sizeof(tmp_buf));
 				v = findAlongAttrPath(
-					_state->eval_state, tmp_buf, args, root_value);
+					state.eval_state, tmp_buf, args, root_value);
 			} catch (Xml_node::Nonexistent_attribute) {
 				v = findAlongAttrPath(
-					_state->eval_state, "", args, root_value);
+					state.eval_state, "", args, root_value);
 			}
 
 
@@ -162,31 +219,23 @@ class Nix::Rom_root : public Genode::Rpc_object<Genode::Typed_root<Genode::Rom_s
 			if (args.empty())
 				func = *v;
 			else
-				_state->eval_state.autoCallFunction(args, *v, func);
+				state.eval_state.autoCallFunction(args, *v, func);
 
-			Value filename_value;
-			mkString(filename_value, rom_filename);
+			Value arg_value;
+			mkString(arg_value, nix_arg);
 
 			Value result;
-			_state->eval_state.callFunction(func, filename_value, result, noPos);
+			state.eval_state.callFunction(func, arg_value, result, noPos);
 
-			DrvInfo drv_info(_state->eval_state);
-			if (getDerivation(_state->eval_state, result, drv_info, false)) {
+			DrvInfo drv_info(state.eval_state);
+			if (getDerivation(state.eval_state, result, drv_info, false)) {
 				PathSet drv_set{ drv_info.queryDrvPath() };
-				_state->store.buildPaths(drv_set, nix::bmNormal);
+				state.store.buildPaths(drv_set, nix::bmNormal);
 
 				return drv_info.queryOutPath();
 			}
 
-			switch (result.type) {
-			case tPath:
-				return result.path;
-			case tString:
-				return nix::Path(result.string.s);
-			default:
-				PERR("evaluation result is not a string or path");
-			}
-			return "";
+			return state.eval_state.coerceToString(noPos, result, context);
 		}
 
 	public:
@@ -194,23 +243,8 @@ class Nix::Rom_root : public Genode::Rpc_object<Genode::Typed_root<Genode::Rom_s
 		/**
 		 * Constructor
 		 */
-		Rom_root(Lock &lock) : _backend("ROM"), _lock(lock), _state(nullptr) { }
-
-		/**
-		 * Free the Nix state and inform the parent
-		 *
-		 * Rom_root will be locked by the main thread
-		 * before calling this method.
-		 */
-		void free_state()
-		{
-			if (_state == nullptr) return;
-
-			PDBG("destroying evaluation state");
-			destroy(env()->heap(), _state);
-			_state = nullptr;
-		}
-
+		Service_proxy(char const *service_name, State &state)
+		: _backend(service_name), _state(state) { }
 
 		/********************
 		 ** Root interface **
@@ -220,35 +254,69 @@ class Nix::Rom_root : public Genode::Rpc_object<Genode::Typed_root<Genode::Rom_s
 		                           Affinity           const &affinity)
 		{
 			enum {
-				    ARGS_MAX_LEN = 160,
-				FILENAME_MAX_LEN = 128
+				   ARGS_MAX_LEN = 160,
+				NIX_ARG_MAX_LEN = 128
 			};
 
 			char new_args[ARGS_MAX_LEN];
-			char filename[FILENAME_MAX_LEN];
-
-			Session_label label(args.string());
-
-			Genode::Arg_string::find_arg(args.string(), "filename").string(
-				filename, sizeof(filename), "");
-
-			if (filename[0] == '\0')
-				throw Invalid_args();
-
+			char nix_arg[NIX_ARG_MAX_LEN];
 			nix::Path out;
 
+			read_nix_arg(nix_arg, NIX_ARG_MAX_LEN, args);
+
+			if (nix_arg[0] == '\0')
+				throw Root::Invalid_args();
+
+			Session_label label(args.string());
 			try {
 				Session_policy policy(label);
-				out = _realise(policy, filename);
+				nix::handleExceptions("nix", [&] {
+					out = _realise(policy, nix_arg);
+				});
 			} catch (Session_policy::No_policy_defined) {
-				out = _realise(Xml_node("</>", 3), filename);
+				nix::handleExceptions("nix", [&] {
+					out = _realise(Xml_node("<policy/>", 9), nix_arg);
+				});
 			}
 
 			if (out == "") {
-				PERR("no evaluation for '%s'", filename);
+				PERR("no evaluation for '%s'", nix_arg);
 				throw Root::Unavailable();
 			}
 
+			strncpy(new_args, args.string(), ARGS_MAX_LEN);
+			rewrite_args(new_args, sizeof(new_args), out);
+			Arg_string::set_arg(new_args, ARGS_MAX_LEN, "label", "store");
+
+			try { return _backend.session(new_args, affinity); }
+			catch (Service::Invalid_args)   { throw Root::Invalid_args();  }
+			catch (Service::Quota_exceeded) { throw Root::Quota_exceeded(); }
+			catch (...) { }
+			throw Root::Unavailable();
+		}
+
+		void upgrade(Session_capability        cap,
+		             Root::Upgrade_args const &args) override {
+			_backend.upgrade(cap, args.string()); }
+
+		void close(Session_capability cap) override {
+			_backend.close(cap); }
+};
+
+
+class Nix::Rom_root : public Service_proxy<Rom_session>
+{
+	protected:
+
+		void read_nix_arg(char *arg, size_t arg_len,
+		                  Root::Session_args const &args) override
+		{
+			Genode::Arg_string::find_arg(args.string(), "filename").string(
+				arg, arg_len, "");
+		}
+
+		void rewrite_args(char *args, size_t args_len, nix::Path &out) override
+		{
 			// XXX: slash hack
 			while (out.front() == '/')
 				out.erase(0,1);
@@ -256,57 +324,86 @@ class Nix::Rom_root : public Genode::Rpc_object<Genode::Typed_root<Genode::Rom_s
 			out.insert(0, "\"");
 			out.push_back('"');
 
-			strncpy(new_args, args.string(), ARGS_MAX_LEN);
-			Arg_string::set_arg(new_args, ARGS_MAX_LEN, "filename", out.c_str());
-			Arg_string::set_arg(new_args, ARGS_MAX_LEN, "label", "store");
-
-			try { return _backend.session(new_args, affinity); }
-			catch (Service::Invalid_args)   { throw Invalid_args();  }
-			catch (Service::Quota_exceeded) { throw Quota_exceeded(); }
-			catch (...) { }
-			throw Root::Unavailable();
+			Arg_string::set_arg(args, args_len, "filename", out.c_str());
 		}
 
-		void upgrade(Session_capability        cap,
-		             Root::Upgrade_args const &args) override
-		{
-			_backend.upgrade(cap, args.string());
-		}
+	public:
 
-		void close(Session_capability cap) override
-		{
-			_backend.close(cap);
-		}
+		Rom_root(State &state)
+		: Service_proxy<Rom_session>("ROM", state)
+		{ }
 };
+
+
+class Nix::File_system_root : public Service_proxy<File_system::Session>
+{
+	protected:
+
+		void read_nix_arg(char *arg, size_t arg_len,
+		                  Root::Session_args const &args) override
+		{
+			Genode::Arg_string::find_arg(args.string(), "root").string(
+				arg, arg_len, "");
+
+			while (*arg == '/')
+				strncpy(arg, arg+1, arg_len-1);
+		}
+
+		void rewrite_args(char *args, size_t args_len, nix::Path &out) override
+		{
+			// XXX: slash hack
+			if (out.front() != '/')
+				out.insert(0, "/");
+
+			out.insert(0, "\"");
+			out.push_back('"');
+
+			Arg_string::set_arg(args, args_len, "root", out.c_str());
+			Arg_string::set_arg(args, args_len, "writeable", false);
+		}
+
+	public:
+
+		File_system_root(State &state)
+		: Service_proxy<File_system::Session>("File_system", state)
+		{ }
+};
+
 
 int main(void)
 {
-	using namespace Genode;
+	using namespace Nix;
 
-	static Lock          lock;
-	static Nix::Rom_root rom_root(lock);
+	static Lock  lock(Cancelable_lock::LOCKED);
+	static State state(lock);
 
-	/* connection to capability service needed to create capabilities */
+	static Rom_root rom_root(state);
+	static File_system_root fs_root(state);
+
 	static Cap_connection cap;
 
-	enum { STACK_SIZE = 2*1024*sizeof(long) };
-	static Rpc_entrypoint ep(&cap, STACK_SIZE, "nix_rom_ep");
+	/* XXX: does the nix evaluation use the same stack? */
+	enum { STACK_SIZE = 8*1024*sizeof(long) };
+	static Rpc_entrypoint ep(&cap, STACK_SIZE, "nix_ep");
 
-	env()->parent()->announce(ep.manage(&rom_root));
+	static Signal_receiver sig_rec;
+	static Signal_context  yield_ctx;
+	static Signal_context  config_ctx;
 
-	/* wait on yield signals from the parent and config updates */
-	Signal_receiver sig_rec;
-	Signal_context  yield_ctx;
-	Signal_context  config_ctx;
 	env()->parent()->yield_sigh(sig_rec.manage(&yield_ctx));
 	config()->sigh(sig_rec.manage(&config_ctx));
 
+	env()->parent()->announce(ep.manage(&rom_root));
+	env()->parent()->announce(ep.manage(&fs_root));
+
+	/* wait on yield signals and config updates */
 	for (;;) {
+		lock.unlock();
 		Signal sig = sig_rec.wait_for_signal();
+		lock.lock();
 
-		Lock::Guard guard(lock);
-
-		rom_root.free_state();
+		/* destroy the Nix state */
+		state.free();
 
 		if (sig.context() == &yield_ctx) {
 			PDBG("yielding resources to parent");
