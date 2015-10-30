@@ -1,0 +1,180 @@
+#
+# Test of the Nix ROM server
+#
+
+set use_usb_input [expr ![have_spec ps2] && ![have_spec sdl] && [have_spec usb]]
+
+source ${genode_dir}/repos/base/run/platform_drv.inc
+
+set build_components {
+	core init drivers/timer
+	server/vfs
+	server/store_ingest
+	server/builder
+	server/fs_rom
+	server/terminal
+	app/nix-repl
+	test/libports/ncurses
+	test/libports/nixexpr
+	test/timer
+}
+
+append_platform_drv_build_components
+
+lappend_if $use_usb_input       build_components drivers/usb
+
+
+build $build_components
+
+create_boot_directory
+
+append config {
+<config>
+	<parent-provides>
+		<service name="ROM"/>
+		<service name="RAM"/>
+		<service name="IRQ"/>
+		<service name="IO_MEM"/>
+		<service name="IO_PORT"/>
+		<service name="CAP"/>
+		<service name="PD"/>
+		<service name="RM"/>
+		<service name="CPU"/>
+		<service name="LOG"/>
+		<service name="SIGNAL"/>
+	</parent-provides>
+	<default-route>
+		<service name="ROM">
+			<if-arg key="label" value="store"/>
+			<child name="store_rom"/>
+		</service>
+		<any-service>
+			<child name="vfs"/>
+			<parent/> <any-child/>
+		</any-service>
+	</default-route>
+	<start name="timer">
+		<resource name="RAM" quantum="1M"/>
+		<provides><service name="Timer"/></provides>
+	</start>}
+
+append_platform_drv_config
+
+append_if [have_spec sdl] config {
+	<start name="fb_sdl">
+		<resource name="RAM" quantum="4M"/>
+		<config width="640" height="480"/>
+		<provides>
+			<service name="Input"/>
+			<service name="Framebuffer"/>
+		</provides>
+	</start>}
+
+append_if [have_spec framebuffer] config {
+	<start name="fb_drv">
+		<resource name="RAM" quantum="8M"/>
+		<provides><service name="Framebuffer"/></provides>
+		<config width="640" height="480"/>
+	</start>}
+
+append_if [have_spec ps2] config {
+	<start name="ps2_drv">
+		<resource name="RAM" quantum="1M"/>
+		<provides><service name="Input"/></provides>
+	</start> }
+
+append_if $use_usb_input config {
+	<start name="usb_drv">
+		<resource name="RAM" quantum="12M"/>
+		<provides><service name="Input"/></provides>
+		<config uhci="yes" ehci="no" xhci="no"> <hid/> </config>
+	</start> }
+
+append config {
+	<start name="vfs">
+		<resource name="RAM" quantum="8M"/>
+		<provides><service name="File_system"/></provides>
+		<config>
+			<vfs> <ram/> </vfs>
+			<policy label="store_ingest" writeable="yes"/>
+			<policy label="builder" writeable="yes"/>
+			<policy label=""/>
+		</config>
+	</start>
+
+	<start name="store_rom">
+		<binary name="fs_rom"/>
+		<resource name="RAM" quantum="8M"/>
+		<provides><service name="ROM"/></provides>
+	</start>
+
+	<start name="store_ingest">
+		<resource name="RAM" quantum="2M"/>
+		<provides><service name="File_system"/></provides>
+	</start>
+
+	<start name="builder">
+		<resource name="RAM" quantum="8M"/>
+		<provides><service name="Builder"/></provides>
+	</start>
+
+	<start name="terminal">
+		<resource name="RAM" quantum="2M"/>
+		<provides><service name="Terminal"/></provides>
+		<config>
+			<keyboard layout="dvorak"/>
+		</config>
+	</start>
+
+	<start name="nix-repl">
+		<resource name="RAM" quantum="8M"/>
+		<route>
+			<service name="ROM">
+				<if-arg key="label" value="store"/>
+				<child name="store_rom"/>
+			</service>
+			<service name="File_system">
+				<if-arg key="label" value="ingest"/>
+				<child name="store_ingest"/>
+			</service>
+			<any-service>
+				<parent/> <any-child/>
+			</any-service>
+		</route>
+		<config>
+			<nix>
+				<vfs>
+					<dir name="corepkgs"> <tar name="nix_corepkgs.tar"/> </dir>
+				</vfs>
+				<search-path name="nix" path="/corepkgs"/>
+			</nix>
+			<policy label=""/>
+		</config>
+	</start>
+
+</config>
+}
+
+install_config $config
+
+set boot_modules {
+	core init ld.lib.so timer vfs fs_rom
+	libc.lib.so libm.lib.so stdcxx.lib.so libc_noux.lib.so
+	nixexpr.lib.so nixformat.lib.so nixmain.lib.so nixstore.lib.so nixutil.lib.so
+	builder store_ingest noux
+	nix_corepkgs.tar
+	terminal
+	nix-repl
+}
+
+append_platform_drv_boot_modules
+
+# platform-specific modules
+lappend_if [have_spec       linux] boot_modules fb_sdl
+lappend_if [have_spec framebuffer] boot_modules fb_drv
+lappend_if [have_spec         ps2] boot_modules ps2_drv
+lappend_if $use_usb_input          boot_modules usb_drv
+
+build_boot_image $boot_modules
+
+run_genode_until forever
