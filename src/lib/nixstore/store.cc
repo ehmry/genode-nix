@@ -85,10 +85,10 @@ void Store::copy_dir(File_system::Session   &fs,
 		_vfs_root.fs().dirent(src_path.c_str(), i, dirent);
 		if (dirent.type == Directory_service::DIRENT_TYPE_END) break;
 
-		Path sub_src_path = src_path + "/";
+		nix::Path sub_src_path = src_path + "/";
 		sub_src_path.append(dirent.name);
 
-		Path sub_dst_path = dst_path + "/";
+		nix::Path sub_dst_path = dst_path + "/";
 		sub_dst_path.append(dirent.name);
 
 		switch (dirent.type) {
@@ -144,8 +144,8 @@ void Store::copy_dir(File_system::Session   &fs,
 
 void Store::copy_file(File_system::Session    &fs,
                              File_system::File_handle file_handle,
-                             Path const              &src_path,
-                             Path const              &dst_path)
+                             nix::Path const         &src_path,
+                             nix::Path const         &dst_path)
 {
 	using namespace Vfs;
 
@@ -383,7 +383,7 @@ Store::hash_dir(uint8_t *buf, nix::Path const &src_path)
 	}
 
 	for (auto i = entries.cbegin(); i != entries.cend(); ++i) {
-		Path subpath = src_path + "/" + i->first;
+		nix::Path subpath = src_path + "/" + i->first;
 
 		if (i->second == Directory_service::DIRENT_TYPE_DIRECTORY) {
 			hash_dir(buf, subpath);
@@ -472,18 +472,18 @@ nix::Hash nix::Store::queryPathHash(const Path & path) {
 
 /* Query the set of outgoing FS references for a store path.	The
 	 result is not cleared. */
-void nix::Store::queryReferences(const Path & path,
+void nix::Store::queryReferences(const nix::Path & path,
 		PathSet & references) { NOT_IMP; };
 
 	/* Queries the set of incoming FS references for a store path.
 	 The result is not cleared. */
-void nix::Store::queryReferrers(const Path & path,
+void nix::Store::queryReferrers(const nix::Path & path,
 		PathSet & referrers) { NOT_IMP; };
 
 /* Query the deriver of a store path.	Return the empty string if
 	 no deriver has been set. */
-Path nix::Store::queryDeriver(const Path & path) {
-	NOT_IMP; return Path(); };
+nix::Path nix::Store::queryDeriver(const Path & path) {
+	NOT_IMP; return nix::Path(); };
 
 /* Return all currently valid derivations that have `path' as an
 	 output.	(Note that the result of `queryDeriver()' is the
@@ -502,7 +502,7 @@ StringSet nix::Store::queryDerivationOutputNames(const Path & path) {
 
 /* Query the full store path given the hash part of a valid store
 	 path, or "" if the path doesn't exist. */
-Path nix::Store::queryPathFromHashPart(const string & hashPart) {
+nix::Path nix::Store::queryPathFromHashPart(const string & hashPart) {
 	NOT_IMP; return Path(); };
 
 /* Query which of the given paths have substitutes. */
@@ -522,8 +522,8 @@ void nix::Store::querySubstitutablePathInfos(const PathSet & paths,
  * The function object `filter' can be used to exclude files (see
  * libutil/archive.hh).
  */
-Path
-Store::addToStore(const Path & srcPath,
+nix::Path
+Store::addToStore(const nix::Path & srcPath,
                          bool recursive, HashType hashAlgo,
                          PathFilter & filter, bool repair)
 {
@@ -568,7 +568,7 @@ Store::addToStore(const Path & srcPath,
  * Like addToStore, but the contents written to the output path is
  * a regular file containing the given string.
  */
-Path nix::Store::addTextToStore(const string & name, const string & text,
+nix::Path nix::Store::addTextToStore(const string & name, const string & text,
 	                                      const PathSet & references, bool repair)
 {
 	using namespace File_system;
@@ -633,7 +633,7 @@ Path nix::Store::addTextToStore(const string & name, const string & text,
 };
 
 
-Path nix::Store::addDataToStore(const string & name,
+nix::Path nix::Store::addDataToStore(const string & name,
                                        void *buf, size_t len,
                                        bool repair)
 {
@@ -652,7 +652,7 @@ Path nix::Store::addDataToStore(const string & name,
 	hash.digest(path_buf, sizeof(path_buf));
 	Store_hash::encode(path_buf, name.c_str(), sizeof(path_buf));
 	if (_builder.valid((char *)path_buf))
-		return Path((char *)path_buf);
+		return nix::Path((char *)path_buf);
 	{
 		debug(format("adding dataspace ‘%1%’ to the store") % name);
 
@@ -711,7 +711,7 @@ Path nix::Store::addDataToStore(const string & name,
 			 path and append its references and its deriver.	Optionally, a
 			 cryptographic signature (created by OpenSSL) of the preceding
 			 data is attached. */
-		void nix::Store::exportPath(const Path & path, bool sign,
+		void nix::Store::exportPath(const nix::Path & path, bool sign,
 				Sink & sink) { NOT_IMP; };
 
 		/* Import a sequence of NAR dumps created by exportPaths() into
@@ -722,18 +722,18 @@ Path nix::Store::addDataToStore(const string & name,
 		/* Ensure that a path is valid.	If it is not currently valid, it
 			 may be made valid by running a substitute (if defined for the
 			 path). */
-		void nix::Store::ensurePath(const Path & path) { NOT_IMP; };
+		void nix::Store::ensurePath(const nix::Path & path) { NOT_IMP; };
 
 		/* Add a store path as a temporary root of the garbage collector.
 			 The root disappears as soon as we exit. */
-		void nix::Store::addTempRoot(const Path & path) { NOT_IMP; };
+		void nix::Store::addTempRoot(const nix::Path & path) { NOT_IMP; };
 
 		/* Add an indirect root, which is merely a symlink to `path' from
 			 /nix/var/nix/gcroots/auto/<hash of `path'>.	`path' is supposed
 			 to be a symlink to a store path.	The garbage collector will
 			 automatically remove the indirect root when it finds that
 			 `path' has disappeared. */
-		void nix::Store::addIndirectRoot(const Path & path) { NOT_IMP; };
+		void nix::Store::addIndirectRoot(const nix::Path & path) { NOT_IMP; };
 
 		/* Acquire the global GC lock, then immediately release it.	This
 			 function must be called after registering a new permanent root,

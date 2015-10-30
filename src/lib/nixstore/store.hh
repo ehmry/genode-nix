@@ -21,8 +21,6 @@
 #include <base/lock.h>
 #include <os/path.h>
 
-
-
 namespace nix {
 
 	bool willBuildLocally(const Derivation & drv);
@@ -31,8 +29,6 @@ namespace nix {
 	class Store;
 
 }
-
-using namespace nix;
 
 /**
  * Stores fulfils nix::StoreAPI but imports files to the store
