@@ -29,8 +29,6 @@
 #include <builder_session/builder_session.h>
 #include <vfs/file_system_factory.h>
 #include <vfs/dir_file_system.h>
-#include <vfs/rom_file_system.h>
-#include <vfs/fs_file_system.h>
 #include <os/session_policy.h>
 #include <os/config.h>
 #include <base/service.h>
