@@ -87,6 +87,32 @@ class Builder::Root_component : public Genode::Root_component<Session_component>
 				Process::dynamic_linker(rom.dataspace());
 			} catch (...) { }
 
+			using namespace File_system;
+			static char const *placeholder = ".builder";
+
+			/* verify permissions */
+			try {
+				Dir_handle root_handle = _fs.dir("/", false);
+				Handle_guard root_guard(_fs, root_handle);
+
+				try { _fs.unlink(root_handle, placeholder); }
+				catch (Lookup_failed) { }
+
+				_fs.close(_fs.file(
+					root_handle, placeholder, READ_WRITE, true));
+			} catch (...) {
+				PERR("insufficient File_system access");
+				throw;
+			}
+
+			/* verify that ROM requests are routed properly */
+			try {
+				Rom_connection rom(".builder", "store");
+			} catch (...) {
+				PERR("failed to aquire store ROM");
+				throw;
+			}
+
 			env()->parent()->announce(ep.manage(*this));
 		}
 };
