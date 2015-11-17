@@ -1,170 +1,143 @@
 #
-# Test of the store_ingest server
+# Ingest consistency test
 #
 
-set platform_base_dir "base-nova"
-
 set build_components {
-	core init drivers/timer
-	server/vfs
+	core
+	drivers/timer
+	init
+	lib/libc_noux
+	lib/vfs/jitterentropy
+	noux/minimal
 	server/store_ingest
-	server/builder
-	server/fs_rom
-	server/nix
-	test/libports/nixexpr
-	test/timer
-	test/rom
-	noux/minimal server/log_terminal lib/libc_noux
-	noux-pkg/findutils
+	server/vfs
+	test/libports/ncurses
 }
+
+#
+# Build Noux packages only once
+#
+foreach pkg {bash coreutils} {
+	lappend_if [expr ![file exists bin/$pkg]] build_components noux-pkg/$pkg }
 
 build $build_components
 
-exec tar cfv bin/findutils.tar -h -C bin/findutils .
+# strip all binaries prior archiving
+exec sh -c "find bin/bash/ bin/coreutils/ -type f | (xargs [cross_dev_prefix]strip || true) 2>/dev/null"
+
+exec tar cfv bin/bash.tar      -h -C bin/bash .
+exec tar cfv bin/coreutils.tar -h -C bin/coreutils .
+
+file copy -force [genode_dir]/repos/nix/run/ingest_loop.sh bin
 
 create_boot_directory
 
 append config {
-<config verbose="yes">
-	<parent-provides>
-		<service name="ROM"/>
-		<service name="RAM"/>
-		<service name="CAP"/>
-		<service name="PD"/>
-		<service name="RM"/>
-		<service name="CPU"/>
-		<service name="LOG"/>
-		<service name="SIGNAL"/>
-	</parent-provides>
-	<default-route>
-		<service name="ROM">
-			<if-arg key="label" value="store"/>
-			<child name="store_rom"/>
-		</service>
-		<service name="File_system">
-			<if-arg key="label" value="ingest"/>
-			<child name="store_ingest"/>
-		</service>
-		<service name="File_system">
-			<if-arg key="label" value="store"/>
-			<child name="store_fs"/>
-		</service>
-		<any-service>
-			<parent/> <any-child/>
-		</any-service>
-	</default-route>
-	<start name="timer">
-		<resource name="RAM" quantum="1M"/>
-		<provides><service name="Timer"/></provides>
-	</start>
-
-	<start name="store_fs">
-		<binary name="vfs"/>
-		<resource name="RAM" quantum="8M"/>
+	<config verbose="yes">
+		<parent-provides>
+			<service name="ROM"/>
+			<service name="LOG"/>
+			<service name="CAP"/>
+			<service name="RAM"/>
+			<service name="RM"/>
+			<service name="CPU"/>
+			<service name="PD"/>
+			<service name="SIGNAL"/>
+		</parent-provides>
+		<default-route>
+			<any-service> <parent/> <any-child/> </any-service>
+		</default-route>
+		<start name="timer">
+			<resource name="RAM" quantum="1M"/>
+			<provides><service name="Timer"/></provides>
+		</start>
+	<start name="vfs">
+		<resource name="RAM" quantum="10M"/>
 		<provides><service name="File_system"/></provides>
 		<config>
 			<vfs> <ram/> </vfs>
 			<policy label="store_ingest" writeable="yes"/>
-			<policy label="builder" writeable="yes"/>
-			<policy label=""/>
+			<policy/>
 		</config>
 	</start>
-
-	<start name="store_rom">
-		<binary name="fs_rom"/>
-		<resource name="RAM" quantum="4M"/>
-		<provides><service name="ROM"/></provides>
-		<route>
-			<any-service>
-				<child name="store_fs"/>
-				<parent/>
-			</any-service>
-		</route>
-	</start>
-
 	<start name="store_ingest">
-		<resource name="RAM" quantum="2M"/>
-		<provides><service name="File_system"/></provides>
-		<route>
-			<any-service>
-				<child name="store_fs"/>
-				<parent/>
-			</any-service>
-		</route>
-	</start>
-
-	<start name="builder">
-		<resource name="RAM" quantum="8M"/>
-		<provides><service name="Builder"/></provides>
-	</start>
-
-	<start name="nix">
-		<resource name="RAM" quantum="8M"/>
-		<provides>
-			<service name="ROM"/>
-			<service name="File_system"/>
-		</provides>
-		<config>
-			<nix>
-				<vfs>
-					<dir name="corepkgs"> <tar name="nix_corepkgs.tar"/> </dir>
-					<dir name="test">
-						<inline name="z">bar</inline>
-						<inline name="x">foo</inline>
-						<inline name="y"/>
-					</dir>
-					<inline name="default.nix">root: /test</inline>
-				</vfs>
-				<search-path name="nix" path="/corepkgs"/>
-			</nix>
-		</config>
-	</start>
-
-	<start name="terminal">
-		<binary name="log_terminal" />
 		<resource name="RAM" quantum="1M"/>
-		<provides><service name="Terminal"/></provides>
-	</start>
-
-	<start name="noux">
-		<resource name="RAM" quantum="16M"/>
+		<provides> <service name="File_system"/> </provides>
 		<route>
 			<service name="File_system">
-				<child name="nix"/>
+				<child name="vfs"/>
 			</service>
-			<any-service>
-				<parent/> <any-child/>
-			</any-service>
+			<any-service> <parent/> <any-child/> </any-service>
 		</route>
-		<config verbose="yes">
+	</start>
+	<start name="noux" verbose="yes">
+		<resource name="RAM" quantum="1G" />
+		<route>
+			<service name="File_system" label="ingest">
+				<child name="store_ingest" />
+			</service>
+			<service name="File_system" label="store">
+				<child name="vfs" />
+			</service>
+			<any-service> <parent/> <any-child/> </any-service>
+		</route>
+		<config stdin="/dev/null" stdout="/dev/log" stderr="/dev/log">
 			<fstab>
-				<tar name="findutils.tar" /> 
-				<dir name="result"> <fs root="test"/> </dir>
+				<dir name="dev">
+					<jitterentropy name="random"/>
+					<log/>
+					<null/>
+					<zero/>
+				</dir>
+				<dir name="store" > <fs label="store"/> </dir>
+				<dir name="ingest"> <fs label="ingest" /> </dir>
+				<rom name="ingest_loop.sh" />
+				<tar name="coreutils.tar"  />
+				<tar name="bash.tar"       />
 			</fstab>
-			<start name="/bin/find">
-				<arg value="/result/x"/>
-				<arg value="/result/y"/>
-				<arg value="/result/z"/>
+			<start name="/bin/bash">
+				<arg value="/ingest_loop.sh"/>
 			</start>
 		</config>
 	</start>
-
 </config>
 }
 
 install_config $config
 
+
+#
+# Boot modules
+#
+
+# generic modules
 set boot_modules {
-	core init ld.lib.so timer vfs fs_rom nix
-	libc.lib.so libm.lib.so stdcxx.lib.so
-	nixexpr.lib.so nixformat.lib.so nixmain.lib.so nixstore.lib.so nixutil.lib.so
-	builder store_ingest
-	nix_corepkgs.tar
-	log_terminal libc_noux.lib.so noux findutils.tar
+	bash.tar
+	core
+	coreutils.tar
+	ingest_loop.sh
+	init
+	ld.lib.so
+	libc.lib.so
+	libc_noux.lib.so
+	libm.lib.so
+	ncurses.lib.so
+	noux
+	store_ingest
+	timer
+	vfs
+	vfs_jitterentropy.lib.so
 }
 
 build_boot_image $boot_modules
 
 append qemu_args " -nographic"
 
-run_genode_until {child "noux" exited with exit value 0} 45
+if {[have_spec x86_64]} {
+	# bash.tar is really huge when built for x86_64
+	append qemu_args " -m 320"
+}
+
+run_genode_until "nd5p94bfndbmmj1n25fq3v79253w9mrq-zero-8" 60
+
+file delete bin/bash.tar bin/coreutils.tar bin/ingest_loop.sh
