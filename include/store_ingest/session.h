@@ -16,8 +16,10 @@
 
 /* Genode includes */
 #include <store_hash/encode.h>
+#include <file_system/util.h>
 #include <file_system_session/connection.h>
 #include <file_system_session/rpc_object.h>
+#include <os/path.h>
 #include <os/signal_rpc_dispatcher.h>
 #include <os/server.h>
 #include <os/session_policy.h>
@@ -42,6 +44,24 @@ namespace Store_ingest {
 		static unsigned i;
 		return i++;
 	};
+
+	static void empty_dir(File_system::Session &fs, char const *path)
+	{
+		Directory_entry dirent;
+
+		Dir_handle dir_handle = fs.dir(path, false);
+		Handle_guard guard(fs, dir_handle);
+
+		while (read(fs, dir_handle, &dirent, sizeof(dirent)) == sizeof(dirent)) {
+			try {
+				fs.unlink(dir_handle, dirent.name);
+			} catch (Not_empty) {
+				Genode::Path<MAX_PATH_LEN> subdir(dirent.name, path);
+				empty_dir(fs, subdir.base());
+				fs.unlink(dir_handle, dirent.name);
+			}
+		}
+	}
 
 }
 
@@ -82,6 +102,14 @@ class Store_ingest::Session_component : public Session_rpc_object
 			{
 				for (unsigned i = 0; i < MAX_NODE_HANDLES; ++i)
 					_nodes[i] = 0;
+			}
+
+			void close_all(File_system::Session &fs)
+			{
+				for (unsigned i = 0; i < MAX_NODE_HANDLES; ++i)
+					if (_nodes[i])
+						fs.close(Node_handle(i));
+
 			}
 
 			void insert(Node_handle handle, Hash_node *node)
@@ -400,8 +428,8 @@ class Store_ingest::Session_component : public Session_rpc_object
 			Lock::Guard packet_guard(_packet_lock);
 
 			/*
-			 * Queue what client packets are available then
-			 * send our own packets to the backend.
+			 * Keep local copies of the client packets that come in
+			 * and then send our own packets to the backend.
 			 */
 			int n = 0;
 			while (tx_sink()->packet_avail() && n < TX_QUEUE_SIZE) {
@@ -483,6 +511,8 @@ class Store_ingest::Session_component : public Session_rpc_object
 			 */
 			Lock::Guard packet_guard(_packet_lock);
 
+			_registry.close_all(_fs);
+
 			/* Flush the root. */
 			File *file_node = dynamic_cast<File *>(root->hash);
 			if (file_node) {
@@ -502,22 +532,28 @@ class Store_ingest::Session_component : public Session_rpc_object
 			}
 
 			uint8_t final_name[MAX_NAME_LEN];
-			root->hash->digest(final_name, sizeof(final_name));
-			Store_hash::encode(final_name, name, sizeof(final_name));
+			root->hash->digest(&final_name[1], sizeof(final_name)-1);
+			Store_hash::encode(&final_name[1], name, sizeof(final_name)-1);
+			final_name[0] = '/';
+
 			try {
+				/* check if the final path already exists */
+				_fs.close(_fs.node((char *)final_name));
+				try {
+					_fs.unlink(_root_handle, root->filename);
+				} catch (Not_empty) {
+					Genode::Path<MAX_PATH_LEN> path(root->filename);
+					empty_dir(_fs, path.base());
+					_fs.unlink(_root_handle, root->filename);
+				}
+
+			} catch (Lookup_failed) {
+				/* move the ingest root to its final location */
 				_fs.move(_root_handle, root->filename,
-				         _root_handle, (char *)final_name);
-			} catch (File_system::Node_already_exists) {
-				/* A redundant ingest. */
-				_fs.unlink(_root_handle, root->filename);
-				/* This needs to be done recursively. */
+				         _root_handle, (char *)final_name+1);
 			}
-			/*
-			 * Close all the open handles
-			 * underneath the the root, unless there is
-			 * a better way to prevent further writes.
-			 */
-			root->finalize((char *)final_name);
+
+			root->finalize((char *)final_name+1);
 		}
 
 		void finish(const char *name)
@@ -576,7 +612,12 @@ class Store_ingest::Session_component : public Session_rpc_object
 				try {
 					handle = _fs.dir(name, create);
 				} catch (Node_already_exists) {
-					_fs.unlink(_root_handle, name+1);
+					try {
+						_fs.unlink(_root_handle, name+1);
+					} catch (Not_empty) {
+						empty_dir(_fs, name);
+						_fs.unlink(_root_handle, name+1);
+					}
 					handle = _fs.dir(name, true);
 				} catch (Permission_denied) {
 					PERR("permission denied at backend");
@@ -624,7 +665,13 @@ class Store_ingest::Session_component : public Session_rpc_object
 				try {
 					handle = _fs.file(_root_handle, root->filename, mode, create);
 				} catch (Node_already_exists) {
-					_fs.unlink(_root_handle, root->filename);
+					try {
+						_fs.unlink(_root_handle, root->filename);
+					} catch (Not_empty) {
+						Genode::Path<MAX_PATH_LEN> path(root->filename);
+						empty_dir(_fs, path.base());
+						_fs.unlink(_root_handle, path.base());
+					}
 					handle = _fs.file(_root_handle, root->filename, mode, true);
 				} catch (Permission_denied) {
 					PERR("permission denied at backend");
