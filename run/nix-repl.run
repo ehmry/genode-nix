@@ -1,5 +1,7 @@
 #
-# Test of the Nix ROM server
+# Test of Nix-repl
+#
+# Not much to see here, but there is a derivation named 'drv' that can be built with ":b drv".
 #
 
 set use_usb_input [expr ![have_spec ps2] && ![have_spec sdl] && [have_spec usb]]
@@ -7,13 +9,17 @@ set use_usb_input [expr ![have_spec ps2] && ![have_spec sdl] && [have_spec usb]]
 source ${genode_dir}/repos/base/run/platform_drv.inc
 
 set build_components {
-	core init drivers/timer
-	server/vfs
-	server/store_ingest
+	core init
+	app/nix-repl
+	drivers/framebuffer
+	drivers/input
+	drivers/timer
 	server/builder
 	server/fs_rom
+	server/store_ingest
 	server/terminal
-	app/nix-repl
+	server/vfs
+	test/libc_vfs
 	test/libports/ncurses
 	test/libports/nixexpr
 	test/timer
@@ -23,7 +29,6 @@ append_platform_drv_build_components
 
 lappend_if $use_usb_input       build_components drivers/usb
 
-
 build $build_components
 
 create_boot_directory
@@ -31,16 +36,16 @@ create_boot_directory
 append config {
 <config>
 	<parent-provides>
-		<service name="ROM"/>
-		<service name="RAM"/>
-		<service name="IRQ"/>
+		<service name="CAP"/>
+		<service name="CPU"/>
 		<service name="IO_MEM"/>
 		<service name="IO_PORT"/>
-		<service name="CAP"/>
-		<service name="PD"/>
-		<service name="RM"/>
-		<service name="CPU"/>
+		<service name="IRQ"/>
 		<service name="LOG"/>
+		<service name="PD"/>
+		<service name="RAM"/>
+		<service name="RM"/>
+		<service name="ROM"/>
 		<service name="SIGNAL"/>
 	</parent-provides>
 	<default-route>
@@ -49,7 +54,7 @@ append config {
 			<child name="store_rom"/>
 		</service>
 		<any-service>
-			<child name="vfs"/>
+			<child name="store_fs"/>
 			<parent/> <any-child/>
 		</any-service>
 	</default-route>
@@ -91,14 +96,15 @@ append_if $use_usb_input config {
 	</start> }
 
 append config {
-	<start name="vfs">
+	<start name="store_fs">
+		<binary name="vfs"/>
 		<resource name="RAM" quantum="8M"/>
 		<provides><service name="File_system"/></provides>
 		<config>
 			<vfs> <ram/> </vfs>
 			<policy label="store_ingest" writeable="yes"/>
 			<policy label="builder" writeable="yes"/>
-			<policy label=""/>
+			<policy/>
 		</config>
 	</start>
 
@@ -116,6 +122,17 @@ append config {
 	<start name="builder">
 		<resource name="RAM" quantum="8M"/>
 		<provides><service name="Builder"/></provides>
+		<route>
+			<service name="ROM">
+				<if-arg key="filename" value="ld.lib.so"/>
+				<parent/>
+			</service>
+			<any-service>
+				<child name="store_rom"/>
+				<child name="store_fs"/>
+				<parent/> <any-child/>
+			</any-service>
+		</route>
 	</start>
 
 	<start name="terminal">
@@ -129,12 +146,13 @@ append config {
 	<start name="nix-repl">
 		<resource name="RAM" quantum="8M"/>
 		<route>
-			<service name="ROM">
-				<if-arg key="label" value="store"/>
+			<service name="ROM" label_prefix="store">
 				<child name="store_rom"/>
 			</service>
-			<service name="File_system">
-				<if-arg key="label" value="ingest"/>
+			<service name="File_system" label="store">
+				<child name="store_fs"/>
+			</service>
+			<service name="File_system" label="ingest">
 				<child name="store_ingest"/>
 			</service>
 			<any-service>
@@ -144,11 +162,73 @@ append config {
 		<config>
 			<nix>
 				<vfs>
+					<dir name="store"> <fs label="store"/> </dir>
 					<dir name="corepkgs"> <tar name="nix_corepkgs.tar"/> </dir>
+<inline name="default.nix">
+rec {
+
+  /* unix facsimilies */
+  cat = builtins.readFile;
+  ls = dir: builtins.attrNames (builtins.readDir dir);
+
+  /*
+   * The following is a test of a derivation
+   * referencing a dependency derivation.
+   */
+
+  romSet = roms: builtins.listToAttrs (map
+    (name: { inherit name; value = builtins.getRom name; })
+    roms
+  );
+
+  config1 = builtins.toFile
+      "config"
+      ''
+		<config>
+			<iterations value="1"/>
+			<libc stdout="/dev/log" cwd="/tmp" >
+				<vfs>
+					<dir name="tmp" >
+						<fs/>
+					</dir>
+					<dir name="dev"> <log/> </dir>
+				</vfs>
+			</libc>
+		</config>
+      '';
+
+  config2 = builtins.toFile
+      "config"
+      ''
+		<config>
+			<iterations value="1"/>
+			<libc stdout="/dev/log" cwd="/tmp" >
+				<vfs>
+					<fs root="foobar"/>
+					<dir name="tmp" >
+						<fs/>
+					</dir>
+					<dir name="dev"> <log/> </dir>
+				</vfs>
+			</libc>
+		</config>
+      '';
+
+  args = ((romSet [ "ld.lib.so" "libc.lib.so" ]) // {
+    name ="test-libc_vfs";
+    outputs = [ "testdir" ];
+    system  = builtins.currentSystem;
+    builder = builtins.getRom "test-libc_vfs";
+    config = config1;
+  });
+
+  drv = derivation (args // { foobar = derivation args; config = config2; });
+}
+</inline>
 				</vfs>
 				<search-path name="nix" path="/corepkgs"/>
 			</nix>
-			<policy label=""/>
+			<load file="/default.nix"/>
 		</config>
 	</start>
 
@@ -158,13 +238,24 @@ append config {
 install_config $config
 
 set boot_modules {
-	core init ld.lib.so timer vfs fs_rom
-	libc.lib.so libm.lib.so stdcxx.lib.so libc_noux.lib.so
-	nixexpr.lib.so nixformat.lib.so nixmain.lib.so nixstore.lib.so nixutil.lib.so
-	builder store_ingest noux
+	core init ld.lib.so
+	builder
+	fs_rom
+	libc.lib.so
+	libm.lib.so
 	nix_corepkgs.tar
-	terminal
+	nixexpr.lib.so
+	nixformat.lib.so
+	nixmain.lib.so
 	nix-repl
+	nixstore.lib.so
+	nixutil.lib.so
+	stdcxx.lib.so
+	store_ingest
+	terminal
+	test-libc_vfs
+	timer
+	vfs
 }
 
 append_platform_drv_boot_modules
