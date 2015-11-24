@@ -1,21 +1,29 @@
 #
-# Test of the Nix ROM server
+# Test of the Nix File_system server
 #
 
+set platform_base_dir "base-nova"
 
 set build_components {
 	core init drivers/timer
+	noux/minimal
+	noux-pkg/findutils
 	server/builder
 	server/fs_rom
+	server/log_terminal
 	server/nix
 	server/store_ingest
 	server/vfs
 	test/libports/ncurses
 	test/libports/nixexpr
-	test/printf
 }
 
 build $build_components
+
+# strip all binaries prior archiving
+exec sh -c "find noux-pkg/findutils -type f | (xargs [cross_dev_prefix]strip -g || true) 2>/dev/null"
+
+exec tar cfv bin/findutils.tar -h -C bin/findutils .
 
 create_boot_directory
 
@@ -65,7 +73,6 @@ append config {
 				<parent/>
 			</any-service>
 		</route>
-		<config verbose="true"/>
 	</start>
 
 	<start name="store_ingest">
@@ -95,6 +102,7 @@ append config {
 		<resource name="RAM" quantum="8M"/>
 		<provides>
 			<service name="ROM"/>
+			<service name="File_system"/>
 		</provides>
 		<route>
 			<service name="ROM" label_prefix="store">
@@ -104,6 +112,7 @@ append config {
 				<child name="store_ingest"/>
 			</service>
 			<any-service>
+				<child name="store_fs"/>
 				<parent/> <any-child/>
 			</any-service>
 		</route>
@@ -111,7 +120,10 @@ append config {
 			<nix>
 				<vfs>
 					<dir name="corepkgs"> <tar name="nix_corepkgs.tar"/> </dir>
-					<inline name="default.nix">builtins.getRom</inline>
+					<dir name="noux-pkg">
+						<dir name="findutils"> <tar name="findutils.tar" /> </dir>
+					</dir>
+					<inline name="default.nix">name: /noux-pkg + "/${name}"</inline>
 				</vfs>
 				<search-path name="nix" path="/corepkgs"/>
 			</nix>
@@ -119,25 +131,22 @@ append config {
 		</config>
 	</start>
 
-	<start name="init">
-		<resource name="RAM" quantum="2M"/>
+	<start name="noux">
+		<resource name="RAM" quantum="8M"/>
 		<route>
-			<any-service>
+			<service name="File_system">
 				<child name="nix"/>
-				<parent/>
+			</service>
+			<any-service>
+				<parent/> <any-child/>
 			</any-service>
 		</route>
-		<config>
-			<parent-provides>
-				<service name="LOG"/>
-				<service name="RM"/>
-			</parent-provides>
-			<start name="test-printf">
-				<resource name="RAM" quantum="1M"/>
-				<route>
-					<any-service> <parent/> </any-service>
-				</route>
-			</start>
+		<config verbose="yes" stdin="/dev/null" stdout="/dev/log" stderr="/dev/log">
+			<fstab>
+				<fs root="findutils"/>
+				<dir name="dev"> <log/> <null/> </dir>
+			</fstab>
+			<start name="/bin/find"> </start>
 		</config>
 	</start>
 
@@ -149,8 +158,10 @@ install_config $config
 set boot_modules {
 	core init ld.lib.so timer
 	builder
+	findutils.tar
 	fs_rom
 	libc.lib.so
+	libc_noux.lib.so
 	libm.lib.so
 	nix
 	nix_corepkgs.tar
@@ -159,9 +170,9 @@ set boot_modules {
 	nixmain.lib.so
 	nixstore.lib.so
 	nixutil.lib.so
+	noux
 	stdcxx.lib.so
 	store_ingest
-	test-printf
 	vfs
 }
 
@@ -169,4 +180,4 @@ build_boot_image $boot_modules
 
 append qemu_args " -nographic"
 
-run_genode_until {child "test-printf" exited with exit value 0} 20
+run_genode_until {child "noux" exited with exit value 0} 20

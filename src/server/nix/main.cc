@@ -262,9 +262,6 @@ class Nix::Service_proxy : public Genode::Rpc_object<Typed_root<SESSION_TYPE>>
 
 			read_nix_arg(nix_arg, NIX_ARG_MAX_LEN, args);
 
-			if (nix_arg[0] == '\0')
-				throw Root::Invalid_args();
-
 			Session_label label(args.string());
 			try {
 				Session_policy policy(label);
@@ -282,6 +279,10 @@ class Nix::Service_proxy : public Genode::Rpc_object<Typed_root<SESSION_TYPE>>
 				throw Root::Unavailable();
 			}
 
+			/*
+			 * Set the label on the request to "store" to differentiate
+			 * this request with requests during evaluation.
+			 */
 			strncpy(new_args, args.string(), ARGS_MAX_LEN);
 			rewrite_args(new_args, sizeof(new_args), out);
 			Arg_string::set_arg(new_args, ARGS_MAX_LEN, "label", "store");
@@ -349,10 +350,6 @@ class Nix::File_system_root : public Service_proxy<File_system::Session>
 
 		void rewrite_args(char *args, size_t args_len, nix::Path &out) override
 		{
-			// XXX: slash hack
-			if (out.front() != '/')
-				out.insert(0, "/");
-
 			out.insert(0, "\"");
 			out.push_back('"');
 
