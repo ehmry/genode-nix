@@ -1,3 +1,6 @@
+Not all done, but it can be tested against the **nix** branch at
+https://github.com/ehmry/genode/tree/nix
+
 ### Install
 ``` bash
 cd $GENODE_DIR/repos
