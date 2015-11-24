@@ -56,118 +56,47 @@ class Builder::Session_component : public Genode::Rpc_object<Session>
 		{ }
 
 		/**
-		 * Read a derivation and check that given output id is valid.
-		 *
-		 * A ROM connection is made rather than a file system request
-		 * because the client presumably has the same file as a ROM
-		 * dataspace from the same server, so caching is possible.
-		 * The build child will be requesting ROMs from the store,
-		 * so this also ensures that ROM requests are properly routed.
-		 */
-		void check_output(char const *name, char const *id)
-		{
-			Genode::Rom_connection drv_rom(name, "store");
-			Genode::Rom_dataspace_capability drv_ds = drv_rom.dataspace();
-			if (!drv_ds.valid())
-				throw Missing_dependency();
-
-			char const *data = Genode::env()->rm_session()->attach(drv_ds);
-
-			struct Done { };
-
-			Aterm::Parser parser(data, Dataspace_client(drv_ds).size());
-
-			try { parser.constructor("Derive", [&]
-			{
-				/*************
-				 ** Outputs **
-				 *************/
-				parser.list([&]
-				{
-					parser.tuple([&]
-					{
-						char output_id[96];
-						parser.string().value(output_id, sizeof(output_id));
-						if (!strcmp(id, output_id, sizeof(output_id))) {
-							char output_name[MAX_NAME_LEN];
-							parser.string().value(output_name, sizeof(output_name));
-
-							/* XXX : slash hack */
-							size_t i = 0;
-							while (output_name[i] == '/') ++i;
-
-							if (!valid(output_name))
-								throw Missing_dependency();
-
-							parser.string(); /* Algo */
-							parser.string(); /* Hash */
-						}
-					});
-				});
-				/* A hack to return without defining the entire term. */
-				throw Done();
-			}); } catch (Done) { }
-		}
-
-		/**
 		 * Read a derivation and check that its inputs are valid.
 		 */
 		void check_inputs(char const *name)
 		{
-			Genode::Rom_connection drv_rom(name, "store");
-			Genode::Rom_dataspace_capability drv_ds = drv_rom.dataspace();
-			if (!drv_ds.valid())
-				throw Missing_dependency();
+			Derivation(name).inputs([&] (Aterm::Parser &parser) {
 
-			char const *data = Genode::env()->rm_session()->attach(drv_ds);
+				Genode::String<Builder::MAX_NAME_LEN> input;
+				parser.string(&input);
 
-			Aterm::Parser parser(data, Dataspace_client(drv_ds).size());
+				Derivation depend(input.string());
 
-			struct Done { };
+				parser.list([&] (Aterm::Parser &parser) {
+					Genode::String<Builder::MAX_NAME_LEN> want_id;
+					parser.string(&want_id);
 
-			try { parser.constructor("Derive", [&]
-			{
-				/*************
-				 ** Outputs **
-				 *************/
+					depend.outputs([&] (Aterm::Parser &parser) {
+						/* XXX: figure out a limit for these output ids */
+						Genode::String<96> id;
+						parser.string(&id);
 
-				parser.list([&]
-				{
-					parser.tuple([&]
-					{
-						parser.string(); /* Id */
-						parser.string(); /* Path */
+						if (id == want_id) {
+							Genode::String<MAX_NAME_LEN> path;
+							parser.string(&path);
+
+							char const *output = path.string();
+							/* XXX : slash hack */
+							while (*output== '/') ++output;
+
+							if (!valid(output)) {
+								PERR("%s not valid", output);
+								throw Missing_dependency();
+							}
+						} else {
+							parser.string(); /* Path */
+						}
+
 						parser.string(); /* Algo */
 						parser.string(); /* Hash */
 					});
 				});
-
-				/************
-				 ** Inputs **
-				 ************/
-
-				parser.list([&]
-				{
-					parser.tuple([&]
-					{
-						char input_drv[Builder::MAX_NAME_LEN];
-						parser.string().value(input_drv, sizeof(input_drv));
-						parser.list([&] {
-							char id[96];
-							parser.string().value(id, sizeof(id));
-
-							/*
-							 * TODO:
-							 * Skip the leading '/', but why not
-							 * ignore compatibility and drop the '/'?
-							 */
-							check_output(input_drv+1, id);
-						});
-					});
-				});
-				/* A hack to return without defining the entire term. */
-				throw Done();
-			}); } catch (Done) { }
+			});
 		}
 
 		/*******************************
@@ -185,8 +114,12 @@ class Builder::Session_component : public Genode::Rpc_object<Session>
 
 			char path[Builder::MAX_NAME_LEN+1];
 
+			/* XXX: slash hack */
+			char const *name_str = name.string();
+			while (*name_str == '/') ++name_str;
+
 			path[0] = '/';
-			strncpy(path+1, name.string(), MAX_NAME_LEN);
+			strncpy(path+1, name_str, MAX_NAME_LEN);
 
 			try {
 				Node_handle node = _store_fs.node(path);
@@ -219,8 +152,12 @@ class Builder::Session_component : public Genode::Rpc_object<Session>
 			using namespace File_system;
 			char const *name = drv_name.string();
 
-			if (File_system::string_contains(name, '/'))
+			PLOG("realize %s", name);
+
+			if (File_system::string_contains(name, '/')) {
+				PERR("invalid derivation name %s", name);
 				throw Invalid_derivation();
+			}
 
 			/* Prevent packet mixups. */
 			collect_acknowledgements(*_store_fs.tx());
@@ -231,7 +168,7 @@ class Builder::Session_component : public Genode::Rpc_object<Session>
 			 * just keep a queue.
 			 */
 			check_inputs(name);
-
+			PLOG("queing %s", name);
 			_jobs.queue(name, sigh);
 		}
 

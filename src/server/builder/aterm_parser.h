@@ -7,11 +7,10 @@
 #ifndef _BUILDER__ATERM_PARSER_H_
 #define _BUILDER__ATERM_PARSER_H_
 
-#include <base/exception.h>
-#include <base/stdint.h>
 #include <util/list.h>
 #include <util/string.h>
-
+#include <base/exception.h>
+#include <base/stdint.h>
 
 namespace Aterm {
 
@@ -54,9 +53,9 @@ class Aterm::Parser
 
 		void check_end()
 		{
-			if (_len == 0 && _depth == 1) return;
-			if (*_pos == ',')             return advance();
-			if (*_pos == _state[0])       return pop();
+			if (*_pos == ',')        return advance();
+			if (_depth == 1)         return;
+			if (*_pos == _state[0])  return pop();
 
 			throw Malformed_element();
 		}
@@ -71,95 +70,88 @@ class Aterm::Parser
 		struct Overflow          : Exception { };
 		struct Runoff            : Exception { };
 
-		class String : public Genode::List<String>::Element
-		{
-			private:
-
-				char const *_base;
-				size_t      _len;
-
-			public:
-
-				String() { }
-				String(char const *start, size_t len) : _base(start), _len(len) { }
-
-				/**
-				 * Return string term as null-terminated string
-				 */
-				void value(char *dst, size_t max_len) const
-				{
-					Genode::strncpy(dst, _base, min(_len+1, max_len));
-				}
-
-				/**
-				 * Return pointer to first character.
-				 */
-				char const *base() { return _base; };
-
-				/**
-				 * Return string length.
-				 */
-				size_t len() { return _len; };
-
-				/*
-				void operator = (String const &from)
-				{
-					_base = from._base();
-					_len   = from.len();
-				}
-				*/
-		};
-
 		/**
 		 * Constructor
 		 */
 		Parser(char const *start, size_t len)
 		: _pos(start), _len(len), _depth(1) { _state[0] = NULL; };
 
+		/*
+		 * The following functions apply a function to a term and
+		 * return the base address of the term. The return value is
+		 * for the sake of deferred processing.
+		 */
+
 		template <typename FUNC>
-		void constructor(char const *name, FUNC const &func)
+		char const *constructor(char const *name, FUNC const &func)
 		{
 			size_t len = Genode::strlen(name);
 			if (len > _len || Genode::strcmp(_pos, name, len))
 				throw Wrong_element();
+			char const *base = _pos;
 
 			_pos += len;
 			_len -= len;
 
 			tuple(func);
+			return base;
 		}
 
 		template<typename FUNC>
-		void tuple(FUNC const &func)
+		char const *tuple(FUNC const &func)
 		{
 			if (!_pos || !_len) throw End_of_term();
 			if (*_pos != '(') throw Wrong_element();
+			char const *base = _pos;
 
 			advance();
 			push(TUPLE);
-			func();
+			func(*this);
 			check_end();
+			return base;
 		}
 
 		template<typename FUNC>
-		void list(FUNC const &func)
+		char const *list(FUNC const &func)
 		{
 			if (!_pos || !_len) throw End_of_term();
 			if (*_pos != '[') throw Wrong_element();
+			char const *base = _pos;
+
 			advance();
 			if (*_pos == ']') {
 				advance();
-				return check_end();
+				check_end();
+				return base;
 			}
 
 			int start_depth = _depth;
 			push(LIST);
 			while (_depth > start_depth)
-				func();
+				func(*this);
+			check_end();
+			return base;
+		}
+
+		void string()
+		{
+			if (*_pos != '"') throw Wrong_element();
+
+			++_pos;
+			++_len;
+
+			while (_len  && (*_pos == '\\' || *_pos != '"')) {
+				++_pos;
+				++_len;
+			}
+			++_pos;
+			++_len;
+
 			check_end();
 		}
 
-		String string()
+		template <size_t N>
+		void string(Genode::String<N> *out)
 		{
 			if (*_pos != '"') throw Wrong_element();
 
@@ -174,7 +166,7 @@ class Aterm::Parser
 			_pos += 2 + len;
 
 			check_end();
-			return String(pos, len);
+			*out = Genode::String<N>(pos, len);
 		}
 
 		long integer()

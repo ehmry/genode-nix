@@ -17,19 +17,22 @@
 #include <store_ingest/session.h>
 #include <file_system_session/capability.h>
 
-namespace Builder { class Store_fs_policy; }
+namespace Builder {
+	using namespace Genode;
+	class Store_fs_policy;
+}
 
 class Builder::Store_fs_policy
 {
 	private:
 
-		Genode::Rpc_entrypoint          &_ep;
+		Rpc_entrypoint                  &_ep;
 		Store_ingest::Session_component  _local_session;
 		File_system::Session_capability  _local_session_cap;
 
 		struct Local_service : public Genode::Service
 		{
-			Genode::Lock                     lock;
+			Lock                             lock;
 			File_system::Session_capability _cap;
 
 			/**
@@ -38,12 +41,13 @@ class Builder::Store_fs_policy
 			Local_service(File_system::Session_capability session_cap)
 			: Genode::Service("File_system"), _cap(session_cap) { }
 
-			Genode::Session_capability session(char const * /*args*/,
-			                                   Genode::Affinity const &) {
+			Session_capability session(char const * /*args*/,
+			                           Affinity const &) {
 				return _cap; }
 
-			void upgrade(Genode::Session_capability, const char * /*args*/) { }
-			void close(Genode::Session_capability) {
+			void upgrade(Session_capability, const char * /*args*/) { }
+
+			void close(Session_capability) {
 				lock.lock(); }
 
 		} _local_service;
@@ -84,32 +88,38 @@ class Builder::Store_fs_policy
 			 */
 			Lock::Guard guard(_local_service.lock);
 
-			char name[MAX_NAME_LEN];
-			char link[MAX_NAME_LEN];
-
-			try {
-				for (Derivation::Output *out = drv.output(); out; out = out->next()) {
-					out->id.value(name, sizeof(name));
-					_local_session.finish(name);
+			drv.outputs([&] (Aterm::Parser &parser) {
+				String<MAX_NAME_LEN> name;
+				parser.string(&name);
+				try { _local_session.finish(name.string()); }
+				catch (File_system::Lookup_failed) {
+					/*
+					 * If output symlinks are missing, then failure is implicit.
+					 */
+					PERR("%s not found at the ingest session", name.string());
+					return false;
 				}
-			} catch (File_system::Lookup_failed) {
-				/*
-				 * If output symlinks are missing, then failure is implicit.
-				 */
-				PERR("%s not found at the ingest session", name);
-				return false;
-			}
+
+				parser.string(); /* Path */
+				parser.string(); /* Algo */
+				parser.string(); /* Hash */
+				return true; /* the compiler wants this for some reason */
+			});
 
 			Dir_handle store_root = fs.dir("/", false);
 			Handle_guard root_guard(fs, store_root);
 
 			bool success = true;
-			for (Derivation::Output *out = drv.output(); out; out = out->next()) {
-				out->id.value(name, sizeof(name));
-				char const *final = _local_session.final(name);
-				out->path.value(link, sizeof(link));
+			drv.outputs([&] (Aterm::Parser &parser) {
 
-				char *link_name = link;
+				String<64> id;
+				parser.string(&id);
+				char const *final = _local_session.final(id.string());
+
+				String<MAX_NAME_LEN> path;
+				parser.string(&path);
+
+				char const *link_name = path.string();
 				while (*link_name == '/')
 					++link_name;
 
@@ -132,7 +142,10 @@ class Builder::Store_fs_policy
 					PERR("error creating symlink %s to %s", link_name, final);
 				}
 				success = want_len == write_len;
-			}
+
+				parser.string(); /* Algo */
+				parser.string(); /* Hash */
+			});
 			return success;
 		}
 

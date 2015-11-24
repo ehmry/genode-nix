@@ -75,153 +75,192 @@ class Builder::Child : public Genode::Child_policy
 {
 	private:
 
-		char const                *_name;
-		File_system::Session      &_fs;
-		Derivation                &_drv;
+		char const           *_name;
+		File_system::Session &_fs;
+		Derivation           &_drv;
 
-		typedef Avl_string<MAX_NAME_LEN> Input;
-
-		class Inputs : public Avl_tree<Avl_string_base>
+		struct Mapping : Avl_node<Mapping>
 		{
-			private:
+			Genode::String<File_system::MAX_NAME_LEN> const key;
+			Genode::String<File_system::MAX_PATH_LEN> const value;
 
-				/**
-				 *
-				 */
-				void add_drv_output(char const *buf, size_t len, char const *id)
+			Mapping(char const *key_str, char const *value_str)
+			: key(key_str), value(value_str) { }
+
+			/************************
+			 ** Avl node interface **
+			 ************************/
+
+			bool higher(Mapping *m) {
+				return (strcmp(m->key.string(), key.string()) > 0); }
+
+			Mapping *lookup(const char *key_str)
+			{
+				if (key == key_str) return this;
+
+				Mapping *m =
+					Avl_node<Mapping>::child(strcmp(key_str, key.string()) > 0);
+				return m ? m->lookup(key_str) : 0;
+			}
+
+		};
+
+		struct Environment : Genode::Avl_tree<Mapping>
+		{
+			/*
+			 * XXX: resolve inputs to content addressed paths
+			 * Parse the inputs first and resolve the symlinks before
+			 * populating the mappings.
+			 */
+
+			struct Input :  List<Input>::Element
+			{
+				String<MAX_NAME_LEN> const _link;
+				String<MAX_NAME_LEN> const _dest;
+				size_t               const _len;
+
+				Input (char const *link, char const *target)
+				:
+					_link(link),
+					_dest(target),
+					_len(strlen(_link.string()))
+				{ };
+
+				bool match (char const *other) {
+					return strcmp(other, _link.string(), _len) == 0; }
+
+				char const *dest() { return _dest.string(); }
+
+				size_t old_len() { return _len; }
+			};
+
+			struct Inputs : List<Input>
+			{
+				Inputs(File_system::Session &fs, Derivation &drv)
 				{
-					struct Done { };
+					using namespace File_system;
 
-					try {
-						Aterm::Parser parser(buf, len);
-						parser.constructor("Derive", [&] {
-							/*************
-							 ** Outputs **
-							 *************/
-							parser.list([&] {
-								parser.tuple([&] {
-									char output_id[MAX_NAME_LEN-Store_hash::HASH_PREFIX_LEN];
-									parser.string().value(output_id, sizeof(output_id));
-									if (!strcmp(id, output_id, sizeof(output_id))) {
-										char output_hash[MAX_NAME_LEN];
-										parser.string().value(output_hash, sizeof(output_hash));
-										Input *input = new (env()->heap()) Input(output_hash);
-										insert(input);
+					typedef Genode::String<MAX_NAME_LEN> Name;
 
-										/* A hack to return without defining the entire term. */
-										throw Done();
+					Dir_handle root_handle = fs.dir("/", false);
+					Handle_guard guard_root(fs, root_handle);
 
-										parser.string(); /* Algo */
-										parser.string(); /* Hash */
-									}
-								});
+					drv.inputs([&]  (Aterm::Parser &parser) {
+						Name input_drv;
+						parser.string(&input_drv);
+
+						Derivation depend(input_drv.string());
+
+						parser.list([&] (Aterm::Parser &parser) {
+							Name want_id;
+							parser.string(&want_id);
+
+							depend.outputs([&] (Aterm::Parser &parser) {
+								Name id;
+								parser.string(&id);
+
+								if (id != want_id) {
+									parser.string(); /* Path */
+									parser.string(); /* Algo */
+									parser.string(); /* Hash */
+									return;
+								}
+
+								Name input_path;
+								parser.string(&input_path);
+								parser.string(); /* Algo */
+								parser.string(); /* Hash */
+
+								char const *input_name = input_path.string();
+								/* XXX : slash hack */
+								while (*input_name == '/') ++input_name;
+
+								Symlink_handle link =
+									fs.symlink(root_handle, input_name, false);
+								Handle_guard guard(fs, link);
+								char target[MAX_NAME_LEN];
+								memset(target, 0x00, MAX_NAME_LEN);
+								read(fs, link, target, sizeof(target));
+								insert(new (env()->heap()) Input(input_path.string(), target));
 							});
-
-							/* The output id was not found in this derivation. */
-							throw Invalid_derivation();
 						});
-					} catch (Done) {
-					} catch (Rom_connection::Rom_connection_failed) {
-						throw Missing_dependency();
-					}
-				}
-
-			public:
-
-				Inputs(Derivation &drv)
-				{
-					for (Derivation::Input *drv_input = drv.input();
-					     drv_input; drv_input = drv_input->next()) {
-
-						char const *depend_drv = drv_input->path.string();
-						while (*depend_drv == '/') ++depend_drv;
-						char *p = 0;
-						try {
-							Rom_connection rom(depend_drv, "store");
-							Rom_dataspace_capability ds_cap = rom.dataspace();
-							p = env()->rm_session()->attach(ds_cap);
-							size_t len = Dataspace_client(ds_cap).size();
-
-							for (Aterm::Parser::String *s = drv_input->ids.first();
-							     s; s = s->next()) {
-								char id[MAX_NAME_LEN-Store_hash::HASH_PREFIX_LEN];
-								s->value(id, sizeof(id));
-
-								add_drv_output(p, len, id);
-							}
-						} catch (...) {
-							if (p) env()->rm_session()->detach(p);
-							throw;
-						}
-						env()->rm_session()->detach(p);
-					}
-
-					for (Aterm::Parser::String *src = drv.source();
-					     src; src = src->next()) {
-						char path[MAX_NAME_LEN];
-						src->value(path, sizeof(path));
-						Input *input = new (env()->heap()) Input(path);
-						insert(input);
-					}
+					});
 				}
 
 				~Inputs()
 				{
-					while(Input *input = (Input *)first()) {
+					while (Input *input = first()) {
 						remove(input);
 						destroy(env()->heap(), input);
 					}
 				}
 
-				bool contains(char const *name)
+				Input *lookup(char const *path)
 				{
-					Avl_string_base *node = first();
-					return node->find_by_name(name);
-				}
-
-		} _inputs;
-
-		class Environment : public Avl_tree<Avl_string_base>
-		{
-			private:
-
-				struct Mapping : Avl_string<MAX_NAME_LEN>
-				{
-					char const *value;
-
-					Mapping(char const *name, char const *value)
-					: Avl_string(name), value(value) { }
-				};
-
-			public:
-
-				Environment(Derivation &drv, Inputs &inputs)
-				{
-					for (Derivation::Env_pair *pair = drv.env(); pair; pair = pair->next()) {
-						Mapping *node = new (env()->heap())
-							Mapping(pair->key, pair->value);
-						insert(node);
-					}
-				}
-
-				~Environment()
-				{
-					while(Mapping *map = (Mapping *)first()) {
-						remove(map);
-						destroy(env()->heap(), map);
-					}
-				}
-
-				char const *lookup(char const *key)
-				{
-					if (Avl_string_base *node = first()) {
-						if ((node = node->find_by_name(key))) {
-							Mapping *map = static_cast<Mapping *>(node);
-							return map->value;
-						}
+					for (Input *input = first(); input; input = input->next()) {
+						if (input->match(path)) return input;
 					}
 					return 0;
 				}
+			};
+
+			Environment(File_system::Session &fs, Derivation &drv)
+			{
+				using namespace File_system;
+
+				Inputs inputs(fs, drv);
+
+				typedef Genode::Path<MAX_PATH_LEN>   Path;
+				typedef Genode::String<MAX_PATH_LEN> String;
+				typedef Genode::String<MAX_NAME_LEN> Name;
+
+				drv.environment([&] (Aterm::Parser &parser) {
+					Name   key;
+					String value;
+					parser.string(&key);
+					parser.string(&value);
+
+					Path value_path(value.string());
+
+					bool top_level = value_path.has_single_element();
+					while(!value_path.has_single_element())
+						value_path.strip_last_element();
+
+					Input *input = inputs.lookup(value_path.base());
+					Mapping *map;
+
+					if (!input) {
+						map = new (env()->heap())
+							Mapping(key.string(), value.string());
+
+					} else if (top_level) {
+						map = new (env()->heap())
+							Mapping(key.string(), input->dest());
+
+					} else {
+						/* rewrite the leading directory */
+						Path new_path(value.string()+input->old_len(), input->dest());
+						map = new (env()->heap())
+							Mapping(key.string(), new_path.base());
+					}
+					insert(map);
+				});
+			}
+
+			~Environment()
+			{
+				while(Mapping *map = (Mapping *)first()) {
+					remove(map);
+					destroy(env()->heap(), map);
+				}
+			}
+
+			char const *lookup(char const *key)
+			{
+				Mapping *m = first();
+				m = m ? m->lookup(key) : 0;
+				return m ? m->value.string() : 0;
+			}
 
 		} _environment;
 
@@ -249,11 +288,10 @@ class Builder::Child : public Genode::Child_policy
 			_name(name),
 			_fs(fs),
 			_drv(drv),
-			_inputs(drv),
-			_environment(drv, _inputs),
+			_environment(fs, drv),
 			_exit_sigh(exit_sigh),
 			_resources(name, exit_sigh),
-			_binary_rom(drv.builder(), "store"),
+			_binary_rom(drv.builder()),
 			_fs_input_service("File_system"),
 			_fs_output_policy(_fs_input_service, _entrypoint),
 			_parent_fs_service("File_system"),
@@ -306,6 +344,7 @@ class Builder::Child : public Genode::Child_policy
 				}
 
 				/* XXX: make a set_string method on Arg_string:: */
+				/* XXX: rewrite both the label and the filename */
 				if (strcmp(filename, "binary") == 0) {
 					snprintf(filename, sizeof(filename), "\"%s\"", _drv.builder());
 					Arg_string::set_arg(args, args_len,
@@ -321,7 +360,6 @@ class Builder::Child : public Genode::Child_policy
 					return;
 				}
 
-				Arg_string::set_arg(args, args_len, "label", "store");
 				return;
 			}
 
@@ -337,6 +375,7 @@ class Builder::Child : public Genode::Child_policy
 				if (char const *dest = _environment.lookup(root)) {
 					snprintf(root, sizeof(root), "\"%s\"", dest);
 					Arg_string::set_arg(args, args_len, "root", root);
+					Arg_string::set_arg(args, args_len, "writeable", "0");
 				} else {
 					PERR("impure FS request for '%s'", root);
 					*args = '\0';
@@ -363,17 +402,18 @@ class Builder::Child : public Genode::Child_policy
 		{
 			Service *service = 0;
 			if (!(*args)) /* invalidated by filter_session_args */
-				return service;
+				return 0;
 
 			if (strcmp("File_system", service_name) == 0) {
 				char root[File_system::MAX_PATH_LEN];
-				Arg_string::find_arg(args, "root").string(root, sizeof(root), "/");
+				Arg_string::find_arg(args, "root").string(root, sizeof(root), "");
 
-				if (strcmp("/", root, sizeof(root)) == 0)
-					/* this is a session for writing the derivation outputs */
-					return _fs_output_policy.service();
+				/* XXX: sloppy */
+				if (strlen(root) > 2)
+					return &_parent_fs_service;
 
-				return &_parent_fs_service;
+				/* this is a session for writing the derivation outputs */
+				return _fs_output_policy.service();
 			}
 
 			/* get it from the parent if it is allowed */

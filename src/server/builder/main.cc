@@ -78,7 +78,7 @@ class Builder::Root_component : public Genode::Root_component<Session_component>
 			_ep(ep),
 			_ram(ram),
 			_fs_block_alloc(env()->heap()),
-			_fs(_fs_block_alloc, 128*1024, "store"),
+			_fs(_fs_block_alloc, 128*1024),
 			_jobs(_ep, _fs)
 		{
 			/* look for dynamic linker */
@@ -107,7 +107,7 @@ class Builder::Root_component : public Genode::Root_component<Session_component>
 
 			/* verify that ROM requests are routed properly */
 			try {
-				Rom_connection rom(".builder", "store");
+				Rom_connection rom(".builder");
 			} catch (...) {
 				PERR("failed to aquire store ROM");
 				throw;

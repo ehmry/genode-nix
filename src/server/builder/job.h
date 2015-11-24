@@ -75,15 +75,16 @@ class Builder::Job : public Fifo<Job>::Element
 
 	private:
 
-		char                   _name[MAX_NAME_LEN];
-		Derivation             _drv;
-		List<Listener>         _listeners;
-		Child                 *_child;
+		typedef Genode::String<MAX_NAME_LEN> Name;
+
+		Name      const _name;
+		Derivation      _drv;
+		List<Listener>  _listeners;
+		Child          *_child;
 
 	protected:
 
-		bool match(char const *name) {
-			return Genode::strcmp(_name, name, MAX_NAME_LEN) == 0; }
+		bool match(char const *name) { return _name == name; }
 
 		void add_listener(Genode::Signal_context_capability sigh)
 		{
@@ -106,8 +107,12 @@ class Builder::Job : public Fifo<Job>::Element
 		void start(File_system::Session              &fs,
 		           Genode::Signal_context_capability  exit_sigh)
 		{
-			_child = new (Genode::env()->heap())
-				Child(_name, fs, _drv, exit_sigh);
+			try {
+				_child = new (Genode::env()->heap())
+					Child(_name.string(), fs, _drv, exit_sigh);
+			} catch (Missing_dependency) {
+				Signal_transmitter(exit_sigh).submit();
+			}
 		}
 
 		void kill()
@@ -124,15 +129,7 @@ class Builder::Job : public Fifo<Job>::Element
 		/**
 		 * Constructor
 		 */
-		Job(Genode::Allocator    *alloc,
-		    File_system::Session &store_fs,
-		    char           const *name)
-		:
-			_drv(alloc, store_fs, name),
-			_child(nullptr)
-		{
-			strncpy(_name, name, sizeof(_name));
-		};
+		Job(char const *name) : _name(name), _drv(name), _child(nullptr) { }
 
 		/**
 		 * Destructor
@@ -147,7 +144,7 @@ class Builder::Job : public Fifo<Job>::Element
 				destroy(Genode::env()->heap(), l);
 		}
 
-		char const *name() { return _name; }
+		char const *name() { return _name.string(); }
 
 		/**
 		 * Upgrade and notify the child
@@ -300,8 +297,7 @@ class Builder::Jobs : private Genode::Fifo<Job>
 					}
 
 				if (!job) try {
-					job = new (env()->heap())
-						Job(env()->heap(), _fs, drv_name);
+					job = new (env()->heap()) Job(drv_name);
 					enqueue(job);
 				} catch (Aterm::Parser::Malformed_element) {
 					PERR("canceling job with malformed derivation file at %s", drv_name);
