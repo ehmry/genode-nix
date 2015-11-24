@@ -1,5 +1,3 @@
-noux:
-
 with builtins;
 
 let
@@ -18,24 +16,28 @@ in
 let
   attrs' = removeAttrs attrs [ "fstab" "env" "args" "passthru" ];
   env' = strMap
-    (name: ''<env name="${name}" value="${getAttr name env}"/>'')
+    (name: ''<env name="${name}" value="${toString (getAttr name env)}"/>'')
     (attrNames env);
   args' = strMap (arg: ''<arg value="${arg}"/>'') args;
+  romSet = listToAttrs (map
+    (name: { inherit name; value = getRom name; })
+    [ "ld.lib.so" "libc.lib.so" "libm.lib.so" "libc_noux.lib.so" "vfs_any-rom.lib.so" ]
+  );
 in
-(derivation ((builtins.trace attrs' attrs') // {
+(derivation (attrs' // romSet // {
   inherit name;
-  builder = noux;
+  builder = getRom "noux";
   system = currentSystem;
   config = toFile
     "config"
     ''
-    <config verbose="${toString verbose}" stdin="/null" stdout="/log" stderr="/log">
+    <config verbose="${toString verbose}" stdin="/dev/null" stdout="/dev/log" stderr="/dev/log">
       <fstab>
         ${fstab}
-        <log/>
-        <null/>
+        <dir name="rom"> <any-rom/> </dir>
+        <dir name="dev"> <log/> <null/> </dir>
       </fstab>
-      <start name="${builder}">
+      <start name="${attrs.builder}">
         ${env'}
         ${args'}
       </start>
