@@ -82,6 +82,7 @@ void Store::copy_dir(File_system::Session   &fs,
 	Directory_service::Dirent dirent;
 
 	for (file_offset i = 0;; ++i) {
+		memset(&dirent, 0x00, sizeof(dirent));
 		_vfs_root.fs().dirent(src_path.c_str(), i, dirent);
 		if (dirent.type == Directory_service::DIRENT_TYPE_END) break;
 
