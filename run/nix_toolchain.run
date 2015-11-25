@@ -1,0 +1,275 @@
+
+#
+# The Linux version of Noux lacks the support for the fork system call. Hence,
+# the run script is expected to fail.
+#
+if {[have_spec linux]} {
+	puts "Linux is unsupported."
+	exit 0
+}
+
+set build_components {
+	core init
+	drivers/input
+	drivers/timer
+	lib/libc_noux
+	noux/minimal
+	server/builder
+	server/fs_rom
+	server/store_ingest
+	server/nix
+	server/terminal
+	server/vfs
+	test/libports/ncurses
+	test/libports/nixexpr
+	lib/vfs/any-rom
+}
+
+set cc_march ""
+
+if {[have_spec arm]} {
+	set binutils "binutils_arm"
+	set gcc "gcc_arm"
+	set tool_prefix "genode-arm-"
+}
+
+if {[have_spec x86]} {
+	set binutils "binutils_x86"
+	set gcc "gcc_x86"
+	set tool_prefix "genode-x86-"
+	if {[have_spec x86_32]} {
+		set cc_march "-m32"
+        }
+}
+
+#
+# Build Noux packages only once
+#
+set noux_pkgs "bash coreutils grep sed findutils make which $binutils $gcc"
+
+foreach pkg $noux_pkgs {
+	lappend_if [expr ![file exists bin/$pkg]] build_components noux-pkg/$pkg }
+
+source ${genode_dir}/repos/base/run/platform_drv.inc
+append_platform_drv_build_components
+
+build $build_components
+
+# strip all binaries prior archiving
+set find_args ""
+foreach pkg $noux_pkgs { append find_args " bin/$pkg" }
+exec sh -c "find $find_args -type f | (xargs [cross_dev_prefix]strip -g || true) 2>/dev/null"
+
+exec ln -sf bash bin/bash/bin/sh
+
+foreach pkg $noux_pkgs {
+	exec tar cfv bin/$pkg.tar -h -C bin/$pkg . }
+
+exec tar cvf bin/genode.tar -C $genode_dir tool repos/base repos/base-nova repos/os
+
+file copy -force \
+	$genode_dir/repos/nix/expr/toolchain.nix \
+	$genode_dir/repos/nix/expr/builddir.nix \
+	$genode_dir/repos/nix/expr/noux.nix \
+	bin/
+
+create_boot_directory
+
+append config {
+<config>
+	<parent-provides>
+		<service name="CAP"/>
+		<service name="CPU"/>
+		<service name="LOG"/>
+		<service name="PD"/>
+		<service name="RAM"/>
+		<service name="RM"/>
+		<service name="ROM"/>
+		<service name="SIGNAL"/>
+	</parent-provides>
+	<default-route>
+		<service name="File_system" label_suffix="ingest">
+			<child name="store_ingest" />
+		</service>
+		<any-service>
+			<child name="store_fs"/>
+			<parent/> <any-child/>
+		</any-service>
+	</default-route>
+	<start name="timer">
+		<resource name="RAM" quantum="1M"/>
+		<provides><service name="Timer"/></provides>
+	</start>
+
+	<start name="store_fs">
+		<binary name="vfs"/>
+		<resource name="RAM" quantum="128M"/>
+		<provides><service name="File_system"/></provides>
+		<config>
+			<vfs> <ram/> </vfs>
+
+			<policy label="store_ingest" writeable="yes" />
+			<policy label="builder" writeable="yes" />
+			<policy label="store_rom" />
+			<policy label="nix" />
+		</config>
+	</start>
+
+	<start name="builder">
+		<resource name="RAM" quantum="64M"/>
+		<provides><service name="Builder"/></provides>
+		<route>
+			<service name="ROM">
+				<if-arg key="filename" value="ld.lib.so"/>
+				<parent/>
+			</service>
+			<any-service>
+				<child name="store_rom"/>
+				<child name="store_fs"/>
+				<parent/> <any-child/>
+			</any-service>
+		</route>
+	</start>
+
+	<start name="store_rom">
+		<binary name="fs_rom"/>
+		<resource name="RAM" quantum="16M"/>
+		<provides><service name="ROM"/></provides>
+	</start>
+
+	<start name="store_ingest">
+		<resource name="RAM" quantum="4M"/>
+		<provides><service name="File_system"/></provides>
+	</start>
+
+	<start name="nix">
+		<resource name="RAM" quantum="32M"/>
+		<provides><service name="ROM"/></provides>
+		<route>
+			<service name="ROM" label_prefix="store">
+				<child name="store_rom"/>
+			</service>
+			<service name="File_system" label="ingest">
+				<child name="store_ingest"/>
+			</service>
+			<any-service>
+				<child name="store_fs"/>
+				<parent/> <any-child/>
+			</any-service>
+		</route>
+		<config>
+			<libc stdout="/dev/log" stderr="/dev/log"/>
+				<vfs> <dir name="dev"> <log/> </dir> </vfs>	
+			<nix>
+				<vfs>
+					<dir name="store"> <fs/> </dir>
+					<dir name="nix">
+						<dir name="corepkgs">
+							<tar name="nix_corepkgs.tar"/>
+						</dir>
+					</dir>
+					<rom name="toolchain.nix"/>
+					<rom name="builddir.nix"/>
+					<rom name="noux.nix"/>
+<inline name="default.nix">
+/* prepare the toolchain function found in /toolchain.nix */
+import /toolchain.nix {
+  specs = [ "genode" "nova_x86_32" "acpi" ];
+  verbose = true;
+}
+</inline>
+					<dir name="noux-pkg">}
+
+foreach pkg $noux_pkgs {
+	append config "		<dir name=\"$pkg\"><tar name=\"$pkg.tar\" /></dir>" }
+
+append config {
+					</dir>
+					<dir name="genode"> <tar name="genode.tar"/> </dir>
+				</vfs>
+			</nix>
+		</config>
+	</start>
+
+	<start name="init">
+		<resource name="RAM" quantum="2M"/>
+		<route>
+			<service name="ROM" label="ld.lib.so">
+				<parent/>
+			</service>
+			<any-service>
+				<child name="nix"/>
+				<parent/>
+			</any-service>
+		</route>
+		<config>
+			<parent-provides>
+				<service name="LOG"/>
+				<service name="RM"/>
+			</parent-provides>
+			<start name="test/printf">
+				<resource name="RAM" quantum="1M"/>
+				<route>
+					<any-service> <parent/> </any-service>
+				</route>
+			</start>
+		</config>
+	</start>
+
+</config>
+}
+
+install_config $config
+
+
+#
+# Boot modules
+#
+
+# generic modules
+set boot_modules {
+	core init ld.lib.so
+	builddir.nix
+	builder
+	fb_drv
+	fs_rom
+	gmp.lib.so
+	libc.lib.so
+	libc_noux.lib.so
+	libm.lib.so
+	mpc.lib.so
+	mpfr.lib.so
+	ncurses.lib.so
+	nix
+	nix_corepkgs.tar
+	nixexpr.lib.so
+	nixformat.lib.so
+	nixmain.lib.so
+	nixstore.lib.so
+	nixutil.lib.so
+	noux
+	noux.nix
+	ps2_drv
+	stdcxx.lib.so
+	store_ingest
+	terminal
+	timer
+	toolchain.nix
+	vfs
+	vfs_any-rom.lib.so
+}
+
+foreach pkg $noux_pkgs {
+	lappend boot_modules "$pkg.tar" }
+
+append boot_modules { genode.tar }
+
+append_platform_drv_boot_modules
+
+build_boot_image $boot_modules
+
+append qemu_args " -nographic -m 1024 "
+
+run_genode_until forever
+
+# vi: set ft=tcl :
