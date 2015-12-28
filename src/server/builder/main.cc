@@ -35,7 +35,6 @@ class Builder::Root_component : public Genode::Root_component<Session_component>
 		enum { MAX_LABEL_SIZE = 64 };
 
 		Server::Entrypoint     &_ep;
-		Ram_session_capability  _ram;
 		Genode::Allocator_avl   _fs_block_alloc;
 		File_system::Connection _fs;
 		Jobs                    _jobs;
@@ -59,10 +58,7 @@ class Builder::Root_component : public Genode::Root_component<Session_component>
 			}
 
 			return new(md_alloc())
-				Session_component(_ep,
-				                  md_alloc(), ram_quota,
-				                  _fs,
-				                  _jobs);
+				Session_component(md_alloc(), ram_quota, _fs, _jobs);
 		}
 
 	public:
@@ -71,12 +67,10 @@ class Builder::Root_component : public Genode::Root_component<Session_component>
 		 * Constructor
 		 */
 		Root_component(Server::Entrypoint &ep,
-		               Genode::Allocator &md_alloc,
-		               Ram_session_capability ram)
+		               Genode::Allocator &md_alloc)
 		:
 			Genode::Root_component<Session_component>(&ep.rpc_ep(), &md_alloc),
 			_ep(ep),
-			_ram(ram),
 			_fs_block_alloc(env()->heap()),
 			_fs(_fs_block_alloc, 128*1024),
 			_jobs(_ep, _fs)
@@ -120,11 +114,11 @@ class Builder::Root_component : public Genode::Root_component<Session_component>
 
 struct Builder::Main
 {
-	Server::Entrypoint ep;
+	Server::Entrypoint &ep;
 
 	Sliced_heap sliced_heap = { env()->ram_session(), env()->rm_session() };
 
-	Root_component root = { ep, sliced_heap, env()->ram_session_cap() };
+	Root_component root = { ep, sliced_heap };
 
 	Main(Server::Entrypoint &ep) : ep(ep) { }
 };

@@ -13,13 +13,25 @@
 
 namespace Builder { struct Connection; }
 
-struct Builder::Connection : Genode::Connection<Session>, Session_client
+class Builder::Connection : public Genode::Connection<Session>, public Session_client
 {
-	Connection()
-	:
-		Genode::Connection<Session>(session("ram_quota=512K")),
-		Session_client(cap())
-	{}
+	private:
+
+		Session_capability _create_session(char const *label)
+		{
+			if (label && *label)
+				return session("ram_quota=8K, label=\"%s\"", label);
+			else
+				return session("ram_quota=8K");
+		}
+
+	public:
+
+		Connection(char const *label = 0)
+		:
+			Genode::Connection<Session>(_create_session(label)),
+			Session_client(cap())
+		{}
 };
 
 #endif

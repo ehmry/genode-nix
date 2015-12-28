@@ -43,8 +43,7 @@ class Builder::Session_component : public Genode::Rpc_object<Session>
 		/**
 		 * Constructor
 		 */
-		Session_component(Server::Entrypoint   &ep,
-		                  Allocator            *session_alloc,
+		Session_component(Allocator            *session_alloc,
 		                  size_t                ram_quota,
 		                  File_system::Session &fs,
 		                  Jobs                 &jobs)

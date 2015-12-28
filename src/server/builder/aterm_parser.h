@@ -7,7 +7,6 @@
 #ifndef _BUILDER__ATERM_PARSER_H_
 #define _BUILDER__ATERM_PARSER_H_
 
-#include <util/list.h>
 #include <util/string.h>
 #include <base/exception.h>
 #include <base/stdint.h>
