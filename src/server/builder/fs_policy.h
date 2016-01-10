@@ -97,6 +97,9 @@ class Builder::Store_fs_policy
 					 * If output symlinks are missing, then failure is implicit.
 					 */
 					PERR("%s not found at the ingest session", name.string());
+					parser.string(); /* Path */
+					parser.string(); /* Algo */
+					parser.string(); /* Hash */
 					return false;
 				}
 

@@ -223,7 +223,7 @@ class Builder::Child : public Genode::Child_policy
 					Path value_path(value.string());
 
 					bool top_level = value_path.has_single_element();
-					while(!value_path.has_single_element())
+					while(value.length() > 1 && !value_path.has_single_element())
 						value_path.strip_last_element();
 
 					Input *input = inputs.lookup(value_path.base());
@@ -384,17 +384,24 @@ class Builder::Child : public Genode::Child_policy
 				return;
 			}
 
-			char label_buf[Parent::Session_args::MAX_SIZE];
-			Arg_string::find_arg(args, "label").string(label_buf, sizeof(label_buf), "");
+			/*
+			 * Obviously log messages need be seperated between build
+			 * runs, but labeling anything  else could endanger purity.
+			 */
+			if (strcmp(service, "LOG") == 0) {
+				char label_buf[Parent::Session_args::MAX_SIZE];
+				Arg_string::find_arg(args, "label").string(label_buf, sizeof(label_buf), "");
 
-			char value_buf[Parent::Session_args::MAX_SIZE];
-			Genode::snprintf(value_buf, sizeof(value_buf),
-			                 "\"%s%s%s\"",
-			                 _name,
-			                 Genode::strcmp(label_buf, "") == 0 ? "" : " -> ",
-			                 label_buf);
+				char value_buf[Parent::Session_args::MAX_SIZE];
+				Genode::snprintf(value_buf, sizeof(value_buf),
+				                 "\"%s%s%s\"",
+				                 _name,
+				                 Genode::strcmp(label_buf, "") == 0 ? "" : " -> ",
+				                 label_buf);
 
-			Arg_string::set_arg(args, args_len, "label", value_buf);
+				Arg_string::set_arg(args, args_len, "label", value_buf);
+				return;
+			}
 		}
 
 		Service *resolve_session_request(const char *service_name,

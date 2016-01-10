@@ -111,6 +111,7 @@ class Builder::Job : public Fifo<Job>::Element
 				_child = new (Genode::env()->heap())
 					Child(_name.string(), fs, _drv, exit_sigh);
 			} catch (Missing_dependency) {
+				PERR("missing dependency for %s", _name.string());
 				Signal_transmitter(exit_sigh).submit();
 			}
 		}
