@@ -333,29 +333,26 @@ class Builder::Child : public Genode::Child_policy
 		void filter_session_args(const char *service, char *args, size_t args_len)
 		{
 			if (strcmp(service, "ROM") == 0) {
-				char filename[File_system::MAX_PATH_LEN] = { 0 };
 
-				Genode::Arg_string::find_arg(args, "filename").string(
-					filename, sizeof(filename), "");
+				char filename[Genode::Label::capacity()] = { 0 };
+				Genode::Label label = Genode::Arg_string::label(args);
+				char const *request = label.tail();
 
-				if (!*filename) {
-					PERR("invalid ROM request");
-					return;
-				}
-
-				/* XXX: make a set_string method on Arg_string:: */
-				/* XXX: rewrite both the label and the filename */
-				if (strcmp(filename, "binary") == 0) {
+				/*
+				 * XXX: make a set_string method on Arg_string::
+				 * that inserts the proper punctuation.
+				 */
+				if (strcmp("binary", request) == 0) {
 					snprintf(filename, sizeof(filename), "\"%s\"", _drv.builder());
 					Arg_string::set_arg(args, args_len,
-					                    "filename", filename);
+					                    "label", filename);
 
-				} else if (char const *dest = _environment.lookup(filename)) {
+				} else if (char const *dest = _environment.lookup(request)) {
 					snprintf(filename, sizeof(filename), "\"%s\"", dest);
 
-					Arg_string::set_arg(args, args_len, "filename", filename);
+					Arg_string::set_arg(args, args_len, "label", filename);
 				} else {
-					PERR("impure ROM request for '%s'", filename);
+					PERR("impure ROM request for '%s'", request);
 					*args = '\0';
 					return;
 				}
@@ -393,9 +390,13 @@ class Builder::Child : public Genode::Child_policy
 				Arg_string::find_arg(args, "label").string(label_buf, sizeof(label_buf), "");
 
 				char value_buf[Parent::Session_args::MAX_SIZE];
-				Genode::snprintf(value_buf, sizeof(value_buf),
-				                 "\"%s%s%s\"",
-				                 _name,
+
+				/* XXX: some hackery to truncate the label */
+				Genode::snprintf(value_buf, 18, "\"%s", _name);
+
+				Genode::snprintf(value_buf+17, sizeof(value_buf)-16,
+				                 "%s%s%s\"",
+				                 _name+32,
 				                 Genode::strcmp(label_buf, "") == 0 ? "" : " -> ",
 				                 label_buf);
 

@@ -310,8 +310,8 @@ class Nix::Rom_root : public Service_proxy<Rom_session>
 		void read_nix_arg(char *arg, size_t arg_len,
 		                  Root::Session_args const &args) override
 		{
-			Genode::Arg_string::find_arg(args.string(), "filename").string(
-				arg, arg_len, "");
+			Genode::Label label = Genode::Arg_string::label(args.string());
+			Genode::strncpy(arg, label.tail(), arg_len);
 		}
 
 		void rewrite_args(char *args, size_t args_len, nix::Path &out) override
@@ -323,7 +323,7 @@ class Nix::Rom_root : public Service_proxy<Rom_session>
 			out.insert(0, "\"");
 			out.push_back('"');
 
-			Arg_string::set_arg(args, args_len, "filename", out.c_str());
+			Arg_string::set_arg(args, args_len, "label", out.c_str());
 		}
 
 	public:

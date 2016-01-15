@@ -21,6 +21,7 @@
 
 namespace Store_ingest {
 
+	using namespace Genode;
 	using namespace File_system;
 
 	class Hash_node;
