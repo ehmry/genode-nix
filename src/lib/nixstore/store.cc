@@ -644,7 +644,7 @@ nix::Path nix::Store::addDataToStore(const string & name,
 	size_t offset = 0;
 
 	::Hash::Blake2s hash;
-	uint8_t path_buf[max(size_t(MAX_NAME_LEN), hash.size())];
+	uint8_t path_buf[Genode::max(size_t(MAX_NAME_LEN), hash.size())];
 
 	hash.update((uint8_t*)buf, len);
 	hash.update((uint8_t*)"\0f\0", 3);
