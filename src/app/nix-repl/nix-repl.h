@@ -299,8 +299,10 @@ bool NixRepl::processLine(string line)
         printValue(v, 1000000000);
     }
 
-    else if (command == ":q" || command == ":quit")
+    else if (command == ":q" || command == ":quit") {
+        Genode::env()->parent()->exit(0);
         return false;
+    }
 
     else if (command != "")
         throw Error(format("unknown command ‘%1%’") % command);
