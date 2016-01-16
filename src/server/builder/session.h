@@ -166,8 +166,13 @@ class Builder::Session_component : public Genode::Rpc_object<Session>
 			 * we don't take care of dependencies or scheduling,
 			 * just keep a queue.
 			 */
-			check_inputs(name);
-			PLOG("queing %s", name);
+			try { check_inputs(name); }
+			catch (Genode::Rom_connection::Rom_connection_failed) {
+				PERR("Genode::Rom_connection::Rom_connection_failed");
+				throw Invalid_derivation();
+			}
+
+			PLOG("queueing %s", name);
 			_jobs.queue(name, sigh);
 		}
 
