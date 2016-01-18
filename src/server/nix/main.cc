@@ -377,8 +377,14 @@ int main(void)
 
 	static Cap_connection cap;
 
-	/* XXX: does the nix evaluation use the same stack? */
-	enum { STACK_SIZE = 8*1024*sizeof(long) };
+	/*
+	 * XXX: Nix uses this stack for the evaluation,
+	 * so the threat of a blown stack is entirely
+	 * dependent on the complexity of the evaulation.
+	 *
+	 * It needs to be dealt with gracefully.
+	 */
+	enum { STACK_SIZE = 32*1024*sizeof(long) };
 	static Rpc_entrypoint ep(&cap, STACK_SIZE, "nix_ep");
 
 	static Signal_receiver sig_rec;
