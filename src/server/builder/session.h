@@ -84,7 +84,7 @@ class Builder::Session_component : public Genode::Rpc_object<Session>
 							while (*output== '/') ++output;
 
 							if (!valid(output)) {
-								PERR("%s not valid", output);
+								PERR("missing dependency %s", output);
 								throw Missing_dependency();
 							}
 						} else {
@@ -168,7 +168,11 @@ class Builder::Session_component : public Genode::Rpc_object<Session>
 			 */
 			try { check_inputs(name); }
 			catch (Genode::Rom_connection::Rom_connection_failed) {
-				PERR("Genode::Rom_connection::Rom_connection_failed");
+				PERR("failed to load %s by ROM", name);
+				throw Invalid_derivation();
+			}
+			catch (...) {
+				PERR("invalid derivation %s", name);
 				throw Invalid_derivation();
 			}
 
