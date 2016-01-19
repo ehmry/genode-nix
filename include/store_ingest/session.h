@@ -275,17 +275,15 @@ class Store_ingest::Session_component : public Session_rpc_object
 			/* assume failure by default */
 			theirs.succeeded(false);
 
+			void *content = tx_sink()->packet_content(theirs);
+			size_t const length = theirs.length();
+
+			if (!content || (length > theirs.size()) || (length == 0)
+			    /* Reading the entries of the root is not allowed. */
+			 || !theirs.handle().valid() || theirs.handle() == _root_handle)
+				return false;
+
 			try {
-				void *content = tx_sink()->packet_content(theirs);
-				size_t const length = theirs.length();
-
-				if (!content || (length > theirs.size()) || (length == 0))
-					return false;
-
-				/* Reading the entries of the root is not allowed. */
-				if (theirs.handle() == _root_handle)
-					return false;
-
 				/* Emulate the read of a symlink */
 				if (theirs.handle().value & ROOT_HANDLE_PREFIX) {
 					Hash_root *root = _root_registry.lookup_index(theirs.handle());
@@ -371,7 +369,7 @@ class Store_ingest::Session_component : public Session_rpc_object
 				tx_sink()->acknowledge_packet(theirs);
 				source.release_packet(ours);
 				/* invalidate the packet in the queue */
-				memset(&_packet_queue[i], 0xFF, sizeof(File_system::Packet_descriptor));
+				_packet_queue[i] = File_system::Packet_descriptor();
 				return true;
 			}
 
@@ -405,19 +403,16 @@ class Store_ingest::Session_component : public Session_rpc_object
 			tx_sink()->acknowledge_packet(theirs);
 			source.release_packet(ours);
 			/* invalidate the packet in the queue */
-			memset(&_packet_queue[i], 0xFF, sizeof(File_system::Packet_descriptor));
+			_packet_queue[i] = File_system::Packet_descriptor();
 			return true;
 		}
 
 		/**
-		 * Called by signal dispatcher, executed in the context of the main
-		 * thread (not serialized with the RPC functions).
-		 *
 		 * There is as fair amount of logic here to deal with multiple incoming
 		 * packets from the client, but in practice there is always just
 		 * one. Nix is purely functional so in theory we can process elements
 		 * of the concrete syntax tree and import objects in parallel, but for
-		 * now its one thread and one packet at a time.
+		 * now its one thread and one packet at a time. The rest is for style.
 		 */
 		void _process_packets(unsigned)
 		{
@@ -432,9 +427,12 @@ class Store_ingest::Session_component : public Session_rpc_object
 			 * and then send our own packets to the backend.
 			 */
 			int n = 0;
-			while (tx_sink()->packet_avail() && n < TX_QUEUE_SIZE) {
+			while (tx_sink()->ready_to_ack()
+			    && tx_sink()->packet_avail()
+			    && n < TX_QUEUE_SIZE)
+			{
 				_packet_queue[n] = tx_sink()->get_packet();
-				if (_process_incoming_packet(_packet_queue[n])) 
+				if (_process_incoming_packet(_packet_queue[n]))
 					++n;
 				else /* no action required at backend */
 					tx_sink()->acknowledge_packet(_packet_queue[n]);
@@ -456,8 +454,7 @@ class Store_ingest::Session_component : public Session_rpc_object
 				for (int i = 0; i < TX_QUEUE_SIZE; ++i)
 					if (_packet_queue[i].handle().valid()) {
 						tx_sink()->acknowledge_packet(_packet_queue[i]);
-						memset(&_packet_queue[i], 0xFF,
-						       sizeof(File_system::Packet_descriptor));
+						_packet_queue[i] = File_system::Packet_descriptor();
 						break;
 					}
 		}
@@ -482,8 +479,8 @@ class Store_ingest::Session_component : public Session_rpc_object
 				_root_handle = _fs.dir("/", false);
 
 				/* invalidate the packet queue */
-				memset(&_packet_queue, 0xFF,
-				       sizeof(File_system::Packet_descriptor)*TX_QUEUE_SIZE);
+				for (int i = 0; i < TX_QUEUE_SIZE; ++i)
+					_packet_queue[i] = File_system::Packet_descriptor();
 
 				/*
 				 * Register '_process_packets' dispatch function as signal
