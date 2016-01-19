@@ -366,8 +366,10 @@ class Builder::Child : public Genode::Child_policy
 				Genode::Arg_string::find_arg(args, "root").string(
 					root, sizeof(root), "/");
 
-				if ((strcmp(root, "", sizeof(root))==0) || (strcmp(root, "/", sizeof(root))==0))
+				if ((strcmp(root, "", sizeof(root))==0) || (strcmp(root, "/", sizeof(root))==0)) {
+					Arg_string::set_arg(args, args_len, "label", "\"\"");
 					return;
+				}
 
 				if (char const *dest = _environment.lookup(root)) {
 					snprintf(root, sizeof(root), "\"%s\"", dest);
@@ -377,6 +379,8 @@ class Builder::Child : public Genode::Child_policy
 					PERR("impure FS request for '%s'", root);
 					*args = '\0';
 				}
+
+				Arg_string::set_arg(args, args_len, "label", "\"\"");
 
 				return;
 			}
@@ -413,15 +417,14 @@ class Builder::Child : public Genode::Child_policy
 				return 0;
 
 			if (strcmp("File_system", service_name) == 0) {
-				char root[File_system::MAX_PATH_LEN];
-				Arg_string::find_arg(args, "root").string(root, sizeof(root), "");
+				Path<File_system::MAX_PATH_LEN> root;
+				Arg_string::find_arg(args, "root").string(root.base(), root.capacity(), "");
 
-				/* XXX: sloppy */
-				if (strlen(root) > 2)
-					return &_parent_fs_service;
+				if (root == "" || root == "/")
+					/* this is a session for writing the derivation outputs */
+					return _fs_output_policy.service();
 
-				/* this is a session for writing the derivation outputs */
-				return _fs_output_policy.service();
+				return &_parent_fs_service;
 			}
 
 			/* get it from the parent if it is allowed */
