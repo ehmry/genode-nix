@@ -23,10 +23,10 @@
 
 namespace nix {
 
-	bool willBuildLocally(const Derivation & drv);
-	void canonicaliseTimestampAndPermissions(std::string const&);
-
 	class Store;
+
+	Path readStorePath(Source & from);
+	template<class T> T readStorePaths(Source & from);
 
 }
 
@@ -38,7 +38,6 @@ class nix::Store : public nix::StoreAPI
 {
 	private:
 
-		Vfs_root            &_vfs_root;
 		Builder::Connection  _builder;
 		Genode::Lock         _packet_lock;
 
@@ -66,95 +65,96 @@ class nix::Store : public nix::StoreAPI
 
 	public:
 
-		Store(Vfs_root &vfs_root)
-		: _vfs_root(vfs_root) { };
+		Store() { if (_vfs == nullptr) throw Error("Nix VFS uninitialized"); }
+
+		Builder::Session &builder() { return _builder; }
 
 		/************************
 		 ** StoreAPI interface **
 		 ************************/
 
 		/* Check whether a path is valid. */ 
-		bool isValidPath(const nix::Path & path);
+		bool isValidPath(const nix::Path & path) override;
 
 		/* Query which of the given paths is valid. */
-		PathSet queryValidPaths(const PathSet & paths);
+		PathSet queryValidPaths(const PathSet & paths) override;
 
 		/* Query the set of all valid paths. */
-		PathSet queryAllValidPaths();
+		PathSet queryAllValidPaths() override;
 
 		/* Query information about a valid path. */
-		ValidPathInfo queryPathInfo(const nix::Path & path);
+		ValidPathInfo queryPathInfo(const nix::Path & path) override;
 
 		/* Query the hash of a valid path. */ 
-		Hash queryPathHash(const nix::Path & path);
+		Hash queryPathHash(const nix::Path & path) override;
 
 		/* Query the set of outgoing FS references for a store path.	The
 			 result is not cleared. */
 		void queryReferences(const nix::Path & path,
-				PathSet & references);
+				PathSet & references) override;
 
 		/* Queries the set of incoming FS references for a store path.
 			 The result is not cleared. */
 		void queryReferrers(const nix::Path & path,
-				PathSet & referrers);
+				PathSet & referrers) override;
 
 		/* Query the deriver of a store path.	Return the empty string if
 			 no deriver has been set. */
-		nix::Path queryDeriver(const nix::Path & path);
+		nix::Path queryDeriver(const nix::Path & path) override;
 
 		/* Return all currently valid derivations that have `path' as an
 			 output.	(Note that the result of `queryDeriver()' is the
 			 derivation that was actually used to produce `path', which may
 			 not exist anymore.) */
-		PathSet queryValidDerivers(const nix::Path & path);
+		PathSet queryValidDerivers(const nix::Path & path) override;
 
 		/* Query the outputs of the derivation denoted by `path'. */
-		PathSet queryDerivationOutputs(const nix::Path & path);
+		PathSet queryDerivationOutputs(const nix::Path & path) override;
 
 		/* Query the output names of the derivation denoted by `path'. */
-		StringSet queryDerivationOutputNames(const nix::Path & path);
+		StringSet queryDerivationOutputNames(const nix::Path & path) override;
 
 		/* Query the full store path given the hash part of a valid store
 			 path, or "" if the path doesn't exist. */
-		nix::Path queryPathFromHashPart(const string & hashPart);
+		nix::Path queryPathFromHashPart(const string & hashPart) override;
 
 		/* Query which of the given paths have substitutes. */
-		PathSet querySubstitutablePaths(const PathSet & paths);
+		PathSet querySubstitutablePaths(const PathSet & paths) override;
 
 		/* Query substitute info (i.e. references, derivers and download
 			 sizes) of a set of paths.	If a path does not have substitute
 			 info, it's omitted from the resulting ‘infos’ map. */
 		void querySubstitutablePathInfos(const PathSet & paths,
-				SubstitutablePathInfos & infos);
+				SubstitutablePathInfos & infos) override;
 
-		Path addToStore(const Path & srcPath,
-				bool recursive = true, HashType hashAlgo = htSHA256,
-				PathFilter & filter = defaultPathFilter, bool repair = false);
+		Path addToStore(const string & name, const Path & srcPath,
+		                bool recursive = true, HashType hashAlgo = htBLAKE2s,
+		                PathFilter & filter = defaultPathFilter, bool repair = false) override;
 
 		/**
 		 * Like addToStore, but the contents written to the output path is
 		 * a regular file containing the given string.
 		 */
 		Path addTextToStore(const string & name, const string & s,
-				const PathSet & references, bool repair = false);
+				const PathSet & references, bool repair = false) override;
 
 		/**
 		 * Add raw data to the store.
 		 */
 		Path addDataToStore(const string & name,
-		                         void *buf, size_t len,
-		                         bool repair);
+		                    void *buf, size_t len,
+		                    bool repair);
 
 		/* Export a store path, that is, create a NAR dump of the store
 			 path and append its references and its deriver.	Optionally, a
 			 cryptographic signature (created by OpenSSL) of the preceding
 			 data is attached. */
 		void exportPath(const nix::Path & path, bool sign,
-				Sink & sink);
+				Sink & sink) override;
 
 		/* Import a sequence of NAR dumps created by exportPaths() into
 			 the Nix store. */
-		Paths importPaths(bool requireSignature, Source & source);
+		Paths importPaths(bool requireSignature, Source & source) override;
 
 		/* For each path, if it's a derivation, build it.	Building a
 			 derivation means ensuring that the output paths are valid.	If
@@ -164,23 +164,29 @@ class nix::Store : public nix::StoreAPI
 			 output paths can be created by running the builder, after
 			 recursively building any sub-derivations. For inputs that are
 			 not derivations, substitute them. */
-		void buildPaths(const PathSet & paths, BuildMode buildMode = bmNormal);
+		void buildPaths(const PathSet & paths, BuildMode buildMode = bmNormal) override;
+
+		/* Build a single non-materialized derivation (i.e. not from an
+		   on-disk .drv file). Note that ‘drvPath’ is only used for
+		   informational purposes. */
+		BuildResult buildDerivation(const Path & drvPath, const BasicDerivation & drv,
+		                            BuildMode buildMode = bmNormal) override;
 
 		/* Ensure that a path is valid.	If it is not currently valid, it
 			 may be made valid by running a substitute (if defined for the
 			 path). */
-		void ensurePath(const nix::Path & path);
+		void ensurePath(const nix::Path & path) override;
 
 		/* Add a store path as a temporary root of the garbage collector.
 			 The root disappears as soon as we exit. */
-		void addTempRoot(const nix::Path & path);
+		void addTempRoot(const nix::Path & path) override;
 
 		/* Add an indirect root, which is merely a symlink to `path' from
 			 /nix/var/nix/gcroots/auto/<hash of `path'>.	`path' is supposed
 			 to be a symlink to a store path.	The garbage collector will
 			 automatically remove the indirect root when it finds that
 			 `path' has disappeared. */
-		void addIndirectRoot(const nix::Path & path);
+		void addIndirectRoot(const nix::Path & path) override;
 
 		/* Acquire the global GC lock, then immediately release it.	This
 			 function must be called after registering a new permanent root,
@@ -200,32 +206,30 @@ class nix::Store : public nix::StoreAPI
 				 permanent root and sees our's.
 
 			 In either case the permanent root is seen by the collector. */
-		void syncWithGC();
+		void syncWithGC() override;
 
 		/* Find the roots of the garbage collector.	Each root is a pair
 			 (link, storepath) where `link' is the path of the symlink
 			 outside of the Nix store that point to `storePath'.	*/
-		Roots findRoots();
+		Roots findRoots() override;
 
 		/* Perform a garbage collection. */
-		void collectGarbage(const GCOptions & options, GCResults & results);
+		void collectGarbage(const GCOptions & options, GCResults & results) override;
 
 		/* Return the set of paths that have failed to build.*/
-		PathSet queryFailedPaths();
+		PathSet queryFailedPaths() override;
 
 		/* Clear the "failed" status of the given paths.	The special
 			 value `*' causes all failed paths to be cleared. */
-		void clearFailedPaths(const PathSet & paths);
-
-		/* Return a string representing information about the path that
-			 can be loaded into the database using `nix-store --load-db' or
-			 `nix-store --register-validity'. */
-		string makeValidityRegistration(const PathSet & paths,
-				bool showDerivers, bool showHash);
+		void clearFailedPaths(const PathSet & paths) override;
 
 		/* Optimise the disk space usage of the Nix store by hard-linking files
 			 with the same contents. */
-		void optimiseStore();
+		void optimiseStore() override;
+
+		/* Check the integrity of the Nix store.  Returns true if errors
+			remain. */
+		bool verifyStore(bool checkContents, bool repair) override;
 
 };
 

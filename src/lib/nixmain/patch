@@ -1,8 +1,8 @@
 diff --git a/src/libmain/shared.cc b/src/libmain/shared.cc
-index 082705d..55b0c17 100644
+index a6e8f35..bfe8785 100644
 --- a/src/libmain/shared.cc
 +++ b/src/libmain/shared.cc
-@@ -12,28 +12,20 @@
+@@ -12,29 +12,16 @@
  #include <algorithm>
  
  #include <cstdlib>
@@ -10,24 +10,20 @@ index 082705d..55b0c17 100644
 -#include <sys/stat.h>
 -#include <unistd.h>
 -#include <signal.h>
--
--extern char * * environ;
--
--
--namespace nix {
- 
++
 +/* Genode includes. */
 +#include <os/config.h>
 +#include <file_system_session/file_system_session.h>
  
+ extern char * * environ;
+ 
+ 
+ namespace nix {
+ 
+-
 -volatile sig_atomic_t blockInt = 0;
-+/* Jitterentropy includes */
-+namespace Jitter { extern "C" {
-+#include <jitterentropy.h>
-+} };
- 
-+extern char * * environ;
- 
+-
+-
 -static void sigintHandler(int signo)
 -{
 -    if (!blockInt) {
@@ -35,12 +31,12 @@ index 082705d..55b0c17 100644
 -        blockInt = 1;
 -    }
 -}
- 
-+namespace nix {
- 
+-
+-
  static bool gcWarning = true;
  
-@@ -47,22 +39,22 @@ void printGCWarning()
+ void printGCWarning()
+@@ -47,22 +34,22 @@ void printGCWarning()
  }
  
  
@@ -67,9 +63,20 @@ index 082705d..55b0c17 100644
          reverse(sorted.begin(), sorted.end());
          for (auto & i : sorted)
              printMsg(lvlInfo, format("  %1%") % i);
-@@ -108,130 +100,27 @@ void detectStackOverflow();
+@@ -90,7 +77,6 @@ static void setLogType(string lt)
+     if (lt == "pretty") logType = ltPretty;
+     else if (lt == "escapes") logType = ltEscapes;
+     else if (lt == "flat") logType = ltFlat;
+-    else if (lt == "systemd") logType = ltSystemd;
+     else throw UsageError("unknown log type");
+ }
  
- void initNix()
+@@ -107,135 +93,19 @@ string getArg(const string & opt,
+ void detectStackOverflow();
+ 
+ 
+-void initNix()
++void initNix(Vfs::File_system &vfs)
  {
 -    /* Turn on buffering for cerr. */
 -#if HAVE_PUBSETBUF
@@ -78,6 +85,9 @@ index 082705d..55b0c17 100644
 -#endif
 -
 -    std::ios::sync_with_stdio(false);
+-
+-    if (getEnv("IN_SYSTEMD") == "1")
+-        logType = ltSystemd;
 -
 -    settings.processEnvironment();
 -    settings.loadConfFile();
@@ -114,28 +124,21 @@ index 082705d..55b0c17 100644
 -       everybody. */
 -    umask(0022);
 -
-     /* Initialise the PRNG. */
+-    /* Initialise the PRNG. */
 -    struct timeval tv;
 -    gettimeofday(&tv, 0);
 -    srandom(tv.tv_usec);
-+    unsigned int seed;
-+    if (int jinit = Jitter::jent_entropy_init()) {
-+	PERR("failed to collect entropy from jitter, error code %d", jinit);
-+         Genode::env()->parent()->exit(jinit);
-+    }
-+    Jitter::rand_data *ec = Jitter::jent_entropy_collector_alloc(0,0);
-+    Jitter::jent_read_entropy(ec, (char *)&seed, sizeof(seed));
-+    Jitter::jent_entropy_collector_free(ec);
-+    srandom(seed);
- 
+-
 -    if (char *pack = getenv("_NIX_OPTIONS"))
 -        settings.unpack(pack);
+-}
++    _vfs = &vfs;
+ 
 +    /* Set verbosity. */
 +    try {
-+        verbosity = Verbosity(Genode::config()->xml_node().attribute_value<unsigned long>("verbosity", 0));
-+    } catch (...) { };
- }
- 
++        verbosity = Verbosity(Genode::config()->xml_node().sub_node("nix").attribute_value<unsigned long>("verbosity", 0));
++    } catch (...) { verbosity = Verbosity(0); };
++}
  
  void parseCmdLine(int argc, char * * argv,
      std::function<bool(Strings::iterator & arg, const Strings::iterator & end)> parseArg)
@@ -211,7 +214,25 @@ index 082705d..55b0c17 100644
      settings.update();
  }
  
-@@ -243,29 +132,11 @@ void printVersion(const string & programName)
+@@ -243,47 +113,15 @@ void parseCmdLine(int argc, char * * argv,
+ void printVersion(const string & programName)
+ {
+     std::cout << format("%1% (Nix) %2%") % programName % nixVersion << std::endl;
+-    if (verbosity > lvlInfo) {
+-        Strings cfg;
+-#if HAVE_BOEHMGC
+-        cfg.push_back("gc");
+-#endif
+-#if HAVE_SODIUM
+-        cfg.push_back("signed-caches");
+-#endif
+-        std::cout << "Features: " << concatStringsSep(", ", cfg) << "\n";
+-        std::cout << "Configuration file: " << settings.nixConfDir + "/nix.conf" << "\n";
+-        std::cout << "Store directory: " << settings.nixStore << "\n";
+-        std::cout << "State directory: " << settings.nixStateDir << "\n";
+-        std::cout << "Database directory: " << settings.nixDBPath << "\n";
+-    }
+     throw Exit();
  }
  
  
@@ -242,7 +263,7 @@ index 082705d..55b0c17 100644
      } catch (Exit & e) {
          return e.status;
      } catch (UsageError & e) {
-@@ -273,10 +144,8 @@ int handleExceptions(const string & programName, std::function<void()> fun)
+@@ -291,10 +129,8 @@ int handleExceptions(const string & programName, std::function<void()> fun)
              format(error + "%1%\nTry ‘%2% --help’ for more information.")
              % e.what() % programName);
          return 1;
@@ -255,10 +276,62 @@ index 082705d..55b0c17 100644
          return e.status;
      } catch (std::bad_alloc & e) {
          printMsg(lvlError, error + "out of memory");
-@@ -284,61 +153,38 @@ int handleExceptions(const string & programName, std::function<void()> fun)
+@@ -302,77 +138,40 @@ int handleExceptions(const string & programName, std::function<void()> fun)
      } catch (std::exception & e) {
          printMsg(lvlError, error + e.what());
          return 1;
+-    }
+-
+-    return 0;
+-}
+-
+-
+-RunPager::RunPager()
+-{
+-    if (!isatty(STDOUT_FILENO)) return;
+-    char * pager = getenv("NIX_PAGER");
+-    if (!pager) pager = getenv("PAGER");
+-    if (pager && ((string) pager == "" || (string) pager == "cat")) return;
+-
+-    /* Ignore SIGINT. The pager will handle it (and we'll get
+-       SIGPIPE). */
+-    struct sigaction act;
+-    act.sa_handler = SIG_IGN;
+-    act.sa_flags = 0;
+-    sigemptyset(&act.sa_mask);
+-    if (sigaction(SIGINT, &act, 0)) throw SysError("ignoring SIGINT");
+-
+-    restoreSIGPIPE();
+-
+-    Pipe toPager;
+-    toPager.create();
+-
+-    pid = startProcess([&]() {
+-        if (dup2(toPager.readSide, STDIN_FILENO) == -1)
+-            throw SysError("dupping stdin");
+-        if (!getenv("LESS"))
+-            setenv("LESS", "FRSXMK", 1);
+-        if (pager)
+-            execl("/bin/sh", "sh", "-c", pager, NULL);
+-        execlp("pager", "pager", NULL);
+-        execlp("less", "less", NULL);
+-        execlp("more", "more", NULL);
+-        throw SysError(format("executing ‘%1%’") % pager);
+-    });
+-
+-    if (dup2(toPager.writeSide, STDOUT_FILENO) == -1)
+-        throw SysError("dupping stdout");
+-}
+-
+-
+-RunPager::~RunPager()
+-{
+-    try {
+-        if (pid != -1) {
+-            std::cout.flush();
+-            close(STDOUT_FILENO);
+-            pid.wait(true);
+-        }
 +    } catch (File_system::Permission_denied) {
 +        printMsg(lvlError, error + "File_system: permission denied");
 +        return 1;
@@ -286,66 +359,32 @@ index 082705d..55b0c17 100644
 +    } catch (File_system::Size_limit_reached) {
 +        printMsg(lvlError, error + "File_system: size limit reached");
 +        return 1;
+     } catch (...) {
+-        ignoreException();
++	return 1;
      }
+-}
+-
  
-     return 0;
+-string showBytes(unsigned long long bytes)
+-{
+-    return (format("%.2f MiB") % (bytes / (1024.0 * 1024.0))).str();
++    return 0;
  }
  
  
--RunPager::RunPager()
+-PrintFreed::~PrintFreed()
 -{
--    if (!isatty(STDOUT_FILENO)) return;
--    string pager = getEnv("PAGER", "default");
--    if (pager == "" || pager == "cat") return;
--
--    /* Ignore SIGINT. The pager will handle it (and we'll get
--       SIGPIPE). */
--    struct sigaction act;
--    act.sa_handler = SIG_IGN;
--    act.sa_flags = 0;
--    sigemptyset(&act.sa_mask);
--    if (sigaction(SIGINT, &act, 0)) throw SysError("ignoring SIGINT");
--
--    restoreSIGPIPE();
--
--    Pipe toPager;
--    toPager.create();
--
--    pid = startProcess([&]() {
--        if (dup2(toPager.readSide, STDIN_FILENO) == -1)
--            throw SysError("dupping stdin");
--        if (!getenv("LESS"))
--            setenv("LESS", "FRSXMK", 1);
--        if (pager != "default")
--            execl("/bin/sh", "sh", "-c", pager.c_str(), NULL);
--        execlp("pager", "pager", NULL);
--        execlp("less", "less", NULL);
--        execlp("more", "more", NULL);
--        throw SysError(format("executing ‘%1%’") % pager);
--    });
--
--    if (dup2(toPager.writeSide, STDOUT_FILENO) == -1)
--        throw SysError("dupping stdout");
--}
--
--
--RunPager::~RunPager()
--{
--    try {
--        if (pid != -1) {
--            std::cout.flush();
--            close(STDOUT_FILENO);
--            pid.wait(true);
--        }
--    } catch (...) {
--        ignoreException();
--    }
+-    if (show)
+-        std::cout << format("%1% store paths deleted, %2% freed\n")
+-            % results.paths.size()
+-            % showBytes(results.bytesFreed);
 -}
 -
  
  }
 diff --git a/src/libmain/shared.hh b/src/libmain/shared.hh
-index b662c6c..bd7e484 100644
+index 65b288e..7160c09 100644
 --- a/src/libmain/shared.hh
 +++ b/src/libmain/shared.hh
 @@ -1,8 +1,7 @@
@@ -358,6 +397,15 @@ index b662c6c..bd7e484 100644
  
  #include <locale>
  
+@@ -23,7 +22,7 @@ class StoreAPI;
+ 
+ int handleExceptions(const string & programName, std::function<void()> fun);
+ 
+-void initNix();
++void initNix(Vfs::File_system &vfs);
+ 
+ void parseCmdLine(int argc, char * * argv,
+     std::function<bool(Strings::iterator & arg, const Strings::iterator & end)> parseArg);
 @@ -33,9 +32,9 @@ void printVersion(const string & programName);
  /* Ugh.  No better place to put this. */
  void printGCWarning();
@@ -370,7 +418,7 @@ index b662c6c..bd7e484 100644
      const PathSet & willSubstitute, const PathSet & unknown,
      unsigned long long downloadSize, unsigned long long narSize);
  
-@@ -66,21 +65,4 @@ template<class N> N getIntArg(const string & opt,
+@@ -66,38 +65,4 @@ template<class N> N getIntArg(const string & opt,
      return n * multiplier;
  }
  
@@ -390,6 +438,23 @@ index b662c6c..bd7e484 100644
 -};
 -
 -extern volatile ::sig_atomic_t blockInt;
+-
+-
+-/* GC helpers. */
+-
+-string showBytes(unsigned long long bytes);
+-
+-struct GCResults;
+-
+-struct PrintFreed
+-{
+-    bool show;
+-    const GCResults & results;
+-    PrintFreed(bool show, const GCResults & results)
+-        : show(show), results(results) { }
+-    ~PrintFreed();
+-};
+-
 -
  }
 diff --git a/src/libmain/stack.cc b/src/libmain/stack.cc

@@ -49,8 +49,6 @@ struct NixRepl : Line_editor_base
     char              *_buf;
     size_t      const  _buf_size;
 
-    Vfs::Dir_file_system vfs;
-    nix::Vfs_root        vfs_root;
     nix::Store           store;
     nix::EvalState       state;
 
@@ -150,11 +148,7 @@ NixRepl::NixRepl(Terminal::Session &terminal,
     : Line_editor_base(terminal, prompt, buf, buf_size)
     , _buf(buf)
     , _buf_size(buf_size)
-    , vfs(Genode::config()->xml_node().sub_node("nix").sub_node("vfs"),
-          Vfs::global_file_system_factory())
-    , vfs_root(vfs)
-    , store(vfs_root)
-    , state(vfs_root, store, Genode::config()->xml_node().sub_node("nix"))
+    , state(store, Genode::config()->xml_node().sub_node("nix"))
     , staticEnv(false, &state.staticBaseEnv)
     , _term(terminal)
 {
@@ -220,12 +214,15 @@ bool isVarName(const string & s)
 
 void NixRepl::build(string arg)
 {
-   Value v;
+
+    Value v;
     evalString(arg, v);
     DrvInfo drvInfo(state);
     if (!getDerivation(state, v, drvInfo, false))
         throw Error("expression does not evaluation to a derivation, so I can't build it");
     Path drvPath = drvInfo.queryDrvPath();
+    if (drvPath == "" || !store.isValidPath(drvPath))
+        throw Error("expression did not evaluate to a valid derivation");
 
     PathSet paths { drvPath };
     try {
@@ -235,9 +232,8 @@ void NixRepl::build(string arg)
         _term.write(drvPath);
         _term.write(" was invalid.\n");
     } catch (Builder::Missing_dependency) {
-        _term.write("Builder reported that ");
         _term.write(drvPath);
-        _term.write(" has missing dependencies, a Nix library should have taken care of that.\n");
+        _term.write(" has missing dependencies.\n");
     }
 }
 
@@ -354,11 +350,11 @@ void NixRepl::initEnv()
     foreach (StaticEnv::Vars::iterator, i, state.staticBaseEnv.vars)
         varNames.insert(i->first);
 
-    char filename[1024];
+    Genode::String<1024> filename;
     Genode::config()->xml_node().for_each_sub_node("load", [&] (Genode::Xml_node node) {
         if (node.has_attribute("file")) {
-            node.attribute("file").value(filename, sizeof(filename));
-            loadFile(Path(filename));
+            node.attribute("file").value(&filename);
+            loadFile(filename.string());
         }
     });
 
@@ -383,8 +379,8 @@ void NixRepl::reloadFiles()
 void NixRepl::addAttrsToScope(Value & attrs)
 {
     state.forceAttrs(attrs);
-    foreach (Bindings::iterator, i, *attrs.attrs)
-        addVarToScope(i->name, *i->value);
+    for (auto & i : *attrs.attrs)
+        addVarToScope(i.name, *i.value);
     _term.write((format("Added %1% variables.\n") % attrs.attrs->size()).str());
 }
 
@@ -480,8 +476,8 @@ void NixRepl::printValue(Value & v, unsigned int maxDepth, ValuesSeen & seen)
 
             typedef std::map<string, Value *> Sorted;
             Sorted sorted;
-            foreach (Bindings::iterator, i, *v.attrs)
-                sorted[i->name] = i->value;
+            for (auto & i : *v.attrs)
+                sorted[i.name] = i.value;
 
             /* If this is a derivation, then don't show the
                self-references ("all", "out", etc.). */
@@ -493,21 +489,21 @@ void NixRepl::printValue(Value & v, unsigned int maxDepth, ValuesSeen & seen)
                     hidden.insert("out");
                 else {
                     state.forceList(*i->value);
-                    for (unsigned int j = 0; j < i->value->list.length; ++j)
-                        hidden.insert(state.forceStringNoCtx(*i->value->list.elems[j]));
+                    for (unsigned int j = 0; j < i->value->listSize(); ++j)
+                        hidden.insert(state.forceStringNoCtx(*i->value->listElems()[j]));
                 }
             }
 
-            foreach (Sorted::iterator, i, sorted) {
-                _term.write(i->first);
-				_term.write(" = ");
-                if (hidden.find(i->first) != hidden.end())
+            for (auto & i : sorted) {
+                _term.write(i.first);
+                _term.write(" = ");
+                if (hidden.find(i.first) != hidden.end())
                     _term.write("<<...>>");
-                else if (seen.find(i->second) != seen.end())
+                else if (seen.find(i.second) != seen.end())
                     _term.write("<<repeated>>");
                 else
                     try {
-                        printValue(*i->second, maxDepth - 1, seen);
+                        printValue(*i.second, maxDepth - 1, seen);
                     } catch (AssertionError & e) {
                         _term.write(ESC_RED "<<error: ");
 						_term.write(e.msg());
@@ -522,23 +518,25 @@ void NixRepl::printValue(Value & v, unsigned int maxDepth, ValuesSeen & seen)
         break;
     }
 
-    case tList:
+    case tList1:
+    case tList2:
+    case tListN:
         seen.insert(&v);
 
         _term.write("[ ");
         if (maxDepth > 0)
-            for (unsigned int n = 0; n < v.list.length; ++n) {
-                _term.write(' ');
-                if (seen.find(v.list.elems[n]) != seen.end())
+            for (unsigned int n = 0; n < v.listSize(); ++n) {
+                if (seen.find(v.listElems()[n]) != seen.end())
                     _term.write("<<repeated>>");
                 else
                     try {
-                        printValue(*v.list.elems[n], maxDepth - 1, seen);
+                        printValue(*v.listElems()[n], maxDepth - 1, seen);
                     } catch (AssertionError & e) {
                         _term.write("ESC_RED <<error: ");
 						_term.write(e.msg());
 						_term.write(">>" ESC_END);
                     }
+                _term.write(' ');
             }
         else
             _term.write(" ...");

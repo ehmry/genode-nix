@@ -26,12 +26,18 @@ int main(void)
 	enum { COMMAND_MAX_LEN = 1000 };
 	static char buf[COMMAND_MAX_LEN];
 
+	Vfs::Dir_file_system vfs(
+		Genode::config()->xml_node().sub_node("vfs"),
+		Vfs::global_file_system_factory());
+
 	/*
 	 * Nix may throw errors as exceptions to
 	 * be caught and interpreted before exit.
 	 */
-	return nix::handleExceptions("nix-repl", [] {
-	
+	return nix::handleExceptions("nix-repl", [&] {
+
+	nix::initNix(vfs);
+
 	tprintf(terminal, "Welcome to Nix version " NIX_VERSION ". Type :? for help.\n\n");
 
 	nix::NixRepl nix_repl(terminal, "nix-repl> ", buf, sizeof(buf));

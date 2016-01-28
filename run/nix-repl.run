@@ -123,8 +123,7 @@ append config {
 		<resource name="RAM" quantum="8M"/>
 		<provides><service name="Builder"/></provides>
 		<route>
-			<service name="ROM">
-				<if-arg key="filename" value="ld.lib.so"/>
+			<service name="ROM" label="ld.lib.so">
 				<parent/>
 			</service>
 			<any-service>
@@ -160,10 +159,9 @@ append config {
 			</any-service>
 		</route>
 		<config>
-			<nix>
-				<vfs>
-					<dir name="store"> <fs label="store"/> </dir>
-					<dir name="corepkgs"> <tar name="nix_corepkgs.tar"/> </dir>
+			<vfs>
+				<dir name="store"> <fs label="store"/> </dir>
+				<dir name="nix"> <dir name="corepkgs"> <tar name="nix_corepkgs.tar"/> </dir> </dir>
 <inline name="default.nix">
 rec {
 
@@ -225,9 +223,7 @@ rec {
   drv = derivation (args // { foobar = derivation args; config = config2; });
 }
 </inline>
-				</vfs>
-				<search-path name="nix" path="/corepkgs"/>
-			</nix>
+			</vfs>
 			<load file="/default.nix"/>
 		</config>
 	</start>
@@ -240,9 +236,13 @@ install_config $config
 set boot_modules {
 	core init ld.lib.so
 	builder
+	curl.lib.so
 	fs_rom
 	libc.lib.so
+	libcrypto.lib.so
 	libm.lib.so
+	libssh.lib.so
+	libssl.lib.so
 	nix_corepkgs.tar
 	nixexpr.lib.so
 	nixformat.lib.so
@@ -256,6 +256,7 @@ set boot_modules {
 	test-libc_vfs
 	timer
 	vfs
+	zlib.lib.so
 }
 
 append_platform_drv_boot_modules

@@ -22,6 +22,8 @@ struct Builder::Session_client : Genode::Rpc_client<Session>
 
 	void realize(Name const  &drv, Genode::Signal_context_capability sigh) {
 		call<Rpc_realize>(drv, sigh); }
+
+	Name dereference(Name const &name) { return call<Rpc_dereference>(name); }
 };
 
 #endif

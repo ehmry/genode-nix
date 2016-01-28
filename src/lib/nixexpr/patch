@@ -1,56 +1,13 @@
-diff --git a/src/libexpr/attr-path.cc b/src/libexpr/attr-path.cc
-index fdd61a5..389c1d4 100644
---- a/src/libexpr/attr-path.cc
-+++ b/src/libexpr/attr-path.cc
-@@ -37,9 +37,6 @@ Value * findAlongAttrPath(EvalState & state, const string & attrPath,
- {
-     Strings tokens = parseAttrPath(attrPath);
- 
--    Error attrError =
--        Error(format("attribute selection path ‘%1%’ does not match expression") % attrPath);
--
-     Value * v = &vIn;
- 
-     foreach (Strings::iterator, i, tokens) {
-diff --git a/src/libexpr/common-opts.cc b/src/libexpr/common-opts.cc
-index c03d720..52cfeb0 100644
---- a/src/libexpr/common-opts.cc
-+++ b/src/libexpr/common-opts.cc
-@@ -31,7 +31,7 @@ Bindings * evalAutoArgs(EvalState & state, std::map<string, string> & in)
-     for (auto & i : in) {
-         Value * v = state.allocValue();
-         if (i.second[0] == 'E')
--            state.mkThunk_(*v, state.parseExprFromString(string(i.second, 1), absPath(".")));
-+            state.mkThunk_(*v, state.parseExprFromString(string(i.second, 1), state.vfs().absPath(".")));
-         else
-             mkString(*v, string(i.second, 1));
-         res->push_back(Attr(state.symbols.create(i.first), v));
-@@ -57,7 +57,7 @@ Path lookupFileArg(EvalState & state, string s)
-         Path p = s.substr(1, s.size() - 2);
-         return state.findFile(p);
-     } else
--        return absPath(s);
-+        return state.vfs().absPath(s);
- }
- 
- 
-diff --git a/src/libexpr/eval-inline.hh b/src/libexpr/eval-inline.hh
-index c275f7b..3191758 100644
---- a/src/libexpr/eval-inline.hh
-+++ b/src/libexpr/eval-inline.hh
-@@ -31,7 +31,6 @@ void EvalState::forceValue(Value & v)
-         Expr * expr = v.thunk.expr;
-         try {
-             v.type = tBlackhole;
--            //checkInterrupt();
-             expr->eval(*this, *env, v);
-         } catch (Error & e) {
-             v.type = tThunk;
 diff --git a/src/libexpr/eval.cc b/src/libexpr/eval.cc
-index 298f6a3..d705652 100644
+index 3b21c07..68688f7 100644
 --- a/src/libexpr/eval.cc
 +++ b/src/libexpr/eval.cc
-@@ -8,9 +8,6 @@
+@@ -5,12 +5,11 @@
+ #include "derivations.hh"
+ #include "globals.hh"
+ #include "eval-inline.hh"
++#include "download.hh"
++
  
  #include <algorithm>
  #include <cstring>
@@ -60,7 +17,7 @@ index 298f6a3..d705652 100644
  
  #if HAVE_BOEHMGC
  
-@@ -28,6 +25,8 @@
+@@ -25,6 +24,8 @@
  
  #endif
  
@@ -69,198 +26,227 @@ index 298f6a3..d705652 100644
  
  namespace nix {
  
-@@ -168,8 +167,10 @@ static Symbol getName(const AttrName & name, EvalState & state, Env & env)
+@@ -57,8 +58,6 @@ static void * allocBytes(size_t n)
+ 
+ static void printValue(std::ostream & str, std::set<const Value *> & active, const Value & v)
+ {
+-    checkInterrupt();
+-
+     if (active.find(&v) != active.end()) {
+         str << "<CYCLE>";
+         return;
+@@ -244,8 +243,9 @@ static Strings parseNixPath(const string & in)
  }
  
  
 -EvalState::EvalState(const Strings & _searchPath)
 -    : sWith(symbols.create("<with>"))
-+EvalState::EvalState(Vfs_root &vfs, Store &store, Genode::Xml_node config_node)
-+    : _vfs(vfs)
-+    , _store(store)
++EvalState::EvalState(Store &store, Genode::Xml_node config_node)
++    : _store(store)
 +    , sWith(symbols.create("<with>"))
      , sOutPath(symbols.create("outPath"))
      , sDrvPath(symbols.create("drvPath"))
      , sType(symbols.create("type"))
-@@ -190,6 +191,12 @@ EvalState::EvalState(const Strings & _searchPath)
+@@ -265,17 +265,27 @@ EvalState::EvalState(const Strings & _searchPath)
+     , baseEnv(allocEnv(128))
      , staticBaseEnv(false, 0)
-     , baseEnvDispl(0)
  {
-+    /*
-+     * Set the verbosity global variable here, not the right thing to do,
-+     * but easier than rewriting logging for now.
-+     */
-+    verbosity = Verbosity(config_node.attribute_value("verbosity", 0U));
++    if (_vfs == nullptr)
++      throw Error("Nix VFS uninitialized");
 +
-     nrEnvs = nrValuesInEnvs = nrValues = nrListElems = 0;
-     nrAttrsets = nrAttrsInAttrsets = nrOpUpdates = nrOpUpdateValuesCopied = 0;
-     nrListConcats = nrPrimOpCalls = nrFunctionCalls = 0;
-@@ -234,11 +241,19 @@ EvalState::EvalState(const Strings & _searchPath)
-     }
- #endif
+     countCalls = getEnv("NIX_COUNT_CALLS", "0") != "0";
+ 
+     restricted = settings.get("restrict-eval", false);
+ 
++    initGC();
+     assert(gcInitialised);
  
 -    /* Initialise the Nix expression search path. */
--    Strings paths = tokenizeString<Strings>(getEnv("NIX_PATH", ""), ":");
+-    Strings paths = parseNixPath(getEnv("NIX_PATH", ""));
 -    for (auto & i : _searchPath) addToSearchPath(i, true);
 -    for (auto & i : paths) addToSearchPath(i);
 -    addToSearchPath("nix=" + settings.nixDataDir + "/nix/corepkgs");
-+        config_node.for_each_sub_node("search-path", [&] (Genode::Xml_node node) {
-+        Genode::Xml_node::Attribute name_attr = node.attribute("name");
-+        Genode::Xml_node::Attribute path_attr = node.attribute("path");
-+
-+        char str[name_attr.value_size() + path_attr.value_size() + 2];
-+        auto i = name_attr.value_size();
-+        name_attr.value(str, name_attr.value_size()+1);
-+        str[i++] = '=';
-+        path_attr.value(str+i, path_attr.value_size()+1);
-+	    addToSearchPath(str);
++	/* XXX: addToSearchPath faults
++    config_node.for_each_sub_node("search-path", [this] (Genode::Xml_node node) {
++        Genode::String<256> search_name;
++        Genode::String<1024> search_path;
++        try {
++            node.attribute("name").value(&search_name);
++            node.attribute("path").value(&search_path);
++        } catch (...) { return; }
++        this->addToSearchPath(search_name.string(), search_path.string(), true);
 +    });
-+
-+    addToSearchPath("nix=/nix/corepkgs");
++	 */
  
-     createBaseEnv();
- }
-@@ -247,6 +262,7 @@ EvalState::EvalState(const Strings & _searchPath)
+     clearValue(vEmptySet);
+     vEmptySet.type = tAttrs;
+@@ -288,6 +298,72 @@ EvalState::EvalState(const Strings & _searchPath)
  EvalState::~EvalState()
  {
      fileEvalCache.clear();
 +    romEvalCache.clear();
++}
++
++
++void EvalState::addToSearchPath(const string & s, bool warn)
++{
++    size_t pos = s.find('=');
++    string prefix;
++    Path path;
++    if (pos == string::npos) {
++        path = s;
++    } else {
++        prefix = string(s, 0, pos);
++        path = string(s, pos + 1);
++    }
++
++    addToSearchPath(prefix, path, warn);
++}
++
++
++void EvalState::addToSearchPath(const string & name, const string & value, bool warn)
++{
++   Path path = isUri(path) ? downloadFileCached(path, true) : path;
++
++    path = absPath(path);
++    if (pathExists(path)) {
++        debug(format("adding path ‘%1%’ to the search path") % path);
++        /* Resolve symlinks in the path to support restricted mode. */
++        searchPath.push_back(std::pair<string, Path>(name, canonPath(path, true)));
++    } else if (warn)
++        printMsg(lvlError, format("warning: Nix search path entry ‘%1%’ does not exist, ignoring") % path);
++}
++
++
++Path EvalState::findFile(const string & path)
++{
++    return findFile(searchPath, path);
++}
++
++
++Path EvalState::findFile(SearchPath & searchPath, const string & path, const Pos & pos)
++{
++    for (auto & i : searchPath) {
++        assert(!isUri(i.second));
++        Path res;
++        if (i.first.empty())
++            res = i.second + "/" + path;
++        else {
++            if (path.compare(0, i.first.size(), i.first) != 0 ||
++                (path.size() > i.first.size() && path[i.first.size()] != '/'))
++                continue;
++            res = i.second +
++                (path.size() == i.first.size() ? "" : "/" + string(path, i.first.size()));
++        }
++        if (pathExists(res)) return canonPath(res);
++    }
++    /* fallback to '/<...>' */
++    {
++        Path abs_path = canonPath("/"+path);
++        if (pathExists(abs_path)) return abs_path;
++    }
++    format f = format(
++        "file ‘%1%’ was not found in the Nix search path (add it using $NIX_PATH or -I)"
++        + string(pos ? ", at %2%" : ""));
++    f.exceptions(boost::io::all_error_bits ^ boost::io::too_many_args_bit);
++    throw ThrownError(f % path % pos);
  }
  
  
-@@ -548,7 +564,7 @@ void EvalState::evalFile(const Path & path, Value & v)
-         return;
-     }
- 
--    Path path2 = resolveExprPath(path);
-+    Path path2 = resolveExprPath(_vfs, path);
-     if ((i = fileEvalCache.find(path2)) != fileEvalCache.end()) {
-         v = i->second;
-         return;
-@@ -573,6 +589,11 @@ void EvalState::resetFileCache()
-     fileEvalCache.clear();
+@@ -619,6 +695,12 @@ void EvalState::resetFileCache()
  }
+ 
  
 +void EvalState::resetRomCache()
 +{
 +    romEvalCache.clear();
 +}
 +
- 
++
  void EvalState::eval(Expr * e, Value & v)
  {
-@@ -1307,7 +1328,7 @@ string EvalState::coerceToString(const Pos & pos, Value & v, PathSet & context,
-     }
- 
-     if (v.type == tPath) {
--        Path path(canonPath(v.path));
-+        Path path(_vfs.canonPath(v.path));
-         return copyToStore ? copyPathToStore(context, path) : path;
-     }
- 
-@@ -1357,8 +1378,8 @@ string EvalState::copyPathToStore(PathSet & context, const Path & path)
-         dstPath = srcToStore[path];
+     e->eval(*this, baseEnv, v);
+@@ -1443,7 +1525,7 @@ string EvalState::copyPathToStore(PathSet & context, const Path & path)
      else {
          dstPath = settings.readOnlyMode
--            ? computeStorePathForPath(path).first
--            : store->addToStore(path, true, htSHA256, defaultPathFilter, repair);
-+            ? computeStorePathForPath(_vfs, path).first
-+            : _store.addToStore(path, true, htSHA256, defaultPathFilter, repair);
+             ? computeStorePathForPath(checkSourcePath(path)).first
+-            : store->addToStore(baseNameOf(path), checkSourcePath(path), true, htSHA256, defaultPathFilter, repair);
++            : _store.addToStore(baseNameOf(path), checkSourcePath(path), true, htBLAKE2s, defaultPathFilter, repair);
          srcToStore[path] = dstPath;
          printMsg(lvlChatty, format("copied source ‘%1%’ -> ‘%2%’")
              % path % dstPath);
-@@ -1372,8 +1393,8 @@ string EvalState::copyPathToStore(PathSet & context, const Path & path)
+@@ -1457,8 +1539,8 @@ string EvalState::copyPathToStore(PathSet & context, const Path & path)
  Path EvalState::coerceToPath(const Pos & pos, Value & v, PathSet & context)
  {
      string path = coerceToString(pos, v, context, false, false);
 -    if (path == "" || path[0] != '/')
 -        throwEvalError("string ‘%1%’ doesn't represent an absolute path, at %2%", path, pos);
-+    if (path.empty())
-+        throwEvalError("cannot coerce an empty string to a path at %1%", pos);
++    if (path == "")
++        throwEvalError("empty path at %1%", pos);
      return path;
  }
  
-@@ -1455,16 +1476,12 @@ void EvalState::printStats()
+@@ -1542,9 +1624,7 @@ void EvalState::printStats()
      Verbosity v = showStats ? lvlInfo : lvlDebug;
      printMsg(v, "evaluation statistics:");
  
 -    struct rusage buf;
 -    getrusage(RUSAGE_SELF, &buf);
 -    float cpuTime = buf.ru_utime.tv_sec + ((float) buf.ru_utime.tv_usec / 1000000);
--
++    float cpuTime = 0;
+ 
      uint64_t bEnvs = nrEnvs * sizeof(Env) + nrValuesInEnvs * sizeof(Value *);
      uint64_t bLists = nrListElems * sizeof(Value *);
-     uint64_t bValues = nrValues * sizeof(Value);
-     uint64_t bAttrsets = nrAttrsets * sizeof(Bindings) + nrAttrsInAttrsets * sizeof(Attr);
- 
--    printMsg(v, format("  time elapsed: %1%") % cpuTime);
-+    /* printMsg(v, format("  time elapsed: %1%") % cpuTime); */
-     printMsg(v, format("  size of a value: %1%") % sizeof(Value));
-     printMsg(v, format("  environments allocated: %1% (%2% bytes)") % nrEnvs % bEnvs);
-     printMsg(v, format("  list elements: %1% (%2% bytes)") % nrListElems % bLists);
 diff --git a/src/libexpr/eval.hh b/src/libexpr/eval.hh
-index 7894292..d1deab8 100644
+index 2d7b7bc..567a8e9 100644
 --- a/src/libexpr/eval.hh
 +++ b/src/libexpr/eval.hh
-@@ -4,6 +4,8 @@
+@@ -5,6 +5,7 @@
  #include "nixexpr.hh"
  #include "symbol-table.hh"
  #include "hash.hh"
 +#include "store.hh"
-+#include "util.hh"
  
  #include <map>
  
-@@ -11,6 +13,11 @@
- #include <gc/gc_allocator.h>
- #endif
- 
-+/* Genode includes */
-+#include <util/xml_node.h>
-+#include <base/fixed_stdint.h>
-+
-+using Genode::uint32_t;
- 
- namespace nix {
- 
-@@ -134,23 +141,33 @@ public:
-     bool repair;
+@@ -83,24 +84,35 @@ public:
+     Value vEmptySet;
  
  private:
-+    Vfs_root &_vfs;
 +    Store    &_store;
 +
      SrcToStore srcToStore;
  
 +public:
-+
      /* A cache from path names to values. */
  #if HAVE_BOEHMGC
      typedef std::map<Path, Value, std::less<Path>, traceable_allocator<std::pair<const Path, Value> > > FileEvalCache;
 +    typedef std::map<string, Value, std::less<string>, traceable_allocator<std::pair<const string, Value> > > RomEvalCache;
  #else
--    typedef std::map<Path, Value> FileEvalCache;
-+    typedef std::map<Path,   Value> FileEvalCache;
+     typedef std::map<Path, Value> FileEvalCache;
 +    typedef std::map<string, Value> RomEvalCache;
  #endif
++private:
      FileEvalCache fileEvalCache;
++public:
 +    RomEvalCache  romEvalCache;
  
      SearchPath searchPath;
  
--public:
+ public:
  
 -    EvalState(const Strings & _searchPath);
-+    EvalState(Vfs_root &vfs, Store &store, Genode::Xml_node config_node);
++    EvalState(Store &store, Genode::Xml_node config_node);
      ~EvalState();
  
-+    Vfs_root &vfs()   { return _vfs;   };
 +    Store    &store() { return _store; };
 +
      void addToSearchPath(const string & s, bool warn = false);
++    void addToSearchPath(const string & name, const string & path, bool warn = false);
  
-     /* Parse a Nix expression from the specified file. */
-@@ -166,6 +183,7 @@ public:
+     Path checkSourcePath(const Path & path);
+ 
+@@ -117,6 +129,7 @@ public:
      void evalFile(const Path & path, Value & v);
  
      void resetFileCache();
@@ -268,46 +254,27 @@ index 7894292..d1deab8 100644
  
      /* Look up a file in the search path. */
      Path findFile(const string & path);
-@@ -326,7 +344,7 @@ string showType(const Value & v);
- 
- 
- /* If `path' refers to a directory, then append "/default.nix". */
--Path resolveExprPath(Path path);
-+Path resolveExprPath(Vfs_root &vfs, Path path);
- 
- struct InvalidPathError : EvalError
- {
 diff --git a/src/libexpr/parser.y b/src/libexpr/parser.y
-index ff17481..82cc347 100644
+index d34882f..ceebf6e 100644
 --- a/src/libexpr/parser.y
 +++ b/src/libexpr/parser.y
-@@ -6,6 +6,7 @@
- /* %no-lines */
- %parse-param { void * scanner }
- %parse-param { nix::ParseData * data }
-+%parse-param { nix::Vfs_root & vfs }
- %lex-param { void * scanner }
- %lex-param { nix::ParseData * data }
- %expect 1
-@@ -231,7 +232,7 @@ static inline Pos makeCurPos(const YYLTYPE & loc, ParseData * data)
- }
+@@ -282,6 +282,7 @@ void yyerror(YYLTYPE * loc, yyscan_t scanner, ParseData * data, const char * err
+ %left '*' '/'
+ %right CONCAT
+ %nonassoc '?'
++%nonassoc '~'
+ %nonassoc NEGATE
  
- 
--void yyerror(YYLTYPE * loc, yyscan_t scanner, ParseData * data, const char * error)
-+void yyerror(YYLTYPE * loc, yyscan_t scanner, ParseData * data, Vfs_root &vfs, const char * error)
- {
-     data->error = (format("%1%, at %2%")
-         % error % makeCurPos(*loc, data)).str();
-@@ -375,7 +376,7 @@ expr_simple
-   | IND_STRING_OPEN ind_string_parts IND_STRING_CLOSE {
+ %%
+@@ -371,7 +372,6 @@ expr_simple
        $$ = stripIndentation(CUR_POS, data->symbols, *$2);
    }
--  | PATH { $$ = new ExprPath(absPath($1, data->basePath)); }
-+  | PATH { $$ = new ExprPath(vfs.absPath($1, data->basePath)); }
+   | PATH { $$ = new ExprPath(absPath($1, data->basePath)); }
+-  | HPATH { $$ = new ExprPath(getEnv("HOME", "") + string{$1 + 1}); }
    | SPATH {
        string path($1 + 1, strlen($1) - 2);
        $$ = new ExprApp(CUR_POS,
-@@ -521,11 +522,6 @@ formal
+@@ -510,13 +510,7 @@ formal
  %%
  
  
@@ -317,28 +284,15 @@ index ff17481..82cc347 100644
 -#include <unistd.h>
 -
  #include <eval.hh>
+-#include <download.hh>
+ #include <store-api.hh>
  
  
-@@ -542,7 +538,7 @@ Expr * EvalState::parse(const char * text,
- 
-     yylex_init(&scanner);
-     yy_scan_string(text, scanner);
--    int res = yyparse(scanner, &data);
-+    int res = yyparse(scanner, &data, _vfs);
-     yylex_destroy(scanner);
- 
-     if (res) throw ParseError(data.error);
-@@ -553,23 +549,25 @@ Expr * EvalState::parse(const char * text,
- }
- 
- 
--Path resolveExprPath(Path path)
-+Path resolveExprPath(Vfs_root &vfs, Path path)
+@@ -547,19 +541,19 @@ Expr * EvalState::parse(const char * text,
+ Path resolveExprPath(Path path)
  {
-+    using namespace Vfs;
-+
      assert(path[0] == '/');
-+    Directory_service::Stat stat;
++    Vfs::Directory_service::Stat stat;
  
      /* If `path' is a symlink, follow it.  This is so that relative
         path references work. */
@@ -349,74 +303,93 @@ index ff17481..82cc347 100644
 -        if (!S_ISLNK(st.st_mode)) break;
 -        path = absPath(readLink(path), dirOf(path));
 +    for (;;) {
-+        stat = vfs.status(path);
++        stat = status(path);
 +        if (S_ISLNK(stat.mode))
-+            path = vfs.absPath(vfs.readLink(path), dirOf(path));
++            path = absPath(readLink(path), dirOf(path));
 +        else break;
      }
  
      /* If `path' refers to a directory, append `/default.nix'. */
 -    if (S_ISDIR(st.st_mode))
--        path = canonPath(path + "/default.nix");
 +    if (S_ISDIR(stat.mode))
-+        path = vfs.canonPath(path + "/default.nix");
+         path = canonPath(path + "/default.nix");
  
      return path;
- }
-@@ -583,7 +581,7 @@ Expr * EvalState::parseExprFromFile(const Path & path)
- 
- Expr * EvalState::parseExprFromFile(const Path & path, StaticEnv & staticEnv)
- {
--    return parse(readFile(path).c_str(), path, dirOf(path), staticEnv);
-+    return parse(_vfs.readFile(path).c_str(), path, dirOf(path), staticEnv);
+@@ -590,59 +584,4 @@ Expr * EvalState::parseExprFromString(const string & s, const Path & basePath)
  }
  
  
-@@ -611,8 +609,8 @@ void EvalState::addToSearchPath(const string & s, bool warn)
-         path = string(s, pos + 1);
-     }
- 
+-void EvalState::addToSearchPath(const string & s, bool warn)
+-{
+-    size_t pos = s.find('=');
+-    string prefix;
+-    Path path;
+-    if (pos == string::npos) {
+-        path = s;
+-    } else {
+-        prefix = string(s, 0, pos);
+-        path = string(s, pos + 1);
+-    }
+-
+-    if (isUri(path))
+-        path = downloadFileCached(path, true);
+-
 -    path = absPath(path);
 -    if (pathExists(path)) {
-+    path = _vfs.absPath(path);
-+    if (_vfs.pathExists(path)) {
-         debug(format("adding path ‘%1%’ to the search path") % path);
-         searchPath.push_back(std::pair<string, Path>(prefix, path));
-     } else if (warn)
-@@ -639,9 +637,9 @@ Path EvalState::findFile(SearchPath & searchPath, const string & path)
-             res = i->second +
-                 (path.size() == i->first.size() ? "" : "/" + string(path, i->first.size()));
-         }
+-        debug(format("adding path ‘%1%’ to the search path") % path);
+-        /* Resolve symlinks in the path to support restricted mode. */
+-        searchPath.push_back(std::pair<string, Path>(prefix, canonPath(path, true)));
+-    } else if (warn)
+-        printMsg(lvlError, format("warning: Nix search path entry ‘%1%’ does not exist, ignoring") % path);
+-}
+-
+-
+-Path EvalState::findFile(const string & path)
+-{
+-    return findFile(searchPath, path);
+-}
+-
+-
+-Path EvalState::findFile(SearchPath & searchPath, const string & path, const Pos & pos)
+-{
+-    for (auto & i : searchPath) {
+-        assert(!isUri(i.second));
+-        Path res;
+-        if (i.first.empty())
+-            res = i.second + "/" + path;
+-        else {
+-            if (path.compare(0, i.first.size(), i.first) != 0 ||
+-                (path.size() > i.first.size() && path[i.first.size()] != '/'))
+-                continue;
+-            res = i.second +
+-                (path.size() == i.first.size() ? "" : "/" + string(path, i.first.size()));
+-        }
 -        if (pathExists(res)) return canonPath(res);
-+        if (_vfs.pathExists(res)) return _vfs.canonPath(res);
-     }
--    throw ThrownError(format("file ‘%1%’ was not found in the Nix search path (add it using $NIX_PATH or -I)") % path);
-+    throw ThrownError(format("file ‘%1%’ was not found in the Nix search path") % path);
+-    }
+-    format f = format(
+-        "file ‘%1%’ was not found in the Nix search path (add it using $NIX_PATH or -I)"
+-        + string(pos ? ", at %2%" : ""));
+-    f.exceptions(boost::io::all_error_bits ^ boost::io::too_many_args_bit);
+-    throw ThrownError(f % path % pos);
+-}
+-
+-
  }
- 
- 
 diff --git a/src/libexpr/primops.cc b/src/libexpr/primops.cc
-index cd7b287..316f7d5 100644
+index 87ee4f6..ae47c76 100644
 --- a/src/libexpr/primops.cc
 +++ b/src/libexpr/primops.cc
-@@ -10,13 +10,11 @@
- #include "names.hh"
- #include "eval-inline.hh"
- 
--#include <sys/types.h>
--#include <sys/stat.h>
--#include <unistd.h>
--
- #include <algorithm>
+@@ -19,6 +19,9 @@
  #include <cstring>
--#include <dlfcn.h>
-+
+ #include <dlfcn.h>
+ 
 +/* Genode includes */
 +#include <os/attached_rom_dataspace.h>
- 
++
  
  namespace nix {
-@@ -42,14 +40,13 @@ std::pair<string, string> decodeContext(const string & s)
+ 
+@@ -43,14 +46,14 @@ std::pair<string, string> decodeContext(const string & s)
  InvalidPathError::InvalidPathError(const Path & path) :
      EvalError(format("path ‘%1%’ is not valid") % path), path(path) {}
  
@@ -427,13 +400,13 @@ index cd7b287..316f7d5 100644
      for (auto & i : context) {
          std::pair<string, string> decoded = decodeContext(i);
          Path ctx = decoded.first;
--        assert(isStorePath(ctx));
+         assert(isStorePath(ctx));
 -        if (!store->isValidPath(ctx))
 +        if (!store.isValidPath(ctx))
              throw InvalidPathError(ctx);
          if (!decoded.second.empty() && isDerivation(ctx))
              drvs.insert(decoded.first + "!" + decoded.second);
-@@ -58,10 +55,10 @@ void realiseContext(const PathSet & context)
+@@ -59,10 +62,10 @@ void realiseContext(const PathSet & context)
          /* For performance, prefetch all substitute info. */
          PathSet willBuild, willSubstitute, unknown;
          unsigned long long downloadSize, narSize;
@@ -446,7 +419,7 @@ index cd7b287..316f7d5 100644
      }
  }
  
-@@ -74,13 +71,13 @@ static void prim_scopedImport(EvalState & state, const Pos & pos, Value * * args
+@@ -75,7 +78,7 @@ static void prim_scopedImport(EvalState & state, const Pos & pos, Value * * args
      Path path = state.coerceToPath(pos, *args[1], context);
  
      try {
@@ -455,58 +428,25 @@ index cd7b287..316f7d5 100644
      } catch (InvalidPathError & e) {
          throw EvalError(format("cannot import ‘%1%’, since path ‘%2%’ is not valid, at %3%")
              % path % e.path % pos);
-     }
+@@ -83,7 +86,7 @@ static void prim_scopedImport(EvalState & state, const Pos & pos, Value * * args
+ 
+     path = state.checkSourcePath(path);
  
 -    if (isStorePath(path) && store->isValidPath(path) && isDerivation(path)) {
-+    if (state.store().isValidPath(path) && isDerivation(path)) {
++    if (isStorePath(path) && state.store().isValidPath(path) && isDerivation(path)) {
          Derivation drv = readDerivation(path);
          Value & w = *state.allocValue();
-         state.mkAttrs(w, 2 + drv.outputs.size());
-@@ -121,7 +118,7 @@ static void prim_scopedImport(EvalState & state, const Pos & pos, Value * * args
-             }
- 
-             startNest(nest, lvlTalkative, format("evaluating file ‘%1%’") % path);
--            Expr * e = state.parseExprFromFile(resolveExprPath(path), staticEnv);
-+            Expr * e = state.parseExprFromFile(resolveExprPath(state.vfs(), path), staticEnv);
- 
-             e->eval(state, *env, v);
-         }
-@@ -139,33 +136,7 @@ static void prim_importNative(EvalState & state, const Pos & pos, Value * * args
-     PathSet context;
+         state.mkAttrs(w, 3 + drv.outputs.size());
+@@ -145,7 +148,7 @@ static void prim_importNative(EvalState & state, const Pos & pos, Value * * args
      Path path = state.coerceToPath(pos, *args[0], context);
  
--    try {
+     try {
 -        realiseContext(context);
--    } catch (InvalidPathError & e) {
--        throw EvalError(format("cannot import ‘%1%’, since path ‘%2%’ is not valid, at %3%")
--            % path % e.path % pos);
--    }
--
--    string sym = state.forceStringNoCtx(*args[1], pos);
--
--    void *handle = dlopen(path.c_str(), RTLD_LAZY | RTLD_LOCAL);
--    if (!handle)
--        throw EvalError(format("could not open ‘%1%’: %2%") % path % dlerror());
--
--    dlerror();
--    ValueInitializer func = (ValueInitializer) dlsym(handle, sym.c_str());
--    if(!func) {
--        char *message = dlerror();
--        if (message)
--            throw EvalError(format("could not load symbol ‘%1%’ from ‘%2%’: %3%") % sym % path % message);
--        else
--            throw EvalError(format("symbol ‘%1%’ from ‘%2%’ resolved to NULL when a function pointer was expected")
--                    % sym % path);
--    }
--
--    (func)(state, v);
--
--    /* We don't dlclose because v may be a primop referencing a function in the shared object file */
-+    throw EvalError(format("refusing to open dso ‘%1%’") % path);
- }
- 
- 
-@@ -376,11 +347,31 @@ static void prim_tryEval(EvalState & state, const Pos & pos, Value * * args, Val
++        realiseContext(state.store(), context);
+     } catch (InvalidPathError & e) {
+         throw EvalError(format("cannot import ‘%1%’, since path ‘%2%’ is not valid, at %3%")
+             % path % e.path % pos);
+@@ -383,11 +386,30 @@ static void prim_tryEval(EvalState & state, const Pos & pos, Value * * args, Val
  }
  
  
@@ -515,11 +455,10 @@ index cd7b287..316f7d5 100644
 +/* Convert a ROM session to a store object. */
 +static void prim_getRom(EvalState & state, const Pos & pos, Value * * args, Value & v)
  {
-+	using namespace Genode;
++    using namespace Genode;
 +
      string name = state.forceStringNoCtx(*args[0], pos);
--    mkString(v, getEnv(name));
-+
+-    mkString(v, state.restricted ? "" : getEnv(name));
 +    EvalState::RomEvalCache::iterator i;
 +    if ((i = state.romEvalCache.find(name)) != state.romEvalCache.end()) {
 +        v = i->second;
@@ -527,7 +466,7 @@ index cd7b287..316f7d5 100644
 +    }
 +
 +    try {
-+		Genode::Attached_rom_dataspace rom(name.c_str());
++               Genode::Attached_rom_dataspace rom(name.c_str());
 +
 +        string storeName = state.store().addDataToStore(
 +            name, rom.local_addr<void>(), rom.size(), state.repair);
@@ -541,39 +480,21 @@ index cd7b287..316f7d5 100644
  }
  
  
-@@ -498,6 +489,17 @@ static void prim_derivationStrict(EvalState & state, const Pos & pos, Value * *
-                the environment. */
-             else {
-                 string s = state.coerceToString(posDrvName, *i->value, context, true);
-+
-+				for (std::string::size_type i = 0;i < s.size(); ++i) {
-+					if (s[i] == '\\') {
-+						++i; continue;
-+					}
-+
-+					if (s[i] == '"')
-+						throw EvalError("derivation attributes may not contain the character '\"', "
-+                                        "consider using the 'builtins.toFile' function");
-+				}
-+
-                 drv.env[key] = s;
-                 if (key == "builder") drv.builder = s;
-                 else if (i->name == state.sSystem) drv.platform = s;
-@@ -554,11 +556,11 @@ static void prim_derivationStrict(EvalState & state, const Pos & pos, Value * *
+@@ -560,11 +582,11 @@ static void prim_derivationStrict(EvalState & state, const Pos & pos, Value * *
             runs. */
          if (path.at(0) == '=') {
              /* !!! This doesn't work if readOnlyMode is set. */
 -            PathSet refs; computeFSClosure(*store, string(path, 1), refs);
 +            PathSet refs; computeFSClosure(state.store(), string(path, 1), refs);
-             foreach (PathSet::iterator, j, refs) {
-                 drv.inputSrcs.insert(*j);
-                 if (isDerivation(*j))
--                    drv.inputDrvs[*j] = store->queryDerivationOutputNames(*j);
-+                    drv.inputDrvs[*j] = state.store().queryDerivationOutputNames(*j);
+             for (auto & j : refs) {
+                 drv.inputSrcs.insert(j);
+                 if (isDerivation(j))
+-                    drv.inputDrvs[j] = store->queryDerivationOutputNames(j);
++                    drv.inputDrvs[j] = state.store().queryDerivationOutputNames(j);
              }
          }
  
-@@ -575,7 +577,7 @@ static void prim_derivationStrict(EvalState & state, const Pos & pos, Value * *
+@@ -581,7 +603,7 @@ static void prim_derivationStrict(EvalState & state, const Pos & pos, Value * *
          /* Handle derivation contexts returned by
             ‘builtins.storePath’. */
          else if (isDerivation(path))
@@ -582,16 +503,16 @@ index cd7b287..316f7d5 100644
  
          /* Otherwise it's a source file. */
          else
-@@ -624,7 +626,7 @@ static void prim_derivationStrict(EvalState & state, const Pos & pos, Value * *
+@@ -630,7 +652,7 @@ static void prim_derivationStrict(EvalState & state, const Pos & pos, Value * *
  
          /* Use the masked derivation expression to compute the output
             path. */
 -        Hash h = hashDerivationModulo(*store, drv);
 +        Hash h = hashDerivationModulo(state.store(), drv);
  
-         foreach (DerivationOutputs::iterator, i, drv.outputs)
-             if (i->second.path == "") {
-@@ -635,7 +637,7 @@ static void prim_derivationStrict(EvalState & state, const Pos & pos, Value * *
+         for (auto & i : drv.outputs)
+             if (i.second.path == "") {
+@@ -641,7 +663,7 @@ static void prim_derivationStrict(EvalState & state, const Pos & pos, Value * *
      }
  
      /* Write the resulting term into the Nix store directory. */
@@ -600,7 +521,7 @@ index cd7b287..316f7d5 100644
  
      printMsg(lvlChatty, format("instantiated ‘%1%’ -> ‘%2%’")
          % drvName % drvPath);
-@@ -643,7 +645,7 @@ static void prim_derivationStrict(EvalState & state, const Pos & pos, Value * *
+@@ -649,7 +671,7 @@ static void prim_derivationStrict(EvalState & state, const Pos & pos, Value * *
      /* Optimisation, but required in read-only mode! because in that
         case we don't actually write store derivations, so we can't
         read them later. */
@@ -609,56 +530,16 @@ index cd7b287..316f7d5 100644
  
      state.mkAttrs(v, 1 + drv.outputs.size());
      mkString(*state.allocAttr(v, state.sDrvPath), drvPath, singleton<PathSet>("=" + drvPath));
-@@ -665,7 +667,7 @@ static void prim_toPath(EvalState & state, const Pos & pos, Value * * args, Valu
- {
-     PathSet context;
-     Path path = state.coerceToPath(pos, *args[0], context);
--    mkString(v, canonPath(path), context);
-+    mkString(v, state.vfs().canonPath(path), context);
- }
- 
- 
-@@ -679,18 +681,23 @@ static void prim_toPath(EvalState & state, const Pos & pos, Value * * args, Valu
-    corner cases. */
- static void prim_storePath(EvalState & state, const Pos & pos, Value * * args, Value & v)
- {
-+    PWRN("%s has undefined behavior", __func__);
-     PathSet context;
-     Path path = state.coerceToPath(pos, *args[0], context);
-     /* Resolve symlinks in ‘path’, unless ‘path’ itself is a symlink
-        directly in the store.  The latter condition is necessary so
--       e.g. nix-push does the right thing. */
--    if (!isStorePath(path)) path = canonPath(path, true);
--    if (!isInStore(path))
--        throw EvalError(format("path ‘%1%’ is not in the Nix store, at %2%") % path % pos);
--    Path path2 = toStorePath(path);
-+       e.g. nix-push does the right thing. SYMLINK RESOLUTION NOT SUPPORTED*/
-+    if (!state.store().isValidPath(path))
-+        throw Error(format("path ‘%1%’ is not in the Nix store") % path);
-+
-+    /* Chop off everything after the second slash */
-+    Path::size_type slash = path.find('/', 1);
-+    if (slash != Path::npos)
-+        path.resize(slash);
-+
+@@ -695,7 +717,7 @@ static void prim_storePath(EvalState & state, const Pos & pos, Value * * args, V
+         throw EvalError(format("path ‘%1%’ is not in the Nix store, at %2%") % path % pos);
+     Path path2 = toStorePath(path);
      if (!settings.readOnlyMode)
 -        store->ensurePath(path2);
--    context.insert(path2);
-+        state.store().ensurePath(path);
-+    context.insert(path);
++        state.store().ensurePath(path2);
+     context.insert(path2);
      mkString(v, path, context);
  }
- 
-@@ -701,7 +708,7 @@ static void prim_pathExists(EvalState & state, const Pos & pos, Value * * args,
-     Path path = state.coerceToPath(pos, *args[0], context);
-     if (!context.empty())
-         throw EvalError(format("string ‘%1%’ cannot refer to other paths, at %2%") % path % pos);
--    mkBool(v, pathExists(path));
-+    mkBool(v, state.vfs().pathExists(path));
- }
- 
- 
-@@ -731,12 +738,12 @@ static void prim_readFile(EvalState & state, const Pos & pos, Value * * args, Va
+@@ -745,7 +767,7 @@ static void prim_readFile(EvalState & state, const Pos & pos, Value * * args, Va
      PathSet context;
      Path path = state.coerceToPath(pos, *args[0], context);
      try {
@@ -667,13 +548,7 @@ index cd7b287..316f7d5 100644
      } catch (InvalidPathError & e) {
          throw EvalError(format("cannot read ‘%1%’, since path ‘%2%’ is not valid, at %3%")
              % path % e.path % pos);
-     }
--    mkString(v, readFile(path).c_str());
-+    mkString(v, state.vfs().readFile(path).c_str());
- }
- 
- 
-@@ -769,7 +776,7 @@ static void prim_findFile(EvalState & state, const Pos & pos, Value * * args, Va
+@@ -786,7 +808,7 @@ static void prim_findFile(EvalState & state, const Pos & pos, Value * * args, Va
      string path = state.forceStringNoCtx(*args[1], pos);
  
      try {
@@ -682,7 +557,7 @@ index cd7b287..316f7d5 100644
      } catch (InvalidPathError & e) {
          throw EvalError(format("cannot find ‘%1%’, since path ‘%2%’ is not valid, at %3%")
              % path % e.path % pos);
-@@ -784,23 +791,21 @@ static void prim_readDir(EvalState & state, const Pos & pos, Value * * args, Val
+@@ -801,7 +823,7 @@ static void prim_readDir(EvalState & state, const Pos & pos, Value * * args, Val
      PathSet ctx;
      Path path = state.coerceToPath(pos, *args[0], ctx);
      try {
@@ -691,27 +566,23 @@ index cd7b287..316f7d5 100644
      } catch (InvalidPathError & e) {
          throw EvalError(format("cannot read ‘%1%’, since path ‘%2%’ is not valid, at %3%")
              % path % e.path % pos);
-     }
- 
--    DirEntries entries = readDirectory(path);
-+    DirEntries entries = state.vfs().readDirectory(path);
-     state.mkAttrs(v, entries.size());
+@@ -812,12 +834,10 @@ static void prim_readDir(EvalState & state, const Pos & pos, Value * * args, Val
  
      for (auto & ent : entries) {
          Value * ent_val = state.allocAttr(v, state.symbols.create(ent.name));
 -        if (ent.type == DT_UNKNOWN)
--            ent.type = getFileType(path);
+-            ent.type = getFileType(path + "/" + ent.name);
          mkStringNoCopy(*ent_val,
 -            ent.type == DT_REG ? "regular" :
 -            ent.type == DT_DIR ? "directory" :
 -            ent.type == DT_LNK ? "symlink" :
-+            ent.type == Vfs::Directory_service::DIRENT_TYPE_FILE ? "regular" :
-+            ent.type == Vfs::Directory_service::DIRENT_TYPE_DIRECTORY ? "directory" :
-+            ent.type == Vfs::Directory_service::DIRENT_TYPE_SYMLINK ? "symlink" :
++            ent.type == Dirent_type::DIRENT_TYPE_FILE ? "regular" :
++            ent.type == Dirent_type::DIRENT_TYPE_DIRECTORY ? "directory" :
++            ent.type == Dirent_type::DIRENT_TYPE_SYMLINK ? "symlink" :
              "unknown");
      }
  
-@@ -865,7 +870,7 @@ static void prim_toFile(EvalState & state, const Pos & pos, Value * * args, Valu
+@@ -885,7 +905,7 @@ static void prim_toFile(EvalState & state, const Pos & pos, Value * * args, Valu
  
      Path storePath = settings.readOnlyMode
          ? computeStorePathForText(name, contents, refs)
@@ -720,53 +591,18 @@ index cd7b287..316f7d5 100644
  
      /* Note: we don't need to add `context' to the context of the
         result, since `storePath' itself has references to the paths
-@@ -887,9 +892,9 @@ struct FilterFromExpr : PathFilter
- 
-     bool operator () (const Path & path)
-     {
--        struct stat st;
--        if (lstat(path.c_str(), &st))
--            throw SysError(format("getting attributes of path ‘%1%’") % path);
-+        using namespace Vfs;
-+
-+        Directory_service::Stat stat = state.vfs().status(path);
- 
-         /* Call the filter function.  The first argument is the path,
-            the second is a string indicating the type of the file. */
-@@ -901,9 +906,9 @@ struct FilterFromExpr : PathFilter
- 
-         Value arg2;
-         mkString(arg2,
--            S_ISREG(st.st_mode) ? "regular" :
--            S_ISDIR(st.st_mode) ? "directory" :
--            S_ISLNK(st.st_mode) ? "symlink" :
-+            S_ISREG(stat.mode) ? "regular" :
-+            S_ISDIR(stat.mode) ? "directory" :
-+            S_ISLNK(stat.mode) ? "symlink" :
-             "unknown" /* not supported, will fail! */);
- 
-         Value res;
-@@ -928,8 +933,8 @@ static void prim_filterSource(EvalState & state, const Pos & pos, Value * * args
-     FilterFromExpr filter(state, *args[0]);
+@@ -950,8 +970,8 @@ static void prim_filterSource(EvalState & state, const Pos & pos, Value * * args
+     path = state.checkSourcePath(path);
  
      Path dstPath = settings.readOnlyMode
 -        ? computeStorePathForPath(path, true, htSHA256, filter).first
--        : store->addToStore(path, true, htSHA256, filter, state.repair);
-+        ? computeStorePathForPath(state.vfs(), path, true, htSHA256, filter).first
-+        : state.store().addToStore(path, true, htSHA256, filter, state.repair);
+-        : store->addToStore(baseNameOf(path), path, true, htSHA256, filter, state.repair);
++        ? computeStorePathForPath(path, true, htBLAKE2s, filter).first
++        : state.store().addToStore(baseNameOf(path), path, true, htBLAKE2s, filter, state.repair);
  
      mkString(v, dstPath, singleton<PathSet>(dstPath));
  }
-@@ -1493,7 +1498,7 @@ void EvalState::createBaseEnv()
-     mkInt(v, time(0));
-     addConstant("__currentTime", v);
- 
--    mkString(v, settings.thisSystem.c_str());
-+    mkString(v, NIX_CPU NIX_KERNEL"genode");
-     addConstant("__currentSystem", v);
- 
-     mkString(v, nixVersion.c_str());
-@@ -1526,7 +1531,7 @@ void EvalState::createBaseEnv()
+@@ -1759,7 +1779,7 @@ void EvalState::createBaseEnv()
      addPrimOp("throw", 1, prim_throw);
      addPrimOp("__addErrorContext", 2, prim_addErrorContext);
      addPrimOp("__tryEval", 1, prim_tryEval);
@@ -775,29 +611,3 @@ index cd7b287..316f7d5 100644
  
      // Strictness
      addPrimOp("__seq", 2, prim_seq);
-diff --git a/src/libexpr/value-to-json.cc b/src/libexpr/value-to-json.cc
-index cdb7134..bf4c2d7 100644
---- a/src/libexpr/value-to-json.cc
-+++ b/src/libexpr/value-to-json.cc
-@@ -27,8 +27,6 @@ void escapeJSON(std::ostream & str, const string & s)
- void printValueAsJSON(EvalState & state, bool strict,
-     Value & v, std::ostream & str, PathSet & context)
- {
--    checkInterrupt();
--
-     if (strict) state.forceValue(v);
- 
-     switch (v.type) {
-diff --git a/src/libexpr/value-to-xml.cc b/src/libexpr/value-to-xml.cc
-index bbbb703..21f37bd 100644
---- a/src/libexpr/value-to-xml.cc
-+++ b/src/libexpr/value-to-xml.cc
-@@ -54,8 +54,6 @@ static void showAttrs(EvalState & state, bool strict, bool location,
- static void printValueAsXML(EvalState & state, bool strict, bool location,
-     Value & v, XMLWriter & doc, PathSet & context, PathSet & drvsSeen)
- {
--    checkInterrupt();
--
-     if (strict) state.forceValue(v);
-         
-     switch (v.type) {

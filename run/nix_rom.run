@@ -107,15 +107,16 @@ append config {
 				<parent/> <any-child/>
 			</any-service>
 		</route>
-		<config>
-			<nix>
-				<vfs>
-					<dir name="corepkgs"> <tar name="nix_corepkgs.tar"/> </dir>
-					<inline name="default.nix">builtins.getRom</inline>
-				</vfs>
+		<config verbosity="9">
+			<vfs>
+				<dir name="nix"> <dir name="corepkgs"> <tar name="nix_corepkgs.tar"/> </dir> </dir>
+				<inline name="default.nix">builtins.getRom</inline>
+			</vfs>
+			<nix verbosity="9">
 				<search-path name="nix" path="/corepkgs"/>
+				<search-path name="store" path="/store"/>
 			</nix>
-			<policy/>
+		<policy/>
 		</config>
 	</start>
 
@@ -149,9 +150,14 @@ install_config $config
 set boot_modules {
 	core init ld.lib.so timer
 	builder
+	curl.lib.so
+	curl.lib.so
 	fs_rom
 	libc.lib.so
+	libcrypto.lib.so
 	libm.lib.so
+	libssh.lib.so
+	libssl.lib.so
 	nix
 	nix_corepkgs.tar
 	nixexpr.lib.so
@@ -163,6 +169,7 @@ set boot_modules {
 	store_ingest
 	test-printf
 	vfs
+	zlib.lib.so
 }
 
 build_boot_image $boot_modules

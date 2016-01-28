@@ -23,6 +23,24 @@
 using namespace nix;
 
 
+Path nix::readStorePath(Source & from)
+{
+    Path path = readString(from);
+    assertStorePath(path);
+    return path;
+}
+
+
+template<class T> T nix::readStorePaths(Source & from)
+{
+    T paths = readStrings<T>(from);
+    for (auto & i : paths) assertStorePath(i);
+    return paths;
+}
+
+template PathSet nix::readStorePaths(Source & from);
+
+
 static string hash_text(const string &name, const string &text)
 {
 	::Hash::Blake2s hash;
@@ -83,7 +101,7 @@ void Store::copy_dir(File_system::Session   &fs,
 
 	for (file_offset i = 0;; ++i) {
 		memset(&dirent, 0x00, sizeof(dirent));
-		_vfs_root.fs().dirent(src_path.c_str(), i, dirent);
+		_vfs->dirent(src_path.c_str(), i, dirent);
 		if (dirent.type == Directory_service::DIRENT_TYPE_END) break;
 
 		nix::Path sub_src_path = src_path + "/";
@@ -150,12 +168,12 @@ void Store::copy_file(File_system::Session    &fs,
 {
 	using namespace Vfs;
 
-	Directory_service::Stat stat = _vfs_root.status(src_path);
+	Directory_service::Stat stat = status(src_path);
 	file_size remaining_count    = stat.size;
 	file_size seek_offset        = 0;
 
 	Vfs_handle *vfs_handle = nullptr;
-	if (_vfs_root.fs().open(src_path.c_str(),
+	if (_vfs->open(src_path.c_str(),
 	                   Directory_service::OPEN_MODE_RDONLY,
 	                   &vfs_handle) != Directory_service::OPEN_OK)
 		throw Error(format("getting handle on file ‘%1%’") % dst_path);
@@ -222,7 +240,7 @@ void Store::copy_symlink(File_system::Session       &fs,
 
 	/* Read from the VFS to a packet. */
 	file_size vfs_count;
-	if (_vfs_root.fs().readlink(src_path.c_str(), source.packet_content(packet),
+	if (_vfs->readlink(src_path.c_str(), source.packet_content(packet),
 	                            packet.size(), vfs_count) != Directory_service::READLINK_OK)
 		throw Error(format("reading symlink ‘%1%’") % src_path);
 	packet.length(vfs_count);
@@ -245,12 +263,12 @@ Store::hash_file(uint8_t *buf, nix::Path const &src_path)
 	file_size       remaining;
 	file_size       pos = 0;
 
-	Directory_service::Stat stat = _vfs_root.status(src_path);
+	Directory_service::Stat stat = status(src_path);
 
 	uint8_t data[Genode::min(4096, stat.size)];
 
 	Vfs_handle *vfs_handle = nullptr;
-	if (_vfs_root.fs().open(src_path.c_str(),
+	if (_vfs->open(src_path.c_str(),
 	                        Directory_service::OPEN_MODE_RDONLY,
 	                        &vfs_handle) != Directory_service::OPEN_OK)
 		throw Error(format("getting handle on file ‘%1%’") % src_path);
@@ -284,7 +302,7 @@ Store::hash_symlink(uint8_t *buf, nix::Path const &src_path)
 	uint8_t         data[File_system::MAX_PATH_LEN];
 
 	file_size vfs_count;
-	if (_vfs_root.fs().readlink(src_path.c_str(), (char *)data,
+	if (_vfs->readlink(src_path.c_str(), (char *)data,
 	                            sizeof(data), vfs_count) != Directory_service::READLINK_OK)
 		throw Error(format("reading symlink ‘%1%’") % src_path);
 
@@ -303,14 +321,14 @@ Store::add_file(nix::Path const &src_path)
 {
 	using namespace Vfs;
 
-	Directory_service::Stat stat = _vfs_root.status(src_path);
+	Directory_service::Stat stat = status(src_path);
 	file_size remaining = stat.size;;
 	file_size offset    = 0;
 
 	Vfs_handle *vfs_handle = nullptr;
-	if (_vfs_root.fs().open(src_path.c_str(),
-	                       Directory_service::OPEN_MODE_RDONLY,
-	                       &vfs_handle) != Directory_service::OPEN_OK)
+	if (_vfs->open(src_path.c_str(),
+	               Directory_service::OPEN_MODE_RDONLY,
+	               &vfs_handle) != Directory_service::OPEN_OK)
 		throw Error(format("getting handle on file ‘%1%’") % src_path);
 	Vfs_handle::Guard vfs_guard(vfs_handle);
 
@@ -326,7 +344,7 @@ Store::add_file(nix::Path const &src_path)
 		ingest_handle = fs.file(root_handle, name.c_str(),
 		                        File_system::WRITE_ONLY, true);
 	} catch (...) {
-		PERR("error opening ingest file handle for ‘%s’", name.c_str());
+		PERR("error opening file handle at ingest session for ‘%s’", name.c_str());
 		throw;
 	}
 	File_system::Handle_guard fs_guard(fs, ingest_handle);
@@ -375,7 +393,7 @@ Store::hash_dir(uint8_t *buf, nix::Path const &src_path)
 	std::map<string, unsigned char> entries;
 
 	for (file_offset i = 0;; ++i) {
-		_vfs_root.fs().dirent(src_path.c_str(), i, dirent);
+		_vfs->dirent(src_path.c_str(), i, dirent);
 		if (dirent.type == Directory_service::DIRENT_TYPE_END) break;
 
 		entries.insert(
@@ -524,21 +542,20 @@ void nix::Store::querySubstitutablePathInfos(const PathSet & paths,
  * libutil/archive.hh).
  */
 nix::Path
-Store::addToStore(const nix::Path & srcPath,
-                         bool recursive, HashType hashAlgo,
-                         PathFilter & filter, bool repair)
+Store::addToStore(const string & name, const nix::Path & srcPath,
+                  bool recursive, HashType hashAlgo,
+                  PathFilter & filter, bool repair)
 {
-	debug(format("adding ‘%1%’ to the store") % srcPath);
+	debug(format("adding ‘%1%’ to the store") % name);
 
 	using namespace Vfs;
 
 	char const *path_str = srcPath.c_str();
 
-	Directory_service::Stat stat = _vfs_root.status(srcPath);
+	Directory_service::Stat stat = status(srcPath);
 
 	uint8_t buf[Builder::MAX_NAME_LEN];
 
-	string name = srcPath.substr(srcPath.rfind("/")+1, srcPath.size()-1);
 	string final_name;
 
 	if (stat.mode & Directory_service::STAT_MODE_DIRECTORY) {
@@ -594,7 +611,7 @@ nix::Path nix::Store::addTextToStore(const string & name, const string & text,
 			Handle_guard root_guard(fs, root);
 			handle = fs.file(root, name_str, File_system::WRITE_ONLY, true);
 		} catch (...) {
-			PERR("opening ingest handle for ‘%s’", name.c_str());
+			PERR("error opening handle at ingest session for text '%s'", name.c_str());
 			throw;
 		}
 		Handle_guard file_guard(fs, handle);
@@ -668,7 +685,7 @@ nix::Path nix::Store::addDataToStore(const string & name,
 			Handle_guard root_guard(fs, root);
 			handle = fs.file(root, name_str, File_system::WRITE_ONLY, true);
 		} catch (...) {
-			PERR("failed to aquire ingest handle for ‘%s’", name.c_str());
+			PERR("error opening handle  at ingest session for data ‘%s’", name.c_str());
 			throw;
 		}
 		Handle_guard file_guard(fs, handle);
@@ -720,11 +737,6 @@ nix::Path nix::Store::addDataToStore(const string & name,
 		Paths nix::Store::importPaths(bool requireSignature, Source & source) {
 			NOT_IMP; return Paths(); };
 
-		/* Ensure that a path is valid.	If it is not currently valid, it
-			 may be made valid by running a substitute (if defined for the
-			 path). */
-		void nix::Store::ensurePath(const nix::Path & path) { NOT_IMP; };
-
 		/* Add a store path as a temporary root of the garbage collector.
 			 The root disappears as soon as we exit. */
 		void nix::Store::addTempRoot(const nix::Path & path) { NOT_IMP; };
@@ -772,15 +784,10 @@ nix::Path nix::Store::addDataToStore(const string & name,
 			 value `*' causes all failed paths to be cleared. */
 		void nix::Store::clearFailedPaths(const PathSet & paths) { NOT_IMP; };
 
-		/* Return a string representing information about the path that
-			 can be loaded into the database using `nix-store --load-db' or
-			 `nix-store --register-validity'. */
-		string nix::Store::makeValidityRegistration(const PathSet & paths,
-				bool showDerivers, bool showHash) { NOT_IMP; return string(); }
-
 /**
  * Optimise the disk space usage of the Nix store by hard-linking files
  * with the same contents.
   */
-void
-nix::Store::optimiseStore() { NOT_IMP; };
+void nix::Store::optimiseStore() { NOT_IMP; };
+
+bool nix::Store::verifyStore(bool checkContents, bool repair) { NOT_IMP; return false; }

@@ -99,7 +99,7 @@ class Nix::State
 
 		State(Lock &lock)
 		:
-			vfs(config()->xml_node().sub_node("nix").sub_node("vfs"),
+			vfs(config()->xml_node().sub_node("vfs"),
 			    Vfs::global_file_system_factory()),
 			_lock(lock), _state(nullptr)
 		{ nix::initNix(vfs); }
@@ -151,6 +151,8 @@ class Nix::Service_proxy : public Genode::Rpc_object<Typed_root<SESSION_TYPE>>
 		nix::Path _realise(Genode::Xml_node policy, char const *nix_arg)
 		{
 			using namespace nix;
+
+			nix::string out;
 
 			State_handle state = _state.lock();
 
@@ -230,10 +232,16 @@ class Nix::Service_proxy : public Genode::Rpc_object<Typed_root<SESSION_TYPE>>
 				PathSet drv_set{ drv_info.queryDrvPath() };
 				state.store.buildPaths(drv_set, nix::bmNormal);
 
-				return drv_info.queryOutPath();
-			}
+				out = drv_info.queryOutPath();
+			} else
+				out = state.eval_state.coerceToString(noPos, result, context);
 
-			return state.eval_state.coerceToString(noPos, result, context);
+			while (out.front() == '/') out.erase(0,1);
+
+			/* XXX: and if out is not a top level store element? */
+			Builder::Name out_name =
+				state.eval_state.store().builder().dereference(out.c_str());
+			return out_name.string();
 		}
 
 	public:

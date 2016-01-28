@@ -35,13 +35,14 @@ endif
 LIBS += stdcxx nixutil nixstore
 
 SRC_CC = \
-	attr-path.cc common-opts.cc eval.cc get-drvs.cc \
+	attr-set.cc attr-path.cc common-opts.cc eval.cc get-drvs.cc \
 	json-to-value.cc lexer-tab.cc names.cc nixexpr.cc \
 	parser-tab.cc primops.cc value-to-json.cc value-to-xml.cc
 
 INC_DIR += $(NIX_DIR)/libexpr
+INC_DIR += $(NIX_DIR)/libmain
 
-CC_OPT += -DVERSION=\"1.8\"
+CC_OPT += -DVERSION=\"1.11\"
 
 vpath %.cc $(NIX_DIR)/libexpr
 

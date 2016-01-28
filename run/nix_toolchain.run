@@ -10,7 +10,6 @@ if {[have_spec linux]} {
 
 set build_components {
 	core init
-	drivers/input
 	drivers/timer
 	lib/libc_noux
 	noux/minimal
@@ -18,7 +17,6 @@ set build_components {
 	server/fs_rom
 	server/store_ingest
 	server/nix
-	server/terminal
 	server/vfs
 	test/libports/ncurses
 	test/libports/nixexpr
@@ -67,11 +65,7 @@ foreach pkg $noux_pkgs {
 
 exec tar cvf bin/genode.tar -C $genode_dir tool repos/base repos/base-nova repos/os
 
-file copy -force \
-	$genode_dir/repos/nix/expr/toolchain.nix \
-	$genode_dir/repos/nix/expr/builddir.nix \
-	$genode_dir/repos/nix/expr/noux.nix \
-	bin/
+exec tar cvf bin/expr.tar -C $genode_dir/repos/nix/expr .
 
 create_boot_directory
 
@@ -119,8 +113,7 @@ append config {
 		<resource name="RAM" quantum="64M"/>
 		<provides><service name="Builder"/></provides>
 		<route>
-			<service name="ROM">
-				<if-arg key="filename" value="ld.lib.so"/>
+			<service name="ROM" label="ld.lib.so">
 				<parent/>
 			</service>
 			<any-service>
@@ -161,6 +154,7 @@ append config {
 			<libc stdout="/dev/log" stderr="/dev/log"/>
 				<vfs> <dir name="dev"> <log/> </dir> </vfs>	
 			<nix>
+				<search-path name="store" path="/store"/>
 				<vfs>
 					<dir name="store"> <fs/> </dir>
 					<dir name="nix">
@@ -168,15 +162,17 @@ append config {
 							<tar name="nix_corepkgs.tar"/>
 						</dir>
 					</dir>
-					<rom name="toolchain.nix"/>
-					<rom name="builddir.nix"/>
-					<rom name="noux.nix"/>
+					<dir name="expr"> <tar name="expr.tar"/> </dir>
 <inline name="default.nix">
-/* prepare the toolchain function found in /toolchain.nix */
-import /toolchain.nix {
-  specs = [ "genode" "nova_x86_32" "acpi" ];
-  verbose = true;
-}
+# Bring the toolchain functions into scope
+with import /expr/toolchain;
+
+romRequest:
+if isLib romRequest
+then # drop the suffix and build a shared library
+  mkLib (replaceInString ".lib.so" "" romRequest)
+else # build a binary
+  mkBin romRequest
 </inline>
 					<dir name="noux-pkg">}
 
@@ -194,9 +190,6 @@ append config {
 	<start name="init">
 		<resource name="RAM" quantum="2M"/>
 		<route>
-			<service name="ROM" label="ld.lib.so">
-				<parent/>
-			</service>
 			<any-service>
 				<child name="nix"/>
 				<parent/>
@@ -207,7 +200,7 @@ append config {
 				<service name="LOG"/>
 				<service name="RM"/>
 			</parent-provides>
-			<start name="test/printf">
+			<start name="printf">
 				<resource name="RAM" quantum="1M"/>
 				<route>
 					<any-service> <parent/> </any-service>
@@ -229,9 +222,8 @@ install_config $config
 # generic modules
 set boot_modules {
 	core init ld.lib.so
-	builddir.nix
 	builder
-	fb_drv
+	expr.tar
 	fs_rom
 	gmp.lib.so
 	libc.lib.so
@@ -248,13 +240,10 @@ set boot_modules {
 	nixstore.lib.so
 	nixutil.lib.so
 	noux
-	noux.nix
 	ps2_drv
 	stdcxx.lib.so
 	store_ingest
-	terminal
 	timer
-	toolchain.nix
 	vfs
 	vfs_any-rom.lib.so
 }

@@ -1,0 +1,245 @@
+#
+# \brief  Test nix failed dependency behavior
+# \author Emery Hemingway
+# \date   2016-01-18
+#
+
+build {
+	core init
+	app/rom_logger
+	drivers/timer
+	lib/vfs/any-rom
+	server/builder
+	server/fs_rom
+	server/fs_log
+	server/nix
+	server/store_ingest
+	server/vfs
+	test/libports/nixexpr
+	test/false
+	test/printf
+	test/vfs_stress
+}
+
+file copy -force $genode_dir/repos/nix/expr/log-test.nix bin
+
+create_boot_directory
+
+append config {
+<config>
+	<parent-provides>
+		<service name="CAP"/>
+		<service name="CPU"/>
+		<service name="LOG"/>
+		<service name="PD"/>
+		<service name="RAM"/>
+		<service name="RM"/>
+		<service name="ROM"/>
+		<service name="SIGNAL"/>
+	</parent-provides>
+	<default-route>
+		<service name="File_system" label_suffix="ingest">
+			<child name="store_ingest" />
+		</service>
+		<any-service>
+			<child name="store_fs"/>
+			<parent/> <any-child/>
+		</any-service>
+	</default-route>
+
+	<start name="timer">
+		<resource name="RAM" quantum="1M"/>
+		<provides><service name="Timer"/></provides>
+	</start>
+
+	<start name="store_fs">
+		<binary name="vfs"/>
+		<resource name="RAM" quantum="8M"/>
+		<provides><service name="File_system"/></provides>
+		<config>
+			<vfs> <ram/> </vfs>
+
+			<policy label="store_ingest" writeable="yes" />
+			<policy label="builder" writeable="yes" />
+			<policy label="store_rom" />
+			<policy label="nix" />
+		</config>
+	</start>
+
+	<start name="builder">
+		<resource name="RAM" quantum="8M"/>
+		<provides><service name="Builder"/></provides>
+		<route>
+			<service name="ROM" label="ld.lib.so">
+				<parent/>
+			</service>
+			<service name="ROM">
+				<child name="store_rom"/>
+			</service>
+			<service name="File_system">
+				<child name="store_fs"/>
+			</service>
+			<any-service>
+				<parent/> <any-child/>
+			</any-service>
+		</route>
+	</start>
+
+	<start name="store_rom">
+		<binary name="fs_rom"/>
+		<resource name="RAM" quantum="8M"/>
+		<provides><service name="ROM"/></provides>
+	</start>
+
+	<start name="store_ingest">
+		<resource name="RAM" quantum="4M"/>
+		<provides><service name="File_system"/></provides>
+	</start>
+
+	<start name="nix">
+		<resource name="RAM" quantum="8M"/>
+		<provides><service name="ROM"/></provides>
+		<route>
+			<service name="ROM" label_prefix="store">
+				<child name="store_rom"/>
+			</service>
+			<service name="File_system" label="ingest">
+				<child name="store_ingest"/>
+			</service>
+			<any-service>
+				<child name="store_fs"/>
+				<parent/> <any-child/>
+			</any-service>
+		</route>
+		<config>
+			<libc stdout="/dev/log" stderr="/dev/log"/>
+				<vfs>
+					<dir name="dev"> <log/> </dir>
+					<dir name="store"> <fs/> </dir>
+					<dir name="nix">
+						<dir name="corepkgs">
+							<tar name="nix_corepkgs.tar"/>
+						</dir>
+					</dir>
+<rom name="log-test.nix"/>
+<inline name="default.nix">
+let tests = rec {
+  logTest = import /log-test.nix;
+
+  testArgs = { name = "test-printf"; };
+
+  # no depencies
+  test1 = logTest testArgs;
+
+  # depends on test1
+  test2 = logTest (testArgs // { inherit test1; });
+
+  # will fail explicitly
+  test3 = logTest { name = "test-false"; inherit test2; };
+
+  # should fail implicitly
+  test4 = logTest (testArgs // { inherit test3; });
+
+  test5 = logTest (testArgs // { inherit test4; });
+}; in name: builtins.getAttr name tests
+</inline>
+				</vfs>
+				<nix verbosity="0"/>
+		</config>
+	</start>
+
+	<start name="test1">
+		<binary name="rom_logger"/>
+		<resource name="RAM" quantum="1M"/>
+		<config rom="test1" />
+		<route>
+			<service name="ROM"> <child name="nix"/> </service>
+			<any-service> <parent/> </any-service>
+		</route>
+	</start>
+
+	<start name="test2">
+		<binary name="rom_logger"/>
+		<resource name="RAM" quantum="1M"/>
+		<config rom="test2" />
+		<route>
+			<service name="ROM"> <child name="nix"/> </service>
+			<any-service> <parent/> </any-service>
+		</route>
+	</start>
+
+	<start name="test3">
+		<binary name="rom_logger"/>
+		<resource name="RAM" quantum="1M"/>
+		<config rom="test3" />
+		<route>
+			<service name="ROM"> <child name="nix"/> </service>
+			<any-service> <parent/> </any-service>
+		</route>
+	</start>
+
+	<start name="test4">
+		<binary name="rom_logger"/>
+		<resource name="RAM" quantum="1M"/>
+		<config rom="test4" />
+		<route>
+			<service name="ROM"> <child name="nix"/> </service>
+			<any-service> <parent/> </any-service>
+		</route>
+	</start>
+
+	<start name="test5">
+		<binary name="rom_logger"/>
+		<resource name="RAM" quantum="1M"/>
+		<config rom="test5" />
+		<route>
+			<service name="ROM"> <child name="nix"/> </service>
+			<any-service> <parent/> </any-service>
+		</route>
+	</start>
+
+</config>
+}
+
+install_config $config
+
+#
+# Boot modules
+#
+
+# generic modules
+set boot_modules {
+	core init ld.lib.so
+	builder
+	fs_log
+	fs_rom
+	curl.lib.so
+	libc.lib.so
+	libcrypto.lib.so
+	libm.lib.so
+	libssh.lib.so
+	libssl.lib.so
+	log-test.nix
+	nix
+	nix_corepkgs.tar
+	nixexpr.lib.so
+	nixformat.lib.so
+	nixmain.lib.so
+	nixstore.lib.so
+	nixutil.lib.so
+	rom_logger
+	stdcxx.lib.so
+	store_ingest
+	test-false
+	test-printf
+	timer
+	vfs
+	vfs_stress
+	zlib.lib.so
+}
+
+build_boot_image $boot_modules
+
+append qemu_args " -nographic"
+
+run_genode_until {no evaluation for 'test4'} 30

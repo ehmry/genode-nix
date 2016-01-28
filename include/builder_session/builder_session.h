@@ -17,7 +17,7 @@ namespace Builder {
 
 	enum { MAX_NAME_LEN = 128 };
 
-	typedef Genode::Rpc_in_buffer<MAX_NAME_LEN> Name;
+	typedef Genode::String<MAX_NAME_LEN> Name;
 
 	/****************
 	 ** Exceptions **
@@ -55,6 +55,14 @@ namespace Builder {
 		virtual void realize(Name const  &drv,
 		                     Genode::Signal_context_capability sigh) = 0;
 
+		/**
+		 * Dereference a derivation output to
+		 * a content addressed store path
+		 *
+		 * Returns an empty string on failure
+		 */
+		virtual Name dereference(Name const &name) = 0;
+
 		/*********************
 		 ** RPC declaration **
 		 *********************/
@@ -64,7 +72,8 @@ namespace Builder {
 		                 GENODE_TYPE_LIST(Invalid_derivation,
 		                                  Missing_dependency),
 		                 Name const&, Genode::Signal_context_capability);
-		GENODE_RPC_INTERFACE(Rpc_valid, Rpc_realize);
+		GENODE_RPC(Rpc_dereference, Name, dereference, Name const&);
+		GENODE_RPC_INTERFACE(Rpc_valid, Rpc_realize, Rpc_dereference);
 	};
 
 }

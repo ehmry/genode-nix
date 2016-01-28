@@ -1,3 +1,7 @@
+#
+# Generic Noux environment
+#
+
 with builtins;
 
 let
@@ -31,7 +35,7 @@ in
   config = toFile
     "config"
     ''
-    <config verbose="${toString verbose}" stdin="/dev/null" stdout="/dev/log" stderr="/dev/log">
+    <config verbose="${if verbose then "yes" else "no"}" stdin="/dev/null" stdout="/dev/log" stderr="/dev/log">
       <fstab>
         ${fstab}
         <dir name="rom"> <any-rom/> </dir>

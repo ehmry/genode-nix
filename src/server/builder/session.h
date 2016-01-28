@@ -180,6 +180,35 @@ class Builder::Session_component : public Genode::Rpc_object<Session>
 			_jobs.queue(name, sigh);
 		}
 
+		Name dereference(Name const &name) override
+		{
+			using namespace File_system;
+
+			char const *name_str = name.string();
+
+			Genode::Path<Builder::MAX_NAME_LEN> path(name.string());
+
+			try {
+				Node_handle node = _store_fs.node(path.base());
+				Handle_guard node_guard(_store_fs, node);
+
+				switch (_store_fs.status(node).mode) {
+				case Status::MODE_FILE:
+				case Status::MODE_DIRECTORY:
+					return name_str;
+				case Status::MODE_SYMLINK: {
+					Symlink_handle link = _store_fs.symlink(
+						_store_dir, path.base()+1, false);
+					Handle_guard link_guard(_store_fs, link);
+					size_t n = read(_store_fs, link, path.base(), path.capacity());
+					path.base()[(n < path.capacity() ? n : path.capacity()-1)] = '\0';
+
+					return path.base();
+				}}
+			} catch (Lookup_failed) { }
+			return "";
+		}
+
 };
 
 #endif /* _BUILDER__STORE_SESSION_H_ */

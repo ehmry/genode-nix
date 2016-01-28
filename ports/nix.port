@@ -1,5 +1,5 @@
 LICENSE   := GPLV2
-VERSION   := 1.8
+VERSION   := 1.11
 DOWNLOADS := nix.git
 
 #
@@ -9,7 +9,7 @@ $(call check_tool,lex)
 $(call check_tool,bison)
 
 URL(nix) := https://github.com/NixOS/nix.git
-REV(nix) := c2384052e30f1c7c6e4e9aae408a38c3d441f8d8
+REV(nix) := 8b4577ac9da810862235bd8452a6ba47de35fd86
 DIR(nix) := src/lib/nix
 
 PATCHES := \

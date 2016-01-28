@@ -73,7 +73,8 @@ class Store_ingest::Connection : public Genode::Connection<File_system::Session>
 
 			File_handle file(Dir_handle dir, Name const &name, Mode mode, bool create) override
 			{
-				try {
+
+				for (;;) try {
 					return Session_client::file(dir, name, mode, create);
 				} catch (No_space) {
 					upgrade();
@@ -83,7 +84,7 @@ class Store_ingest::Connection : public Genode::Connection<File_system::Session>
 
 			Symlink_handle symlink(Dir_handle dir, Name const &name, bool create) override
 			{
-				try {
+				for (;;) try {
 					return Session_client::symlink(dir, name, create);
 				} catch (No_space) {
 					upgrade();
@@ -93,7 +94,7 @@ class Store_ingest::Connection : public Genode::Connection<File_system::Session>
 
 			Dir_handle dir(File_system::Path const &path, bool create) override
 			{
-				try {
+				for (;;) try {
 					return Session_client::dir(path, create);
 				} catch (No_space) {
 					upgrade();

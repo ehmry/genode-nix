@@ -711,7 +711,6 @@ class Store_ingest::Session_component : public Session_rpc_object
 
 				return handle;
 			}
-			PINF("%s is special", name_str);
 
 			/*
 			 * Here we perform some trickery, when the client
