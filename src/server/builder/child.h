@@ -334,7 +334,6 @@ class Builder::Child : public Genode::Child_policy
 		{
 			if (strcmp(service, "ROM") == 0) {
 
-				char filename[Genode::Label::capacity()] = { 0 };
 				Genode::Label label = Genode::Arg_string::label(args);
 				char const *request = label.tail();
 
@@ -343,53 +342,41 @@ class Builder::Child : public Genode::Child_policy
 				 * that inserts the proper punctuation.
 				 */
 				if (strcmp("binary", request) == 0) {
-					snprintf(filename, sizeof(filename), "\"%s\"", _drv.builder());
-					Arg_string::set_arg(args, args_len,
-					                    "label", filename);
-
+					Arg_string::set_arg_string(args, args_len, "label", _drv.builder());
 				} else if (char const *dest = _environment.lookup(request)) {
-					snprintf(filename, sizeof(filename), "\"%s\"", dest);
-
-					Arg_string::set_arg(args, args_len, "label", filename);
+					Arg_string::set_arg_string(args, args_len, "label", dest);
 				} else {
 					PERR("impure ROM request for '%s'", request);
 					*args = '\0';
-					return;
 				}
 
 				return;
 			}
 
-			if (strcmp(service, "File_system") == 0) {
+			else if (strcmp(service, "File_system") == 0) {
 				char root[File_system::MAX_PATH_LEN] = { '\0' };
 
 				Genode::Arg_string::find_arg(args, "root").string(
 					root, sizeof(root), "/");
 
-				if ((strcmp(root, "", sizeof(root))==0) || (strcmp(root, "/", sizeof(root))==0)) {
-					Arg_string::set_arg(args, args_len, "label", "\"\"");
-					return;
+				if (strcmp(root, "", sizeof(root))
+				 && strcmp(root, "/", sizeof(root))) {
+					if (char const *dest = _environment.lookup(root)) {
+						Arg_string::set_arg_string(args, args_len, "root", dest);
+						Arg_string::set_arg(args, args_len, "writeable", false);
+					} else {
+						PERR("impure FS request for '%s'", root);
+						*args = '\0';
+						return;
+					}
 				}
-
-				if (char const *dest = _environment.lookup(root)) {
-					snprintf(root, sizeof(root), "\"%s\"", dest);
-					Arg_string::set_arg(args, args_len, "root", root);
-					Arg_string::set_arg(args, args_len, "writeable", "0");
-				} else {
-					PERR("impure FS request for '%s'", root);
-					*args = '\0';
-				}
-
-				Arg_string::set_arg(args, args_len, "label", "\"\"");
-
-				return;
 			}
 
 			/*
 			 * Obviously log messages need be seperated between build
 			 * runs, but labeling anything  else could endanger purity.
 			 */
-			if (strcmp(service, "LOG") == 0) {
+			else if (strcmp(service, "LOG") == 0) {
 				char label_buf[Parent::Session_args::MAX_SIZE];
 				Arg_string::find_arg(args, "label").string(label_buf, sizeof(label_buf), "");
 
@@ -407,6 +394,8 @@ class Builder::Child : public Genode::Child_policy
 				Arg_string::set_arg(args, args_len, "label", value_buf);
 				return;
 			}
+
+			Arg_string::remove_arg(args, "label");
 		}
 
 		Service *resolve_session_request(const char *service_name,

@@ -37,6 +37,7 @@
 #include <base/rpc_server.h>
 #include <root/root.h>
 #include <base/sleep.h>
+#include <util/label.h>
 
 namespace Nix {
 	using namespace Genode;
@@ -79,22 +80,16 @@ class Nix::State
 {
 	private:
 
+		Vfs::Dir_file_system  vfs;
 		Lock &_lock;
 
 		struct Internal_state
 		{
-			Vfs::Dir_file_system  vfs;
-			nix::Vfs_root         vfs_root;
 			nix::Store            store;
 			nix::EvalState        eval_state;
 
 			Internal_state()
-			:
-				vfs(config()->xml_node().sub_node("nix").sub_node("vfs"),
-				    Vfs::global_file_system_factory()),
-				vfs_root(vfs),
-				store(vfs_root),
-				eval_state(vfs_root, store, config()->xml_node().sub_node("nix"))
+			: eval_state(store, config()->xml_node().sub_node("nix"))
 			{ }
 		};
 
@@ -102,7 +97,12 @@ class Nix::State
 
 	public:
 
-		State(Lock &lock) : _lock(lock), _state(nullptr) { }
+		State(Lock &lock)
+		:
+			vfs(config()->xml_node().sub_node("nix").sub_node("vfs"),
+			    Vfs::global_file_system_factory()),
+			_lock(lock), _state(nullptr)
+		{ nix::initNix(vfs); }
 
 		~State()
 		{
@@ -285,7 +285,6 @@ class Nix::Service_proxy : public Genode::Rpc_object<Typed_root<SESSION_TYPE>>
 			 */
 			strncpy(new_args, args.string(), ARGS_MAX_LEN);
 			rewrite_args(new_args, sizeof(new_args), out);
-			Arg_string::set_arg(new_args, ARGS_MAX_LEN, "label", "store");
 
 			try { return _backend.session(new_args, affinity); }
 			catch (Service::Invalid_args)   { throw Root::Invalid_args();  }
@@ -320,10 +319,8 @@ class Nix::Rom_root : public Service_proxy<Rom_session>
 			while (out.front() == '/')
 				out.erase(0,1);
 
-			out.insert(0, "\"");
-			out.push_back('"');
-
-			Arg_string::set_arg(args, args_len, "label", out.c_str());
+			Arg_string::set_arg_string(
+				args, args_len, "label", Label(out.c_str(), "store").string());
 		}
 
 	public:
@@ -350,10 +347,8 @@ class Nix::File_system_root : public Service_proxy<File_system::Session>
 
 		void rewrite_args(char *args, size_t args_len, nix::Path &out) override
 		{
-			out.insert(0, "\"");
-			out.push_back('"');
-
-			Arg_string::set_arg(args, args_len, "root", out.c_str());
+			Arg_string::set_arg_string(args, args_len, "label", "store");
+			Arg_string::set_arg_string(args, args_len, "root", out.c_str());
 			Arg_string::set_arg(args, args_len, "writeable", false);
 		}
 
