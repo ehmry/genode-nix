@@ -39,12 +39,6 @@ namespace Store_ingest {
 	bool is_root(File_system::Path const &path) {
 		return (path.size() == 2) && (*path.string() == '/'); }
 
-	unsigned long nonce()
-	{
-		static unsigned i;
-		return i++;
-	};
-
 	static void empty_dir(File_system::Session &fs, char const *path)
 	{
 		Directory_entry dirent;
@@ -173,13 +167,11 @@ class Store_ingest::Session_component : public Session_rpc_object
 			unsigned const index;
 			bool           done;
 
-			Hash_root(Hash_node *node)
-			: hash(node), index(nonce())
+			Hash_root(Hash_node *node, int index)
+			: hash(node), index(index)
 			{
-				if (index > MAX_ROOT_NODES)
-					throw Out_of_node_handles();
-
-				snprintf(filename, sizeof(filename), "ingest-%d", index);
+				static int nonce = 0;
+				snprintf(filename, sizeof(filename), "ingest-%d", ++nonce);
 			}
 
 			Symlink_handle handle() {
@@ -219,15 +211,20 @@ class Store_ingest::Session_component : public Session_rpc_object
 
 				Hash_root *alloc(Hash_node *node)
 				{
-					Hash_root *root = new (_alloc) Hash_root(node);
-					_roots[root->index] = root;
-					return root;
+					for (int i = 0; i < MAX_ROOT_NODES; ++i) {
+						if (_roots[i])
+							continue;
+						Hash_root *root = new (_alloc) Hash_root(node, i);
+						_roots[i] = root;
+						return root;
+					}
+					throw Out_of_node_handles();
 				}
 
 				/**
 				 * Find the root for a given name or return a null pointer.
 				 */
-				Hash_root *lookup_name(char const *name)
+				Hash_root *lookup(char const *name)
 				{
 					for (size_t i = 0; i < MAX_ROOT_NODES; ++i) {
 						Hash_root *root = _roots[i];
@@ -240,7 +237,7 @@ class Store_ingest::Session_component : public Session_rpc_object
 				/**
 				 * Find the root by index.
 				 */
-				Hash_root *lookup_index(Node_handle handle) {
+				Hash_root *lookup(Node_handle handle) {
 					return _roots[handle.value&ROOT_HANDLE_MASK]; }
 
 				void remove(Hash_root *root)
@@ -286,7 +283,7 @@ class Store_ingest::Session_component : public Session_rpc_object
 			try {
 				/* Emulate the read of a symlink */
 				if (theirs.handle().value & ROOT_HANDLE_PREFIX) {
-					Hash_root *root = _root_registry.lookup_index(theirs.handle());
+					Hash_root *root = _root_registry.lookup(theirs.handle());
 					if (root && root->done && theirs.operation() == File_system::Packet_descriptor::READ) {
 						size_t name_len = strlen(root->filename);
 						if (name_len <= length) {
@@ -555,7 +552,7 @@ class Store_ingest::Session_component : public Session_rpc_object
 
 		void finish(const char *name)
 		{
-			Hash_root *root = _root_registry.lookup_name(name);
+			Hash_root *root = _root_registry.lookup(name);
 			if (!root)
 				throw Lookup_failed();
 			finish(root, name);
@@ -563,7 +560,7 @@ class Store_ingest::Session_component : public Session_rpc_object
 
 		char const *final(char const *name)
 		{
-			Hash_root *root = _root_registry.lookup_name(name);
+			Hash_root *root = _root_registry.lookup(name);
 			if (!root || !root->done)
 				throw Lookup_failed();
 
@@ -591,14 +588,15 @@ class Store_ingest::Session_component : public Session_rpc_object
 			char name[MAX_NAME_LEN+1];
 			char const *sub_path = split_path(name, path_str);
 
-			Hash_root *root = _root_registry.lookup_name(name+1);
+			Hash_root *root = _root_registry.lookup(name+1);
 			Directory *dir_node = 0;
 			if (!root) {
 				if (!create || *sub_path)
 					throw Lookup_failed();
 
 				dir_node = new (_alloc) Directory(name+1, _alloc);
-				 root = _root_registry.alloc(dir_node);
+				try { root = _root_registry.alloc(dir_node); }
+				catch (...) { destroy(_alloc, dir_node); throw; }
 			} else
 				dir_node = dynamic_cast<Directory *>(root->hash);
 
@@ -649,11 +647,12 @@ class Store_ingest::Session_component : public Session_rpc_object
 			File_handle handle;
 			File *file_node;
 			if (dir_handle == _root_handle) {
-				Hash_root *root = _root_registry.lookup_name(name_str);
+				Hash_root *root = _root_registry.lookup(name_str);
 				if (!root) {
 					if (create) {
 						file_node = new (_alloc) File(name_str);
-						root = _root_registry.alloc(file_node);
+						try { root = _root_registry.alloc(file_node); }
+						catch (...) { destroy(_alloc, file_node); throw; }
 					} else
 						throw Lookup_failed();
 				} else
@@ -712,6 +711,7 @@ class Store_ingest::Session_component : public Session_rpc_object
 
 				return handle;
 			}
+			PINF("%s is special", name_str);
 
 			/*
 			 * Here we perform some trickery, when the client
@@ -721,14 +721,20 @@ class Store_ingest::Session_component : public Session_rpc_object
 			 * find the final name by reading the symlink.
 			 */
 			if (!create) {
-				Hash_root *root = _root_registry.lookup_name(name_str);
+				Hash_root *root = _root_registry.lookup(name_str);
+				if (!root)
+					PERR("%s:%d not root", __FILE__, __LINE__);
+				if (!root->done)
+					PERR("%s:%d not root->done", __FILE__, __LINE__);
 				if (!root || !root->done)
 					throw Lookup_failed();
 
 				return root->handle();
 			}
 
-			Hash_root *root = _root_registry.lookup_name(name_str);
+			Hash_root *root = _root_registry.lookup(name_str);
+			if (!root)
+				PERR("create but %s not in registry", name_str);
 			if (!root)
 				throw Lookup_failed();
 
@@ -752,7 +758,7 @@ class Store_ingest::Session_component : public Session_rpc_object
 			char new_path[MAX_PATH_LEN];
 			path_str = split_path(new_path, path_str);
 
-			Hash_root *root = _root_registry.lookup_name(new_path+1);
+			Hash_root *root = _root_registry.lookup(new_path+1);
 			if (!root)
 				throw Lookup_failed();
 
@@ -774,17 +780,17 @@ class Store_ingest::Session_component : public Session_rpc_object
 
 		void close(Node_handle handle)
 		{
-			if (handle != _root_handle)
-				_fs.close(handle);
+			if (handle == _root_handle || handle.value & ROOT_HANDLE_PREFIX)
+				return;
+			_fs.close(handle);
 		}
 
 		Status status(Node_handle node_handle)
 		{
 			if (node_handle.value & ROOT_HANDLE_PREFIX) {
-				Hash_root *root = _root_registry.lookup_index(node_handle);
-				if (!root) {
+				Hash_root *root = _root_registry.lookup(node_handle);
+				if (!root)
 					throw Invalid_handle();
-				}
 
 				return Status {
 					strlen(root->filename),
@@ -819,7 +825,7 @@ class Store_ingest::Session_component : public Session_rpc_object
 			_fs.unlink(dir_handle, name);
 
 			if (dir_handle == _root_handle) {
-				Hash_root *root = _root_registry.lookup_name(name_str);
+				Hash_root *root = _root_registry.lookup(name_str);
 				if (!root)
 					throw Lookup_failed();
 				_root_registry.remove(root);
