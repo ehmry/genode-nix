@@ -376,7 +376,7 @@ index d34882f..ceebf6e 100644
 -
  }
 diff --git a/src/libexpr/primops.cc b/src/libexpr/primops.cc
-index 87ee4f6..ae47c76 100644
+index 87ee4f6..9ef8651 100644
 --- a/src/libexpr/primops.cc
 +++ b/src/libexpr/primops.cc
 @@ -19,6 +19,9 @@
@@ -474,8 +474,8 @@ index 87ee4f6..ae47c76 100644
 +        mkString(v, storeName);
 +        state.romEvalCache[name] = v;
 +    } catch (...) {
-+        printMsg(lvlError, format("failed to add ROM dataspace `%1%' to store at %2%") % name % pos);
-+        throw;
++		throw EvalError(format("failed to add ROM dataspace `%1%' to store at %2%")
++             % name % pos);
 +    };
  }
  
