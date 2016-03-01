@@ -123,34 +123,36 @@ class Store_ingest::File : public Hash_node
 
 			if (size != _offset) {
 				File_system::Session::Tx::Source &source = *fs.tx();
-				/* Round to the nearest multiple of the hash block size. */
-				size_t const packet_size =
-					(source.bulk_buffer_size() / _hash.block_size()) * _hash.block_size() / 2;
+				/* try to round to the nearest multiple of the hash block size */
+				size_t packet_size =
+					((source.bulk_buffer_size() / _hash.block_size()) * _hash.block_size()) / 2;
 				File_system::Packet_descriptor raw_packet =
 					source.alloc_packet(packet_size);
 				Packet_guard guard(source, raw_packet);
 
-				/* Align reads with the block size. */
-				size_t count = _offset % packet_size;
-				if (!count) count = packet_size;
+				while (packet_size > raw_packet.size())
+					packet_size /= 2;
+
+				/* Do a short read to align the packet stream with the block size */
+				size_t n = _offset % packet_size;
+				if (!n) n = packet_size;
 
 				while (_offset < size) {
 					File_system::Packet_descriptor
 						packet(raw_packet, handle,
 						       File_system::Packet_descriptor::READ,
-						       count, _offset);
+						       n, _offset);
 
 					source.submit_packet(packet);
 					packet = source.get_acked_packet();
 					if (!packet.succeeded()) {
-						PERR("import flush of '%s' failed", name());
-						throw No_space();
+						PERR("read back of node '%s' failed", name());
+						throw File_system::Exception();
 					}
 					size_t length = packet.length();
 					_hash.update((uint8_t *)source.packet_content(packet), length);
 					_offset += length;
-					count = (size - _offset) > packet_size ?
-						size - _offset : packet_size;
+					n = min(size - _offset, packet_size);
 				}
 			}
 
