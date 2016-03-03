@@ -1,0 +1,13 @@
+LICENSE   := GPLv2
+VERSION   := 0.23.4
+DOWNLOADS := libgit2.archive
+
+URL(libgit2) := https://github.com/libgit2/libgit2/archive/v$(VERSION).tar.gz
+SHA(libgit2) := 02ff3374da7fdf116984adf41749db7b4d0a5877
+DIR(libgit2) := src/lib/libgit2
+
+PATCHES := src/lib/libgit2/patch
+PATCH_OPT := -p1 -d src/lib/libgit2
+
+default:
+	$(VERBOSE)rm src/lib/libgit2/src/unix/posix.h
