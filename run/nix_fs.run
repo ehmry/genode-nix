@@ -56,7 +56,7 @@ append config {
 			<vfs> <ram/> </vfs>
 			<policy label="store_ingest" writeable="yes"/>
 			<policy label="builder" writeable="yes"/>
-			<policy/>
+			<default-policy/>
 		</config>
 		<route>
 			<any-service> <parent/> </any-service>
@@ -127,7 +127,7 @@ append config {
 				</vfs>
 				<search-path name="nix" path="/corepkgs"/>
 			</nix>
-			<policy/>
+			<default-policy/>
 		</config>
 	</start>
 

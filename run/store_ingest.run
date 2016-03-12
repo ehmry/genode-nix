@@ -57,7 +57,7 @@ append config {
 		<config>
 			<vfs> <ram/> </vfs>
 			<policy label="store_ingest" writeable="yes"/>
-			<policy/>
+			<default-policy/>
 		</config>
 	</start>
 	<start name="store_ingest">

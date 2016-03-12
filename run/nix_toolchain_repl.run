@@ -150,7 +150,7 @@ append config {
 
 			<policy label="store_ingest" writeable="yes" />
 			<policy label="builder" writeable="yes" />
-			<policy/>
+			<default-policy/>
 		</config>
 	</start>
 
