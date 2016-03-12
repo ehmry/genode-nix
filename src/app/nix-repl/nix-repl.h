@@ -5,7 +5,10 @@
 #include <vfs/file_system_factory.h>
 #include <vfs/dir_file_system.h>
 #include <terminal_session/terminal_session.h>
+#include <report_session/connection.h>
 #include <os/config.h>
+#include <os/attached_dataspace.h>
+#include <util/volatile_object.h>
 
 /* Local includes */
 //#include "job.h"
@@ -62,6 +65,8 @@ struct NixRepl : Line_editor_base
 
     StringSet completions;
     StringSet::iterator curCompletion;
+
+    Genode::Lazy_volatile_object<Report::Connection> _report;
 
     NixRepl(Terminal::Session &terminal,
             const char        *prompt,
@@ -293,6 +298,20 @@ bool NixRepl::processLine(string line)
         Value v;
         evalString(arg, v);
         printValue(v, 1000000000);
+    }
+
+    else if (command == ":o" || command == ":report") {
+        Value v;
+        evalString(arg, v);
+        PathSet context;
+        string content = state.coerceToString(noPos, v, context);
+        if (!_report.is_constructed())
+			_report.construct("");
+
+		Genode::Attached_dataspace ds(_report->dataspace());
+		size_t len = min(content.size(), ds.size());
+		content.copy(ds.local_addr<char>(), len);
+		_report->submit(len);
     }
 
     else if (command == ":q" || command == ":quit") {

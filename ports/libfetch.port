@@ -1,0 +1,33 @@
+LICENSE := BSD
+VERSION := 8.2.0
+DOWNLOADS := libfetch.svn
+
+URL(libfetch) := http://svn.freebsd.org/base/release/8.2.0/lib/libfetch
+REV(libfetch) := 296500
+DIR(libfetch) := src/lib/libfetch
+
+src/lib/libfetch/ftperr.h: src/lib/libfetch/ftp.errors
+	$(VERBOSE)echo "static struct fetcherr ftp_errlist[] = {" > $@
+	$(VERBOSE)cat $< \
+	  | grep -v ^# \
+	  | sort \
+	  | while read NUM CAT STRING; do \
+	    echo "    { $${NUM}, FETCH_$${CAT}, \"$${STRING}\" },"; \
+	  done >> $@
+	$(VERBOSE)echo "    { -1, FETCH_UNKNOWN, \"Unknown FTP error\" }" >> $@
+	$(VERBOSE)echo "};" >> $@
+
+src/lib/libfetch/httperr.h: src/lib/libfetch/http.errors
+	$(VERBOSE)echo "static struct fetcherr http_errlist[] = {" > $@
+	$(VERBOSE)cat $< \
+	  | grep -v ^# \
+	  | sort \
+	  | while read NUM CAT STRING; do \
+	    echo "    { $${NUM}, FETCH_$${CAT}, \"$${STRING}\" },"; \
+	  done >> $@
+	$(VERBOSE)echo "    { -1, FETCH_UNKNOWN, \"Unknown HTTP error\" }" >> $@
+	$(VERBOSE)echo "};" >> $@
+
+generated_files = $(addprefix src/lib/libfetch/,ftperr.h httperr.h)
+$(generated_files) : $(DOWNLOADS)
+default: $(generated_files)

@@ -1,0 +1,103 @@
+#
+# \brief  Test of the git_clone utility
+# \author Emery Hemingway
+# \date   2015-06-14
+#
+
+# Build program images
+set build_components {
+	core init
+	drivers/nic
+	drivers/timer
+	server/vfs
+	util/git_clone
+}
+
+source ${genode_dir}/repos/base/run/platform_drv.inc
+append_platform_drv_build_components
+
+build $build_components
+
+create_boot_directory
+
+# Define XML configuration for init
+append config {
+<config>
+	<parent-provides>
+		<service name="CAP"/>
+		<service name="CPU"/>
+		<service name="IO_MEM"/>
+		<service name="IO_PORT"/>
+		<service name="IRQ"/>
+		<service name="LOG"/>
+		<service name="PD"/>
+		<service name="RAM"/>
+		<service name="RM"/>
+		<service name="ROM"/>
+		<service name="SIGNAL"/>
+	</parent-provides>
+	<default-route>
+		<any-service><parent/><any-child/></any-service>
+	</default-route>}
+
+append_platform_drv_config
+
+append config {
+	<start name="timer">
+		<resource name="RAM" quantum="1M"/>
+		<provides><service name="Timer"/></provides>
+	</start>
+
+	<start name="nic_drv">
+		<resource name="RAM" quantum="4M"/>
+		<provides> <service name="Nic"/> </provides>
+	</start>
+
+	<start name="vfs">
+		<resource name="RAM" quantum="16M"/>
+		<provides> <service name="File_system"/> </provides>
+		<config>
+			<vfs> <ram/> </vfs>
+			<policy writeable="yes"/>
+		</config>
+	</start>
+
+	<start name="git_clone">
+		<resource name="RAM" quantum="4M"/>
+		<config verbose="true">
+			<repo url="git://github.com/alex-ab/NOVA.git" path="/nova"/>
+			<libc stdout="/log" stderr="/log">
+				<vfs> <log/> <fs writeable="yes"/> </vfs>
+			</libc>
+		</config>
+	</start>
+</config>
+}
+
+install_config $config
+
+set boot_modules {
+	core init ld.lib.so
+	git_clone
+	libc.lib.so
+	libc.lib.so
+	libc.lib.so
+	libgit2.lib.so
+	lwip.lib.so
+	nic_drv
+	timer
+	vfs
+	zlib.lib.so
+}
+
+# platform-specific modules
+append_platform_drv_boot_modules
+
+build_boot_image $boot_modules
+
+append qemu_args " -nographic -net nic,model=e1000 -net user"
+
+append qemu_args " -net dump,file=/tmp/git.pcap"
+
+
+run_genode_until {child "git_clone" exited with exit value 0} 120
