@@ -27,6 +27,11 @@
 #include <base/allocator_avl.h>
 #include <base/allocator_guard.h>
 
+/* Jitterentropy */
+namespace Jitter { extern "C" {
+#include <jitterentropy.h>
+} }
+
 /* Local includes */
 #include "node.h"
 
@@ -157,11 +162,10 @@ class Store_ingest::Session_component : public Session_rpc_object
 			unsigned const index;
 			bool           done;
 
-			Hash_root(Hash_node *node, int index)
+			Hash_root(Hash_node *node, int index, uint64_t nonce)
 			: hash(node), index(index)
 			{
-				static int nonce = 0;
-				snprintf(filename, sizeof(filename), "ingest-%d", ++nonce);
+				snprintf(filename, sizeof(filename), "ingest-%llux", ++nonce);
 			}
 
 			Symlink_handle handle() {
@@ -180,6 +184,7 @@ class Store_ingest::Session_component : public Session_rpc_object
 
 				Hash_root         *_roots[MAX_ROOT_NODES];
 				Genode::Allocator &_alloc;
+				Genode::uint64_t   _nonce;
 
 			public:
 
@@ -188,6 +193,13 @@ class Store_ingest::Session_component : public Session_rpc_object
 				{
 					for (unsigned i = 0; i < MAX_ROOT_NODES; i++)
 						_roots[i] = 0;
+
+					/* use a random initial nonce */
+					using namespace Jitter;
+					jent_entropy_init();
+					rand_data *ec = Jitter::jent_entropy_collector_alloc(0, 0);
+					jent_read_entropy(ec, (char*)&_nonce, sizeof(_nonce));
+					jent_entropy_collector_free(ec);
 				}
 
 				~Hash_root_registry()
@@ -204,7 +216,7 @@ class Store_ingest::Session_component : public Session_rpc_object
 					for (int i = 0; i < MAX_ROOT_NODES; ++i) {
 						if (_roots[i])
 							continue;
-						Hash_root *root = new (_alloc) Hash_root(node, i);
+						Hash_root *root = new (_alloc) Hash_root(node, i, ++_nonce);
 						_roots[i] = root;
 						return root;
 					}
