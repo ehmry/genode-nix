@@ -37,7 +37,7 @@ namespace Store_ingest {
 	class Session_component;
 
 	bool is_root(File_system::Path const &path) {
-		return (path.size() == 2) && (*path.string() == '/'); }
+		return strcmp(path.string(), "/", 2) == 0; }
 
 	static void empty_dir(File_system::Session &fs, char const *path)
 	{
@@ -117,33 +117,23 @@ class Store_ingest::Session_component : public Session_rpc_object
 			Hash_node *lookup(Node_handle handle)
 			{
 				int i = handle.value;
-				if (i >= 0 && i < MAX_NODE_HANDLES) {
-					Hash_node *node = _nodes[i];
-					if (node)
-						return node;
-					else
-						return 0;
-				}
+				return (i >= 0 && i < MAX_NODE_HANDLES) ?
+					_nodes[i] : 0;
+			}
+
+			File &lookup_file(Node_handle handle)
+			{
+				Hash_node *node = lookup(handle);
+				File *file = dynamic_cast<File *>(node);
+				if (file) return *file;
 				throw Invalid_handle();
 			}
 
-			File *lookup_file(Node_handle handle)
+			Directory &lookup_dir(Node_handle handle)
 			{
 				Hash_node *node = lookup(handle);
-				if (node) {
-					File *file = dynamic_cast<File *>(node);
-					if (file) return file;
-				}
-				throw Invalid_handle();
-			}
-
-			Directory *lookup_dir(Node_handle handle)
-			{
-				Hash_node *node = lookup(handle);
-				if (node) {
-					Directory *dir = dynamic_cast<Directory *>(node);
-					if (dir) return dir;
-				}
+				Directory *dir = dynamic_cast<Directory *>(node);
+				if (dir) return *dir;
 				throw Invalid_handle();
 			}
 
@@ -567,6 +557,27 @@ class Store_ingest::Session_component : public Session_rpc_object
 			return root->filename;
 		}
 
+		bool verify(char const *name, char const *algo, char const *hash)
+		{
+			Hash_root *root = _root_registry.lookup(name);
+			if (!root || !root->done)
+				throw Lookup_failed();
+
+			if (!strcmp("blake2s", algo)) {
+				uint8_t buf[53];
+				root->hash->digest(buf, sizeof(buf));
+				Store_hash::encode_hash(buf, sizeof(buf));
+
+				if (strcmp(hash, (char *)&buf, sizeof(buf))) {
+					PERR("%s:%s:%s != %s", name, algo, hash, (char*)&buf);
+					return false;
+				}
+				PLOG("verified %s:%s:%s", name, algo, (char*)&buf);
+			}
+			PERR("unhandled hash algorithm '%s'", algo);
+			throw File_system::Exception();
+		}
+
 
 		/***************************
 		 ** File_system interface **
@@ -606,7 +617,10 @@ class Store_ingest::Session_component : public Session_rpc_object
 				strncpy(name+1, root->filename, sizeof(name)-1);
 				try {
 					handle = _fs.dir(name, create);
-				} catch (Node_already_exists) {
+				} catch (Permission_denied) {
+					PERR("permission denied at backend");
+					throw;
+				} catch (...) {
 					try {
 						_fs.unlink(_root_handle, name+1);
 					} catch (Not_empty) {
@@ -614,10 +628,8 @@ class Store_ingest::Session_component : public Session_rpc_object
 						_fs.unlink(_root_handle, name+1);
 					}
 					handle = _fs.dir(name, true);
-				} catch (Permission_denied) {
-					PERR("permission denied at backend");
-					throw;
 				}
+
 				_registry.insert(handle, dir_node);
 				return handle;
 			}
@@ -642,36 +654,42 @@ class Store_ingest::Session_component : public Session_rpc_object
 			    (_alloc.quota()-_alloc.consumed() < sizeof(File)))
 				throw No_space();
 
-			char const *name_str = name.string();
-
 			File_handle handle;
 			File *file_node;
+
+			char const *name_str = name.string();
+
 			if (dir_handle == _root_handle) {
 				Hash_root *root = _root_registry.lookup(name_str);
-				if (!root) {
-					if (create) {
-						file_node = new (_alloc) File(name_str);
-						try { root = _root_registry.alloc(file_node); }
-						catch (...) { destroy(_alloc, file_node); throw; }
-					} else
-						throw Lookup_failed();
-				} else
+
+				if (create) {
+					if (root) throw Node_already_exists();
+
+					file_node = new (_alloc) File(name_str);
+					try { root = _root_registry.alloc(file_node); }
+					catch (...) { destroy(_alloc, file_node); throw; }
+
+				} else if (!root) {
+					throw Lookup_failed();
+				} else {
 					file_node = dynamic_cast<File *>(root->hash);
+					if (!file_node)
+						throw Lookup_failed();
+				}
 
 				try {
 					handle = _fs.file(_root_handle, root->filename, mode, create);
-				} catch (Node_already_exists) {
-					try {
-						_fs.unlink(_root_handle, root->filename);
-					} catch (Not_empty) {
+				} catch (Permission_denied) {
+					PERR("permission denied at backend");
+					throw;
+				} catch (...) {
+					try { _fs.unlink(_root_handle, root->filename); }
+					catch (Not_empty) {
 						Genode::Path<MAX_PATH_LEN> path(root->filename);
 						empty_dir(_fs, path.base());
 						_fs.unlink(_root_handle, path.base());
 					}
 					handle = _fs.file(_root_handle, root->filename, mode, true);
-				} catch (Permission_denied) {
-					PERR("permission denied at backend");
-					throw;
 				}
 
 				if (mode >= WRITE_ONLY)
@@ -689,8 +707,8 @@ class Store_ingest::Session_component : public Session_rpc_object
 			if (mode < WRITE_ONLY)
 				return handle;
 
-			Directory *dir_node = _registry.lookup_dir(dir_handle);
-			_registry.insert(handle, dir_node->file(name_str, create));
+			Directory &dir_node = _registry.lookup_dir(dir_handle);
+			_registry.insert(handle, dir_node.file(name_str, create));
 			return handle;
 		}
 
@@ -706,8 +724,8 @@ class Store_ingest::Session_component : public Session_rpc_object
 
 				Symlink_handle handle = _fs.symlink(dir_handle, name, create);
 
-				Directory *dir_node = _registry.lookup_dir(dir_handle);
-				_registry.insert(handle, dir_node->symlink(name_str, create));
+				Directory &dir_node = _registry.lookup_dir(dir_handle);
+				_registry.insert(handle, dir_node.symlink(name_str, create));
 
 				return handle;
 			}
@@ -721,10 +739,6 @@ class Store_ingest::Session_component : public Session_rpc_object
 			 */
 			if (!create) {
 				Hash_root *root = _root_registry.lookup(name_str);
-				if (!root)
-					PERR("%s:%d not root", __FILE__, __LINE__);
-				if (!root->done)
-					PERR("%s:%d not root->done", __FILE__, __LINE__);
 				if (!root || !root->done)
 					throw Lookup_failed();
 
@@ -732,8 +746,6 @@ class Store_ingest::Session_component : public Session_rpc_object
 			}
 
 			Hash_root *root = _root_registry.lookup(name_str);
-			if (!root)
-				PERR("create but %s not in registry", name_str);
 			if (!root)
 				throw Lookup_failed();
 
@@ -827,30 +839,50 @@ class Store_ingest::Session_component : public Session_rpc_object
 				Hash_root *root = _root_registry.lookup(name_str);
 				if (!root)
 					throw Lookup_failed();
+
 				_root_registry.remove(root);
 				destroy(_alloc, root->hash);
 				destroy(_alloc, root);
 				return;
 			}
 
-			_registry.lookup_dir(dir_handle)->remove(name_str);
+			Hash_node *node = _registry.lookup_dir(dir_handle).remove(name_str);
+			if (node) destroy(_alloc, node);
 		}
 
 		void truncate(File_handle file_handle, file_size_t len)
 		{
 			_fs.truncate(file_handle, len);
-			_registry.lookup_file(file_handle)->truncate(len);
+			_registry.lookup_file(file_handle).truncate(len);
 		}
 
 		void move(Dir_handle from_dir_handle, Name const &from_name,
 		          Dir_handle to_dir_handle,   Name const &to_name)
 		{
-			PERR("move not implemented");
-			/*
-			 * Not hard to implement, just lazy.
-			 * Need a remove and and insert function at Hash_node.
-			 */
-			throw Permission_denied();
+			if ((from_dir_handle == _root_handle)
+			 || (  to_dir_handle == _root_handle))
+				throw Permission_denied(); /* XXX: just being lazy */
+
+			/* this will trigger Invalid_handle if appropriate */
+			Directory &from_dir_node = _registry.lookup_dir(from_dir_handle);
+			Directory   &to_dir_node = _registry.lookup_dir(  to_dir_handle);
+
+			/* make the move now and propagate any exceptions */
+			_fs.move(from_dir_handle, from_name, to_dir_handle, to_name);
+
+			Hash_node *node = to_dir_node.remove(to_name.string());
+			if (node)
+				destroy(_alloc, node);
+
+			node = from_dir_node.remove(from_name.string());
+			if (!node) {
+				PERR("internal state inconsistent with backend!");
+				throw Permission_denied();
+			}
+
+			node->name(to_name.string());
+
+			to_dir_node.insert(node);
 		}
 
 		void sigh(Node_handle node_handle, Signal_context_capability sigh) {

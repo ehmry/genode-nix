@@ -30,7 +30,50 @@ namespace Store_hash {
 		'q','r','s','v','w','x','y','z'
 	};
 
-	/* Get the base32 encoding of the first 160 bits of the digest. */
+	/**
+	 * Base32 encode the buffer
+	 */
+	void encode_hash(uint8_t *buf, size_t len)
+	{
+		if (len < 52) {
+			*buf = 0;
+			return;
+		}
+		unsigned i = 32;
+		unsigned j = 52;
+		do {
+			uint8_t b7, b6, b5 , b4, b3, b2, b1, b0;
+
+			b7  =  buf[--i]       & 0x1F;
+			b6  =  buf[i]   >> 5;
+			b6 |= (buf[--i] << 3) & 0x1F;
+			b5  = (buf[i]   >> 2) & 0x1F;
+			b4  =  buf[i]   >> 7;
+			b4 |= (buf[--i] << 1) & 0x1F;
+			b3  = (buf[i]   >> 4) & 0x1F;
+			b3 |= (buf[--i] << 4) & 0x1F;
+			b2  = (buf[i]   >> 1) & 0x1F;
+			b1  = (buf[i]   >> 6) & 0x1F;
+			b1 |= (buf[--i] >> 2) & 0x1F;
+			b0  = (buf[i]   >> 3);
+
+			buf[--j]   = base32[b7];
+			buf[--j] = base32[b6];
+			buf[--j] = base32[b5];
+			buf[--j] = base32[b4];
+			buf[--j] = base32[b3];
+			buf[--j] = base32[b2];
+			buf[--j] = base32[b1];
+			buf[--j] = base32[b0];
+		} while (i);
+
+		for (size_t k = 52; k < len; ++k)
+			buf[k] = 0x00;
+	}
+
+	/**
+	 * Get the base32 encoding of the first 160 bits of the digest
+	 */
 	void encode(uint8_t *buf, char const *name, size_t len)
 	{
 		if (len < HASH_PREFIX_LEN+2) {

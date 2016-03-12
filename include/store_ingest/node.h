@@ -225,6 +225,20 @@ class Store_ingest::Directory : public Hash_node
 			throw Lookup_failed();
 		}
 
+	public:
+
+		/**
+		 * Constructor
+		 */
+		Directory(char const *name, Genode::Allocator_guard &alloc)
+		: Hash_node(name), _alloc(alloc) { }
+
+		~Directory()
+		{
+			for (Hash_node *node = _children.first(); node; node = node->next())
+				destroy(_alloc, node);
+		}
+
 		/**
 		 * Insert a node into the ordered list of children.
 		 */
@@ -244,18 +258,26 @@ class Store_ingest::Directory : public Hash_node
 			_children.insert(node, prev);
 		}
 
-	public:
-
 		/**
-		 * Constructor
+		 * Remove a node from the list of children
 		 */
-		Directory(char const *name, Genode::Allocator_guard &alloc)
-		: Hash_node(name), _alloc(alloc) { }
-
-		~Directory()
+		Hash_node *remove(char const *name)
 		{
-			for (Hash_node *node = _children.first(); node; node = node->next())
-				destroy(_alloc, node);
+			for (Hash_node *node = _children.first();
+			     node; node = node->next())
+			{
+				int n = strcmp(name, node->name());
+				if (n < 0)
+					continue;
+
+				if (n > 0) /* not in the list */
+					return 0;
+
+				_children.remove(node);
+				return node;
+			}
+
+			return 0;
 		}
 
 		void flush(File_system::Session &fs, char const *path)
@@ -372,20 +394,6 @@ class Store_ingest::Directory : public Hash_node
 			}
 			throw Lookup_failed();
 		}
-
-		void remove(char const *name)
-		{
-			for (Hash_node *node = _children.first();
-				node; node = node->next()) {
-				if (strcmp(node->name(), name, MAX_NAME_LEN))
-					continue;
-
-				_children.remove(node);
-				destroy(_alloc, node);
-				return;
-			}
-		}
-
 };
 
 #endif
