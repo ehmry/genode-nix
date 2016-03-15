@@ -128,7 +128,7 @@ class nix::Store : public nix::StoreAPI
 				SubstitutablePathInfos & infos) override;
 
 		Path addToStore(const string & name, const Path & srcPath,
-		                bool recursive = true, HashType hashAlgo = htBLAKE2s,
+		                bool recursive = true, HashType hashAlgo = htDEFAULT,
 		                PathFilter & filter = defaultPathFilter, bool repair = false) override;
 
 		/**

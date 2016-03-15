@@ -172,14 +172,14 @@ index c216e97..3fb5111 100644
  
  namespace nix {
 diff --git a/src/libutil/hash.cc b/src/libutil/hash.cc
-index 2d97c5e..775aa56 100644
+index 2d97c5e..9b4f297 100644
 --- a/src/libutil/hash.cc
 +++ b/src/libutil/hash.cc
 @@ -33,6 +33,7 @@ Hash::Hash(HashType type)
      else if (type == htSHA1) hashSize = sha1HashSize;
      else if (type == htSHA256) hashSize = sha256HashSize;
      else if (type == htSHA512) hashSize = sha512HashSize;
-+    else if (type == htBLAKE2s) hashSize = blake2sHashSize;
++    else if (type == htBLAKE2S) hashSize = blake2sHashSize;
      else throw Error("unknown hash type");
      assert(hashSize <= maxHashSize);
      memset(hash, 0, maxHashSize);
@@ -199,16 +199,34 @@ index 2d97c5e..775aa56 100644
          if (n == -1) throw SysError(format("reading file ‘%1%’") % path);
          update(ht, ctx, buf, n);
      }
+@@ -318,6 +317,7 @@ HashType parseHashType(const string & s)
+     else if (s == "sha1") return htSHA1;
+     else if (s == "sha256") return htSHA256;
+     else if (s == "sha512") return htSHA512;
++    else if (s == "blake2s") return htBLAKE2S;
+     else return htUnknown;
+ }
+ 
+@@ -328,6 +328,7 @@ string printHashType(HashType ht)
+     else if (ht == htSHA1) return "sha1";
+     else if (ht == htSHA256) return "sha256";
+     else if (ht == htSHA512) return "sha512";
++    else if (ht == htBLAKE2S) return "blake2s";
+     else throw Error("cannot print unknown hash type");
+ }
+ 
 diff --git a/src/libutil/hash.hh b/src/libutil/hash.hh
-index 841b4cb..8e978f1 100644
+index 841b4cb..d1d46e7 100644
 --- a/src/libutil/hash.hh
 +++ b/src/libutil/hash.hh
-@@ -7,13 +7,14 @@
+@@ -7,13 +7,16 @@
  namespace nix {
  
  
 -typedef enum { htUnknown, htMD5, htSHA1, htSHA256, htSHA512 } HashType;
-+typedef enum { htUnknown, htMD5, htSHA1, htSHA256, htSHA512, htBLAKE2s } HashType;
++typedef enum { htUnknown, htMD5, htSHA1, htSHA256, htSHA512, htBLAKE2S } HashType;
++
++HashType const htDEFAULT = htBLAKE2S;
  
  
  const int md5HashSize = 16;

@@ -1,5 +1,5 @@
 diff --git a/src/libmain/shared.cc b/src/libmain/shared.cc
-index a6e8f35..bfe8785 100644
+index a6e8f35..047bfc0 100644
 --- a/src/libmain/shared.cc
 +++ b/src/libmain/shared.cc
 @@ -12,29 +12,16 @@
@@ -276,16 +276,43 @@ index a6e8f35..bfe8785 100644
          return e.status;
      } catch (std::bad_alloc & e) {
          printMsg(lvlError, error + "out of memory");
-@@ -302,77 +138,40 @@ int handleExceptions(const string & programName, std::function<void()> fun)
+@@ -302,77 +138,38 @@ int handleExceptions(const string & programName, std::function<void()> fun)
      } catch (std::exception & e) {
          printMsg(lvlError, error + e.what());
          return 1;
--    }
--
--    return 0;
--}
--
--
++    } catch (File_system::Permission_denied) {
++        printMsg(lvlError, error + "File_system: permission denied");
++        return 1;
++    } catch (File_system::Node_already_exists) {
++        printMsg(lvlError, error + "File_system: node already exists");
++        return 1;
++    } catch (File_system::Lookup_failed) {
++        printMsg(lvlError, error + "File_system: lookup failed");
++        return 1;
++    } catch (File_system::Name_too_long) {
++        printMsg(lvlError, error + "File_system: name too long");
++        return 1;
++    } catch (File_system::No_space) {
++        printMsg(lvlError, error + "File_system: no space");
++        return 1;
++    } catch (File_system::Out_of_node_handles) {
++        printMsg(lvlError, error + "File_system: out of node handles");
++        return 1;
++    } catch (File_system::Invalid_handle) {
++        printMsg(lvlError, error + "File_system: invalid handle");
++        return 1;
++    } catch (File_system::Invalid_name) {
++        printMsg(lvlError, error + "File_system: invalid name");
++        return 1;
++    } catch (File_system::Size_limit_reached) {
++        printMsg(lvlError, error + "File_system: size limit reached");
++        return 1;
+     }
+ 
+     return 0;
+ }
+ 
+ 
 -RunPager::RunPager()
 -{
 -    if (!isatty(STDOUT_FILENO)) return;
@@ -332,47 +359,18 @@ index a6e8f35..bfe8785 100644
 -            close(STDOUT_FILENO);
 -            pid.wait(true);
 -        }
-+    } catch (File_system::Permission_denied) {
-+        printMsg(lvlError, error + "File_system: permission denied");
-+        return 1;
-+    } catch (File_system::Node_already_exists) {
-+        printMsg(lvlError, error + "File_system: node already exists");
-+        return 1;
-+    } catch (File_system::Lookup_failed) {
-+        printMsg(lvlError, error + "File_system: lookup failed");
-+        return 1;
-+    } catch (File_system::Name_too_long) {
-+        printMsg(lvlError, error + "File_system: name too long");
-+        return 1;
-+    } catch (File_system::No_space) {
-+        printMsg(lvlError, error + "File_system: no space");
-+        return 1;
-+    } catch (File_system::Out_of_node_handles) {
-+        printMsg(lvlError, error + "File_system: out of node handles");
-+        return 1;
-+    } catch (File_system::Invalid_handle) {
-+        printMsg(lvlError, error + "File_system: invalid handle");
-+        return 1;
-+    } catch (File_system::Invalid_name) {
-+        printMsg(lvlError, error + "File_system: invalid name");
-+        return 1;
-+    } catch (File_system::Size_limit_reached) {
-+        printMsg(lvlError, error + "File_system: size limit reached");
-+        return 1;
-     } catch (...) {
+-    } catch (...) {
 -        ignoreException();
-+	return 1;
-     }
+-    }
 -}
 -
- 
+-
 -string showBytes(unsigned long long bytes)
 -{
 -    return (format("%.2f MiB") % (bytes / (1024.0 * 1024.0))).str();
-+    return 0;
- }
- 
- 
+-}
+-
+-
 -PrintFreed::~PrintFreed()
 -{
 -    if (show)
