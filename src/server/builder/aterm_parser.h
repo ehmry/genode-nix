@@ -20,6 +20,14 @@ namespace Aterm {
 
 class Aterm::Parser
 {
+	public:
+
+		struct Exception : Genode::Exception { };
+		struct Malformed_element : Exception { };
+		struct Wrong_element     : Exception { };
+		struct End_of_term       : Exception { };
+		struct Bad_logic         : Exception { };
+		struct Overflow          : Exception { };
 
 	private:
 
@@ -60,14 +68,6 @@ class Aterm::Parser
 		}
 
 	public:
-		
-		struct Exception : Genode::Exception { };
-		struct Malformed_element : Exception { };
-		struct Wrong_element     : Exception { };
-		struct End_of_term       : Exception { };
-		struct Bad_logic         : Exception { };
-		struct Overflow          : Exception { };
-		struct Runoff            : Exception { };
 
 		/**
 		 * Constructor

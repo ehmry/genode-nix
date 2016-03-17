@@ -113,6 +113,8 @@ class Builder::Job : public Fifo<Job>::Element
 			} catch (Missing_dependency) {
 				PERR("missing dependency for %s", _name.string());
 				Signal_transmitter(exit_sigh).submit();
+			} catch (...) {
+				PERR("failed to start job for %s", _name.string());
 			}
 		}
 
@@ -168,7 +170,7 @@ class Builder::Jobs : private Genode::Fifo<Job>
 		/**
 		 * Handle resource announcement from parent
 		 */
-		void _resource_handler(unsigned count)
+		void _resource_handler(unsigned)
 		{
 			{
 				Lock::Guard guard(_lock);

@@ -9,7 +9,7 @@
 #include <libutil/util.hh>
 
 /* Genode includes */
-#include <store_ingest/connection.h>
+#include <store_ingest_session/fs_connection.h>
 #include <store_hash/encode.h>
 #include <hash/blake2s.h>
 #include <os/config.h>
@@ -333,7 +333,7 @@ Store::add_file(nix::Path const &src_path)
 	Vfs_handle::Guard vfs_guard(vfs_handle);
 
 	Genode::Allocator_avl fs_block_alloc(Genode::env()->heap());
-	Store_ingest::Connection fs(fs_block_alloc);
+	Store_ingest::Fs_connection fs(fs_block_alloc);
 
 	nix::Path name = src_path.substr(src_path.rfind("/")+1, src_path.size()-1);
 	File_system::File_handle ingest_handle;
@@ -434,7 +434,7 @@ string
 Store::add_dir(nix::Path const &src_path)
 {
 	Genode::Allocator_avl fs_block_alloc(Genode::env()->heap());
-	Store_ingest::Connection fs(fs_block_alloc);
+	Store_ingest::Fs_connection fs(fs_block_alloc);
 
 	/* The index of the begining of the last path element. */
 	int path_offset = src_path.rfind("/");
@@ -603,7 +603,7 @@ nix::Path nix::Store::addTextToStore(const string & name, const string & text,
 		size_t offset = 0;
 
 		Genode::Allocator_avl fs_block_alloc(Genode::env()->heap());
-		Store_ingest::Connection fs(fs_block_alloc);
+		Store_ingest::Fs_connection fs(fs_block_alloc);
 		
 		File_handle handle;
 		try {
@@ -677,7 +677,7 @@ nix::Path nix::Store::addDataToStore(const string & name,
 		char const *name_str = name.c_str();
 
 		Genode::Allocator_avl fs_block_alloc(Genode::env()->heap());
-		Store_ingest::Connection fs(fs_block_alloc);
+		Store_ingest::Fs_connection fs(fs_block_alloc);
 		
 		File_handle handle;
 		try {

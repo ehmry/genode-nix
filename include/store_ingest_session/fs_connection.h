@@ -8,14 +8,14 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2016 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
  * under the terms of the GNU General Public License version 2.
  */
 
-#ifndef _INCLUDE__STORE_IMPORT__CONNECTION_H_
-#define _INCLUDE__STORE_IMPORT__CONNECTION_H_
+#ifndef _INCLUDE__STORE_INGEST_SESSION__FS_CONNECTION_H_
+#define _INCLUDE__STORE_INGEST_SESSION__FS_CONNECTION_H_
 
 #include <file_system_session/client.h>
 #include <base/connection.h>
@@ -25,11 +25,11 @@
 
 namespace Store_ingest {
 	using namespace File_system;
-	struct Connection;
+	struct Fs_connection;
 }
 
 
-class Store_ingest::Connection : public Genode::Connection<File_system::Session>, public File_system::Session_client
+class Store_ingest::Fs_connection : public Genode::Connection<File_system::Session>, public File_system::Session_client
 {
 	private:
 
@@ -61,7 +61,7 @@ class Store_ingest::Connection : public Genode::Connection<File_system::Session>
 		 *                         transmission buffer
 		 * \param tx_buf_size      size of transmission buffer in bytes
 		 */
-		Connection(Genode::Range_allocator &tx_block_alloc,
+		Fs_connection(Genode::Range_allocator &tx_block_alloc,
 		           size_t                   tx_buf_size = 256*1024,
 		           const char              *label = "ingest")
 		:
@@ -73,7 +73,6 @@ class Store_ingest::Connection : public Genode::Connection<File_system::Session>
 
 			File_handle file(Dir_handle dir, Name const &name, Mode mode, bool create) override
 			{
-
 				for (;;) try {
 					return Session_client::file(dir, name, mode, create);
 				} catch (No_space) {
@@ -103,4 +102,4 @@ class Store_ingest::Connection : public Genode::Connection<File_system::Session>
 			}
 };
 
-#endif /* _INCLUDE__STORE_IMPORT__CONNECTION_H_ */
+#endif

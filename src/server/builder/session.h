@@ -151,8 +151,6 @@ class Builder::Session_component : public Genode::Rpc_object<Session>
 			using namespace File_system;
 			char const *name = drv_name.string();
 
-			PLOG("realize %s", name);
-
 			if (File_system::string_contains(name, '/')) {
 				PERR("invalid derivation name %s", name);
 				throw Invalid_derivation();
@@ -176,7 +174,6 @@ class Builder::Session_component : public Genode::Rpc_object<Session>
 				throw Invalid_derivation();
 			}
 
-			PLOG("queueing %s", name);
 			_jobs.queue(name, sigh);
 		}
 

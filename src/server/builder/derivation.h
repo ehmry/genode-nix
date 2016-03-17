@@ -151,6 +151,29 @@ namespace Builder {
 				environment.list([&func] (Aterm::Parser &parser) { parser.tuple(func); });
 			}
 
+			bool has_fixed_output()
+			{
+				Genode::String<2> path;
+				Genode::String<2> algo;
+				Genode::String<2> hash;
+
+				unsigned known = 0, unknown = 0;
+
+				outputs([&] (Aterm::Parser &parser) {
+					parser.string(); /* id */
+					parser.string(&path);
+					parser.string(&algo);
+					parser.string(&hash);
+
+					if ((path != "") && (algo != "") && (hash != ""))
+						++known;
+					else
+						++unknown;
+				});
+
+				return (known && (!unknown));
+			}
+
 	};
 
 };

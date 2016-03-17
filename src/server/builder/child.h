@@ -24,7 +24,7 @@
 
 /* Local imports */
 #include "derivation.h"
-#include "fs_policy.h"
+#include "ingest_service.h"
 
 namespace Builder {
 
@@ -269,8 +269,7 @@ class Builder::Child : public Genode::Child_policy
 		Rom_connection             _binary_rom;
 		Server::Entrypoint         _entrypoint;
 		Parent_service             _fs_input_service;
-		Store_fs_policy            _fs_output_policy;
-		Parent_service             _parent_fs_service;
+		Store_ingest_service       _fs_output_service;
 		Service_registry           _parent_services;
 
 		Genode::Child  _child;
@@ -293,8 +292,7 @@ class Builder::Child : public Genode::Child_policy
 			_resources(name, exit_sigh),
 			_binary_rom(drv.builder()),
 			_fs_input_service("File_system"),
-			_fs_output_policy(_fs_input_service, _entrypoint),
-			_parent_fs_service("File_system"),
+			_fs_output_service(drv),
 			_child(_binary_rom.dataspace(),
 			       _resources.pd.cap(),
 			       _resources.ram.cap(),
@@ -315,8 +313,27 @@ class Builder::Child : public Genode::Child_policy
 			};
 			for (unsigned i = 0; service_names[i]; ++i)
 				_parent_services.insert(
-					new (env()->heap()) 
+					new (env()->heap())
 						Parent_service(service_names[i]));
+
+			if (_drv.has_fixed_output()) {
+				char service_name[32];
+
+				char const *impure = _environment.lookup("impureServices");
+				size_t len = Genode::strlen(impure);
+				size_t start = 0, end = 1;
+
+				while (end <= len) {
+					if (impure[end] == ' ' || impure[end] == '\0') {
+						++end;
+						Genode::strncpy(service_name, impure+start, end-start);
+						PLOG("%s: forwarding impure service '%s' to parent", _name, service_name);
+						_parent_services.insert(new (env()->heap()) Parent_service(service_name));
+						start = end;
+					} else
+						++end;
+				}
+			}
 		}
 
 
@@ -411,9 +428,9 @@ class Builder::Child : public Genode::Child_policy
 
 				if (root == "" || root == "/")
 					/* this is a session for writing the derivation outputs */
-					return _fs_output_policy.service();
+					return &_fs_output_service;
 
-				return &_parent_fs_service;
+				return &_fs_input_service;
 			}
 
 			/* get it from the parent if it is allowed */
@@ -426,7 +443,7 @@ class Builder::Child : public Genode::Child_policy
 
 		void exit(int exit_value)
 		{
-			if (exit_value == 0 && _fs_output_policy.finalize(_fs, _drv))
+			if (exit_value == 0 && _fs_output_service.finalize(_fs, _drv))
 				PINF("success: %s", _name);
 			else
 				PERR("failure: %s", _name);

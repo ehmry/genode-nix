@@ -5,14 +5,14 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2016 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
  * under the terms of the GNU General Public License version 2.
  */
 
-#ifndef _INCLUDE__STORE_IMPORT__SESSION_H_
-#define _INCLUDE__STORE_IMPORT__SESSION_H_
+#ifndef _STORE_INGEST__FS_COMPONENT_H_
+#define _STORE_INGEST__FS_COMPONENT_H_
 
 /* Genode includes */
 #include <store_hash/encode.h>
@@ -22,7 +22,6 @@
 #include <os/path.h>
 #include <os/signal_rpc_dispatcher.h>
 #include <os/server.h>
-#include <os/session_policy.h>
 #include <util/string.h>
 #include <base/allocator_avl.h>
 #include <base/allocator_guard.h>
@@ -33,19 +32,19 @@ namespace Jitter { extern "C" {
 } }
 
 /* Local includes */
+#include "registry.h"
 #include "node.h"
 
 namespace Store_ingest {
 
-	using namespace File_system;
+	class     Fs_component;
 
-	class Session_component;
-
-	bool is_root(File_system::Path const &path) {
-		return strcmp(path.string(), "/", 2) == 0; }
+	static bool is_root(File_system::Path const &path) {
+		return Genode::strcmp(path.string(), "/", 2) == 0; }
 
 	static void empty_dir(File_system::Session &fs, char const *path)
 	{
+		using namespace File_system;
 		Directory_entry dirent;
 
 		Dir_handle dir_handle = fs.dir(path, false);
@@ -64,200 +63,38 @@ namespace Store_ingest {
 
 }
 
-class Store_ingest::Session_component : public Session_rpc_object
+
+class Store_ingest::Fs_component : public File_system::Session_rpc_object
 {
 	private:
 
-		enum {
-
-			/* maximum number of open nodes per session */
-			MAX_NODE_HANDLES = 128U,
-
-			/*
-			 * Maximum number of ingest roots.
-			 * The prefix and mask is used to return handles for virtual
-			 * symlink nodes that do not exist on the backend.
-			 */
-			MAX_ROOT_NODES     = 64,
-			ROOT_HANDLE_PREFIX = 0x80,
-			ROOT_HANDLE_MASK   = 0X3F
+		struct Output :
+			Genode::String<MAX_NAME_LEN>, Genode::List<Output>::Element
+		{
+			Output(char const *id) : Genode::String<MAX_NAME_LEN>(id) { }
 		};
 
 		Genode::Allocator_guard  _alloc;
+
+		/* top level hash nodes */
+		Hash_root_registry _root_registry { _alloc };
 
 		/**
 		 * This registry maps node handles from the backend
 		 * store to the local tree of hashing nodes.
 		 */
-		struct Registry
-		{
-			/*
-			 * A mapping of open client handle from
-			 * the backend to our hashing nodes.
-			 */
-			Hash_node *_nodes[MAX_NODE_HANDLES];
+		Hash_node_registry _registry;
 
-			Registry()
-			{
-				for (unsigned i = 0; i < MAX_NODE_HANDLES; ++i)
-					_nodes[i] = 0;
-			}
-
-			void close_all(File_system::Session &fs)
-			{
-				for (unsigned i = 0; i < MAX_NODE_HANDLES; ++i)
-					if (_nodes[i])
-						fs.close(Node_handle(i));
-
-			}
-
-			void insert(Node_handle handle, Hash_node *node)
-			{
-				if (handle.value >= 0 && handle.value > MAX_NODE_HANDLES)
-					throw Out_of_node_handles();
-
-				_nodes[handle.value] = node;
-			}
-
-			Hash_node *lookup(Node_handle handle)
-			{
-				int i = handle.value;
-				return (i >= 0 && i < MAX_NODE_HANDLES) ?
-					_nodes[i] : 0;
-			}
-
-			File &lookup_file(Node_handle handle)
-			{
-				Hash_node *node = lookup(handle);
-				File *file = dynamic_cast<File *>(node);
-				if (file) return *file;
-				throw Invalid_handle();
-			}
-
-			Directory &lookup_dir(Node_handle handle)
-			{
-				Hash_node *node = lookup(handle);
-				Directory *dir = dynamic_cast<Directory *>(node);
-				if (dir) return *dir;
-				throw Invalid_handle();
-			}
-
-		} _registry;
-
-		/**
-		 * Hash roots are the top-level nodes of this
-		 * ingest session.
-		 *
-		 * These nodes have different names on the backend
-		 * than the names the requested by clients. This is
-		 * so that stale ingests are easy to find and remove.
-		 *
-		 * Hash roots are finalized by when the client creates
-		 * a symlink at their virtualised location.
-		 */
-		struct Hash_root
-		{
-			char           filename[MAX_NAME_LEN];
-			Hash_node     *hash;
-			unsigned const index;
-			bool           done;
-
-			Hash_root(Hash_node *node, int index, uint64_t nonce)
-			: hash(node), index(index)
-			{
-				snprintf(filename, sizeof(filename), "ingest-%llux", ++nonce);
-			}
-
-			Symlink_handle handle() {
-				return index | ROOT_HANDLE_PREFIX; }
-
-			void finalize(char const *name)
-			{
-				strncpy(filename, name, sizeof(filename));
-				done = true;
-			}
-		};
-
-		class Hash_root_registry
-		{
-			private:
-
-				Hash_root         *_roots[MAX_ROOT_NODES];
-				Genode::Allocator &_alloc;
-				Genode::uint64_t   _nonce;
-
-			public:
-
-				Hash_root_registry(Genode::Allocator &alloc)
-				: _alloc(alloc)
-				{
-					for (unsigned i = 0; i < MAX_ROOT_NODES; i++)
-						_roots[i] = 0;
-
-					/* use a random initial nonce */
-					using namespace Jitter;
-					jent_entropy_init();
-					rand_data *ec = Jitter::jent_entropy_collector_alloc(0, 0);
-					jent_read_entropy(ec, (char*)&_nonce, sizeof(_nonce));
-					jent_entropy_collector_free(ec);
-				}
-
-				~Hash_root_registry()
-				{
-					for (unsigned i = 0; i < MAX_ROOT_NODES; i++)
-						if (_roots[i]) {
-							destroy(_alloc, _roots[i]->hash);
-							destroy(_alloc, _roots[i]);
-						}
-				}
-
-				Hash_root *alloc(Hash_node *node)
-				{
-					for (int i = 0; i < MAX_ROOT_NODES; ++i) {
-						if (_roots[i])
-							continue;
-						Hash_root *root = new (_alloc) Hash_root(node, i, ++_nonce);
-						_roots[i] = root;
-						return root;
-					}
-					throw Out_of_node_handles();
-				}
-
-				/**
-				 * Find the root for a given name or return a null pointer.
-				 */
-				Hash_root *lookup(char const *name)
-				{
-					for (size_t i = 0; i < MAX_ROOT_NODES; ++i) {
-						Hash_root *root = _roots[i];
-						if (root && (Genode::strcmp(root->hash->name(), name, MAX_NAME_LEN) == 0))
-							return root;
-					}
-					return 0;
-				}
-
-				/**
-				 * Find the root by index.
-				 */
-				Hash_root *lookup(Node_handle handle) {
-					return _roots[handle.value&ROOT_HANDLE_MASK]; }
-
-				void remove(Hash_root *root)
-				{
-					// TODO: this index thing is sloppy
-					_roots[root->index] = 0;
-				}
-
-		} _root_registry;
+		Genode::List<Output> _outputs;
 
 		/* a queue of packets from the client awaiting backend processing */
 		File_system::Packet_descriptor _packet_queue[TX_QUEUE_SIZE];
 
-		Genode::Allocator_avl                _fs_tx_alloc;
-		File_system::Connection              _fs;
-		Signal_rpc_member<Session_component> _process_packet_dispatcher;
-		Lock                                 _packet_lock;
-		Dir_handle                           _root_handle;
+		Genode::Allocator_avl           _fs_tx_alloc;
+		File_system::Connection         _fs;
+		Signal_rpc_member<Fs_component> _process_packet_dispatcher;
+		Dir_handle                      _root_handle;
+
 
 		/******************************
 		 ** Packet-stream processing **
@@ -314,9 +151,7 @@ class Store_ingest::Session_component : public Session_rpc_object
 				if (op == File_system::Packet_descriptor::WRITE) {
 					Hash_node *hash_node = _registry.lookup(ours.handle());
 					if (!hash_node) {
-						/*
-						 * If we don't hash it, they don't write it.
-						 */
+						/* if we don't hash it, they don't write it */
 						PERR("no hash node found for handle on client packet");
 						return false;
 					}
@@ -416,12 +251,6 @@ class Store_ingest::Session_component : public Session_rpc_object
 		void _process_packets(unsigned)
 		{
 			/*
-			 * Keep packets from getting sent to the backend
-			 * from the RPC thread.
-			 */
-			Lock::Guard packet_guard(_packet_lock);
-
-			/*
 			 * Keep local copies of the client packets that come in
 			 * and then send our own packets to the backend.
 			 */
@@ -458,6 +287,16 @@ class Store_ingest::Session_component : public Session_rpc_object
 					}
 		}
 
+		bool not_output(char const *id)
+		{
+			/* no outputs defined, be permissive */
+			if (!_outputs.first()) return false;
+
+			for (Output *o = _outputs.first(); o; o = o->next())
+				if (*o == id) return false;
+			return true;
+		}
+
 	public:
 
 			/**
@@ -466,14 +305,16 @@ class Store_ingest::Session_component : public Session_rpc_object
 			 * The tx buffer size is split between the local
 			 * stream buffer and the backend buffer.
 			 */
-			Session_component(size_t ram_quota, size_t tx_buf_size, Server::Entrypoint &ep)
+			Fs_component(Server::Entrypoint &ep,
+			             Genode::Allocator  &alloc,
+			             size_t              ram_quota,
+			             size_t              tx_buf_size)
 			:
 				Session_rpc_object(env()->ram_session()->alloc(tx_buf_size/2), ep.rpc_ep()),
-				_alloc(env()->heap(), ram_quota),
-				_root_registry(_alloc),
+				_alloc(&alloc, ram_quota),
 				_fs_tx_alloc(&_alloc),
 				_fs(_fs_tx_alloc, tx_buf_size/2),
-				_process_packet_dispatcher(ep, *this, &Session_component::_process_packets)
+				_process_packet_dispatcher(ep, *this, &Fs_component::_process_packets)
 			{
 				_root_handle = _fs.dir("/", false);
 
@@ -491,7 +332,7 @@ class Store_ingest::Session_component : public Session_rpc_object
 		/**
 		 * Destructor
 		 */
-		~Session_component()
+		~Fs_component()
 		{
 			Dataspace_capability ds = tx_sink()->dataspace();
 			env()->ram_session()->free(static_cap_cast<Ram_dataspace>(ds));
@@ -499,13 +340,15 @@ class Store_ingest::Session_component : public Session_rpc_object
 
 		void upgrade_ram_quota(size_t ram_quota) { _alloc.upgrade(ram_quota); }
 
-		void finish(Hash_root *root, char const *name)
+		/**
+		 * Used by the ingest component to restrict the root nodes
+		 */
+		void expect(char const *id) {
+			_outputs.insert(new (_alloc) Output(id)); }
+
+		void finish(Hash_root *root)
 		{
-			/*
-			 * Prevent the main thread from sending packets to the backend
-			 * while we flush here on the RPC thread.
-			 */
-			Lock::Guard packet_guard(_packet_lock);
+			if (root->done) return;
 
 			_registry.close_all(_fs);
 
@@ -529,7 +372,7 @@ class Store_ingest::Session_component : public Session_rpc_object
 
 			uint8_t final_name[MAX_NAME_LEN];
 			root->hash->digest(&final_name[1], sizeof(final_name)-1);
-			Store_hash::encode(&final_name[1], name, sizeof(final_name)-1);
+			Store_hash::encode(&final_name[1], root->hash->name(), sizeof(final_name)-1);
 			final_name[0] = '/';
 
 			try {
@@ -552,20 +395,15 @@ class Store_ingest::Session_component : public Session_rpc_object
 			root->finalize((char *)final_name+1);
 		}
 
-		void finish(const char *name)
+		/**
+		 * Used by the ingest component to get the final name
+		 */
+		char const *ingest(char const *name)
 		{
 			Hash_root *root = _root_registry.lookup(name);
-			if (!root)
-				throw Lookup_failed();
-			finish(root, name);
-		}
+			if (!root) return "";
 
-		char const *final(char const *name)
-		{
-			Hash_root *root = _root_registry.lookup(name);
-			if (!root || !root->done)
-				throw Lookup_failed();
-
+			finish(root);
 			return root->filename;
 		}
 
@@ -595,7 +433,7 @@ class Store_ingest::Session_component : public Session_rpc_object
 		 ** File_system interface **
 		 ***************************/
 
-		Dir_handle dir(File_system::Path const &path, bool create)
+		Dir_handle dir(File_system::Path const &path, bool create) override
 		{
 			if (create &&
 			    (_alloc.quota()-_alloc.consumed() < sizeof(Directory)))
@@ -617,6 +455,9 @@ class Store_ingest::Session_component : public Session_rpc_object
 				if (!create || *sub_path)
 					throw Lookup_failed();
 
+				if (not_output(name+1))
+					throw Permission_denied();
+
 				dir_node = new (_alloc) Directory(name+1, _alloc);
 				try { root = _root_registry.alloc(dir_node); }
 				catch (...) { destroy(_alloc, dir_node); throw; }
@@ -625,6 +466,7 @@ class Store_ingest::Session_component : public Session_rpc_object
 
 			if (!*sub_path) {
 				/* Just a top level directory. */
+
 				Dir_handle handle;
 				strncpy(name+1, root->filename, sizeof(name)-1);
 				try {
@@ -660,7 +502,7 @@ class Store_ingest::Session_component : public Session_rpc_object
 			return handle;
 		}
 
-		File_handle file(Dir_handle dir_handle, Name const &name, Mode mode, bool create)
+		File_handle file(Dir_handle dir_handle, File_system::Name const &name, Mode mode, bool create) override
 		{
 			if (create &&
 			    (_alloc.quota()-_alloc.consumed() < sizeof(File)))
@@ -675,7 +517,10 @@ class Store_ingest::Session_component : public Session_rpc_object
 				Hash_root *root = _root_registry.lookup(name_str);
 
 				if (create) {
-					if (root) throw Node_already_exists();
+					if (root)
+						throw Node_already_exists();
+					else if (not_output(name_str))
+						throw Permission_denied();
 
 					file_node = new (_alloc) File(name_str);
 					try { root = _root_registry.alloc(file_node); }
@@ -724,7 +569,7 @@ class Store_ingest::Session_component : public Session_rpc_object
 			return handle;
 		}
 
-		Symlink_handle symlink(Dir_handle dir_handle, Name const &name, bool create)
+		Symlink_handle symlink(Dir_handle dir_handle, File_system::Name const &name, bool create) override
 		{
 			char const *name_str = name.string();
 
@@ -761,7 +606,7 @@ class Store_ingest::Session_component : public Session_rpc_object
 			if (!root)
 				throw Lookup_failed();
 
-			finish(root, name_str);
+			finish(root);
 
 			return root->handle();
 		}
@@ -771,7 +616,7 @@ class Store_ingest::Session_component : public Session_rpc_object
 		 * the first element of the path, or
 		 * return a handle to a vitual symlink.
 		 */
-		Node_handle node(File_system::Path const &path)
+		Node_handle node(File_system::Path const &path) override
 		{
 			char const *path_str = path.string();
 
@@ -801,14 +646,14 @@ class Store_ingest::Session_component : public Session_rpc_object
 			return _fs.node(new_path);
 		}
 
-		void close(Node_handle handle)
+		void close(Node_handle handle) override
 		{
 			if (handle == _root_handle || handle.value & ROOT_HANDLE_PREFIX)
 				return;
 			_fs.close(handle);
 		}
 
-		Status status(Node_handle node_handle)
+		Status status(Node_handle node_handle) override
 		{
 			if (node_handle.value & ROOT_HANDLE_PREFIX) {
 				Hash_root *root = _root_registry.lookup(node_handle);
@@ -835,14 +680,13 @@ class Store_ingest::Session_component : public Session_rpc_object
 			return stat;
 		}
 
-		void control(Node_handle node_handle, Control op) {
-			return _fs.control(node_handle, op); }
+		void control(Node_handle node_handle, Control op) override { }
 
 		/**
 		 * There may be a way to trick the server if a file
 		 * is opened twice for write only and read only.
 		 */
-		void unlink(Dir_handle dir_handle, Name const &name)
+		void unlink(Dir_handle dir_handle, File_system::Name const &name) override
 		{
 			char const *name_str = name.string();
 			_fs.unlink(dir_handle, name);
@@ -853,8 +697,6 @@ class Store_ingest::Session_component : public Session_rpc_object
 					throw Lookup_failed();
 
 				_root_registry.remove(root);
-				destroy(_alloc, root->hash);
-				destroy(_alloc, root);
 				return;
 			}
 
@@ -862,14 +704,14 @@ class Store_ingest::Session_component : public Session_rpc_object
 			if (node) destroy(_alloc, node);
 		}
 
-		void truncate(File_handle file_handle, file_size_t len)
+		void truncate(File_handle file_handle, file_size_t len) override
 		{
 			_fs.truncate(file_handle, len);
 			_registry.lookup_file(file_handle).truncate(len);
 		}
 
-		void move(Dir_handle from_dir_handle, Name const &from_name,
-		          Dir_handle to_dir_handle,   Name const &to_name)
+		void move(Dir_handle from_dir_handle, File_system::Name const &from_name,
+		          Dir_handle to_dir_handle,   File_system::Name const &to_name) override
 		{
 			if ((from_dir_handle == _root_handle)
 			 || (  to_dir_handle == _root_handle))
@@ -897,8 +739,9 @@ class Store_ingest::Session_component : public Session_rpc_object
 			to_dir_node.insert(node);
 		}
 
-		void sigh(Node_handle node_handle, Signal_context_capability sigh) {
+		void sigh(Node_handle node_handle, Signal_context_capability sigh) override {
 			_fs.sigh(node_handle, sigh); }
 };
+
 
 #endif
