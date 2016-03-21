@@ -200,7 +200,7 @@ class Store_ingest::Directory : public Hash_node
 {
 	private:
 
-		Genode::Allocator_guard &_alloc;
+		Genode::Allocator &_alloc;
 		List<Hash_node>    _children;
 
 		File *lookup_file(char const *file_name)
@@ -214,13 +214,13 @@ class Store_ingest::Directory : public Hash_node
 			throw Lookup_failed();
 		}
 
-		Directory *lookup_dir(char const *dir_name)
+		Directory &lookup_dir(char const *dir_name)
 		{
 			for (Hash_node *node = _children.first(); node; node = node->next()) {
 				Directory *dir = dynamic_cast<Directory *>(node);
 				if (dir)
 					if (strcmp(dir->name(), dir_name, MAX_NAME_LEN) == 0)
-						return dir;
+						return *dir;
 			}
 			throw Lookup_failed();
 		}
@@ -230,7 +230,7 @@ class Store_ingest::Directory : public Hash_node
 		/**
 		 * Constructor
 		 */
-		Directory(char const *name, Genode::Allocator_guard &alloc)
+		Directory(char const *name, Genode::Allocator &alloc)
 		: Hash_node(name), _alloc(alloc) { }
 
 		~Directory()
@@ -338,32 +338,34 @@ class Store_ingest::Directory : public Hash_node
 			_hash.update((uint8_t *)name(), strlen(name()));
 		}
 
-		Directory *dir(char const *path, bool create)
+		Directory &dir(char const *path, bool create)
 		{
 			char name[MAX_NAME_LEN];
 			char const *sub_path = split_path(name, path);
 
-			Directory *dir;
-			if (create && !*sub_path) {
-				dir = new (_alloc) Directory(name, _alloc);
+			if (create && !*sub_path) try {
+				Directory *dir = new (_alloc) Directory(name, _alloc);
 				insert(dir);
-				return dir;
+				return *dir;
+			} catch (Genode::Allocator::Out_of_memory) {
+				throw Out_of_metadata();
 			}
 
-			dir = lookup_dir(name);
+			Directory &dir = lookup_dir(name);
 			if (*sub_path)
-				return dir->dir(sub_path, create);
-
+				return dir.dir(sub_path, create);
 			return dir;
 		}
 
-		File *file(char const *name, bool create)
+		File &file(char const *name, bool create)
 		{
 			File *file;
-			if (create) {
+			if (create) try {
 				file = new (_alloc) File(name);
 				insert(file);
-				return file;
+				return *file;
+			} catch (Genode::Allocator::Out_of_memory) {
+				 throw Out_of_metadata();
 			}
 
 			for (Hash_node *node = _children.first();
@@ -371,7 +373,7 @@ class Store_ingest::Directory : public Hash_node
 				File *file = dynamic_cast<File *>(node);
 				if (file)
 					if (strcmp(file->name(), name, MAX_NAME_LEN) == 0)
-						return file;
+						return *file;
 			}
 			throw Lookup_failed();
 		}
@@ -379,10 +381,12 @@ class Store_ingest::Directory : public Hash_node
 		Symlink *symlink(char const *name, bool create)
 		{
 			Symlink *link;
-			if (create) {
+			if (create) try {
 				link = new (_alloc) Symlink(name);
 				insert(link);
 				return link;
+			} catch (Genode::Allocator::Out_of_memory) {
+				 throw Out_of_metadata();
 			}
 
 			for (Hash_node *node = _children.first();

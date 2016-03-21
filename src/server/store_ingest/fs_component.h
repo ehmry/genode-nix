@@ -68,12 +68,6 @@ class Store_ingest::Fs_component : public File_system::Session_rpc_object
 {
 	private:
 
-		struct Output :
-			Genode::String<MAX_NAME_LEN>, Genode::List<Output>::Element
-		{
-			Output(char const *id) : Genode::String<MAX_NAME_LEN>(id) { }
-		};
-
 		Genode::Allocator_guard  _alloc;
 
 		/* top level hash nodes */
@@ -83,17 +77,16 @@ class Store_ingest::Fs_component : public File_system::Session_rpc_object
 		 * This registry maps node handles from the backend
 		 * store to the local tree of hashing nodes.
 		 */
-		Hash_node_registry _registry;
-
-		Genode::List<Output> _outputs;
+		Hash_node_registry _node_registry;
 
 		/* a queue of packets from the client awaiting backend processing */
 		File_system::Packet_descriptor _packet_queue[TX_QUEUE_SIZE];
 
 		Genode::Allocator_avl           _fs_tx_alloc;
-		File_system::Connection         _fs;
+		File_system::Connection_base    _fs;
 		Signal_rpc_member<Fs_component> _process_packet_dispatcher;
 		Dir_handle                      _root_handle;
+		bool                            _strict = false;
 
 
 		/******************************
@@ -122,11 +115,11 @@ class Store_ingest::Fs_component : public File_system::Session_rpc_object
 			try {
 				/* Emulate the read of a symlink */
 				if (theirs.handle().value & ROOT_HANDLE_PREFIX) {
-					Hash_root *root = _root_registry.lookup(theirs.handle());
-					if (root && root->done && theirs.operation() == File_system::Packet_descriptor::READ) {
-						size_t name_len = strlen(root->filename);
+					Hash_root &root = _root_registry.lookup(theirs.handle());
+					if (root.done && theirs.operation() == File_system::Packet_descriptor::READ) {
+						size_t name_len = strlen(root.filename);
 						if (name_len <= length) {
-							memcpy(content, root->filename, name_len);
+							memcpy(content, root.filename, name_len);
 							theirs.length(name_len);
 							theirs.succeeded(true);
 						}
@@ -149,7 +142,7 @@ class Store_ingest::Fs_component : public File_system::Session_rpc_object
 					     theirs.position());
 
 				if (op == File_system::Packet_descriptor::WRITE) {
-					Hash_node *hash_node = _registry.lookup(ours.handle());
+					Hash_node *hash_node = _node_registry.lookup(ours.handle());
 					if (!hash_node) {
 						/* if we don't hash it, they don't write it */
 						PERR("no hash node found for handle on client packet");
@@ -160,8 +153,8 @@ class Store_ingest::Fs_component : public File_system::Session_rpc_object
 				source.submit_packet(ours);
 				return true;
 			}
-			catch (Invalid_handle)     { PERR("Invalid_handle");     }
-			catch (Size_limit_reached) { PERR("Size_limit_reached"); }
+			catch (Invalid_handle) { PERR("Invalid_handle"); }
+			catch (Lookup_failed)  { PERR("Lookup_failed"); }
 			return false;
 		}
 
@@ -210,7 +203,7 @@ class Store_ingest::Fs_component : public File_system::Session_rpc_object
 			switch (ours.operation()) {
 				case File_system::Packet_descriptor::WRITE:
 					try {
-						Hash_node *hash_node = _registry.lookup(ours.handle());
+						Hash_node *hash_node = _node_registry.lookup(ours.handle());
 						if (!hash_node) {
 							length = 0;
 							break;
@@ -287,47 +280,49 @@ class Store_ingest::Fs_component : public File_system::Session_rpc_object
 					}
 		}
 
-		bool not_output(char const *id)
+		File &_create_file_node(Dir_handle dir_handle, char const *name)
 		{
-			/* no outputs defined, be permissive */
-			if (!_outputs.first()) return false;
+			/* create the local node */
+			if (dir_handle == _root_handle) {
+				Hash_root &root = _root_registry.alloc_file(name, _strict);
+				return *dynamic_cast<File *>(root.node);
+			}
 
-			for (Output *o = _outputs.first(); o; o = o->next())
-				if (*o == id) return false;
-			return true;
+			Directory &dir_node = _node_registry.lookup_dir(dir_handle);
+			return dir_node.file(name, true);
 		}
 
 	public:
 
-			/**
-			 * Constructor
-			 *
-			 * The tx buffer size is split between the local
-			 * stream buffer and the backend buffer.
+		/**
+		 * Constructor
+		 *
+		 * The tx buffer size is split between the local
+		 * stream buffer and the backend buffer.
+		 */
+		Fs_component(Server::Entrypoint &ep,
+		             Genode::Allocator  &alloc,
+		             size_t              ram_quota,
+		             size_t              tx_buf_size)
+		:
+			Session_rpc_object(env()->ram_session()->alloc(tx_buf_size/2), ep.rpc_ep()),
+			_alloc(&alloc, ram_quota),
+			_fs_tx_alloc(&_alloc),
+			_fs(_fs_tx_alloc, tx_buf_size/2),
+			_process_packet_dispatcher(ep, *this, &Fs_component::_process_packets)
+		{
+			_root_handle = _fs.dir("/", false);
+
+			/* invalidate the packet queue */
+			for (int i = 0; i < TX_QUEUE_SIZE; ++i)
+				_packet_queue[i] = File_system::Packet_descriptor();
+
+			/*
+			 * Register '_process_packets' dispatch function as signal
+			 * handler for client packet submission signals.
 			 */
-			Fs_component(Server::Entrypoint &ep,
-			             Genode::Allocator  &alloc,
-			             size_t              ram_quota,
-			             size_t              tx_buf_size)
-			:
-				Session_rpc_object(env()->ram_session()->alloc(tx_buf_size/2), ep.rpc_ep()),
-				_alloc(&alloc, ram_quota),
-				_fs_tx_alloc(&_alloc),
-				_fs(_fs_tx_alloc, tx_buf_size/2),
-				_process_packet_dispatcher(ep, *this, &Fs_component::_process_packets)
-			{
-				_root_handle = _fs.dir("/", false);
-
-				/* invalidate the packet queue */
-				for (int i = 0; i < TX_QUEUE_SIZE; ++i)
-					_packet_queue[i] = File_system::Packet_descriptor();
-
-				/*
-				 * Register '_process_packets' dispatch function as signal
-				 * handler for client packet submission signals.
-				 */
-				_tx.sigh_packet_avail(_process_packet_dispatcher);
-			}
+			_tx.sigh_packet_avail(_process_packet_dispatcher);
+		}
 
 		/**
 		 * Destructor
@@ -336,6 +331,8 @@ class Store_ingest::Fs_component : public File_system::Session_rpc_object
 		{
 			Dataspace_capability ds = tx_sink()->dataspace();
 			env()->ram_session()->free(static_cap_cast<Ram_dataspace>(ds));
+
+			_root_registry.unlink(_fs, _root_handle);
 		}
 
 		void upgrade_ram_quota(size_t ram_quota) { _alloc.upgrade(ram_quota); }
@@ -343,56 +340,59 @@ class Store_ingest::Fs_component : public File_system::Session_rpc_object
 		/**
 		 * Used by the ingest component to restrict the root nodes
 		 */
-		void expect(char const *id) {
-			_outputs.insert(new (_alloc) Output(id)); }
-
-		void finish(Hash_root *root)
+		void expect(char const *id)
 		{
-			if (root->done) return;
+			_root_registry.alloc_root(id);
+			_strict = true;
+		}
 
-			_registry.close_all(_fs);
+		void finish(Hash_root &root)
+		{
+			if (root.done) return;
+
+			_node_registry.close_all(_fs);
 
 			/* Flush the root. */
-			File *file_node = dynamic_cast<File *>(root->hash);
+			File *file_node = dynamic_cast<File *>(root.node);
 			if (file_node) {
-				File_handle final_handle = _fs.file(_root_handle, root->filename, READ_ONLY, false);
+				File_handle final_handle = _fs.file(_root_handle, root.filename, READ_ONLY, false);
 				Handle_guard guard(_fs, final_handle);
 				file_node->flush(_fs, final_handle);
 			} else {
-				Directory *dir_node = dynamic_cast<Directory *>(root->hash);
+				Directory *dir_node = dynamic_cast<Directory *>(root.node);
 				if (!dir_node)
 					throw Invalid_handle();
 
 				char path[MAX_NAME_LEN+1];
 				*path = '/';
-				strncpy(path+1, root->filename, sizeof(path)-1);
+				strncpy(path+1, root.filename, sizeof(path)-1);
 
 				dir_node->flush(_fs, path);
 			}
 
 			uint8_t final_name[MAX_NAME_LEN];
-			root->hash->digest(&final_name[1], sizeof(final_name)-1);
-			Store_hash::encode(&final_name[1], root->hash->name(), sizeof(final_name)-1);
+			root.node->digest(&final_name[1], sizeof(final_name)-1);
+			Store_hash::encode(&final_name[1], root.node->name(), sizeof(final_name)-1);
 			final_name[0] = '/';
 
 			try {
 				/* check if the final path already exists */
 				_fs.close(_fs.node((char *)final_name));
 				try {
-					_fs.unlink(_root_handle, root->filename);
+					_fs.unlink(_root_handle, root.filename);
 				} catch (Not_empty) {
-					Genode::Path<MAX_PATH_LEN> path(root->filename);
+					Genode::Path<MAX_PATH_LEN> path(root.filename);
 					empty_dir(_fs, path.base());
-					_fs.unlink(_root_handle, root->filename);
+					_fs.unlink(_root_handle, root.filename);
 				}
 
 			} catch (Lookup_failed) {
 				/* move the ingest root to its final location */
-				_fs.move(_root_handle, root->filename,
+				_fs.move(_root_handle, root.filename,
 				         _root_handle, (char *)final_name+1);
 			}
 
-			root->finalize((char *)final_name+1);
+			root.finalize((char *)final_name+1);
 		}
 
 		/**
@@ -400,22 +400,24 @@ class Store_ingest::Fs_component : public File_system::Session_rpc_object
 		 */
 		char const *ingest(char const *name)
 		{
-			Hash_root *root = _root_registry.lookup(name);
-			if (!root) return "";
+			try {
+				Hash_root &root = _root_registry.lookup(name);
 
-			finish(root);
-			return root->filename;
+				finish(root);
+				return root.filename;
+			} catch (Lookup_failed) { return ""; }
 		}
 
+		/*
 		bool verify(char const *name, char const *algo, char const *hash)
 		{
-			Hash_root *root = _root_registry.lookup(name);
-			if (!root || !root->done)
+			Hash_root &root = _root_registry.lookup(name);
+			if (!root.done)
 				throw Lookup_failed();
 
 			if (!strcmp("blake2s", algo)) {
 				uint8_t buf[53];
-				root->hash->digest(buf, sizeof(buf));
+				root.node->digest(buf, sizeof(buf));
 				Store_hash::encode_hash(buf, sizeof(buf));
 
 				if (strcmp(hash, (char *)&buf, sizeof(buf))) {
@@ -427,6 +429,7 @@ class Store_ingest::Fs_component : public File_system::Session_rpc_object
 			PERR("unhandled hash algorithm '%s'", algo);
 			throw File_system::Exception();
 		}
+		*/
 
 
 		/***************************
@@ -435,137 +438,111 @@ class Store_ingest::Fs_component : public File_system::Session_rpc_object
 
 		Dir_handle dir(File_system::Path const &path, bool create) override
 		{
-			if (create &&
-			    (_alloc.quota()-_alloc.consumed() < sizeof(Directory)))
-				throw No_space();
-
-			char const *path_str = path.string();
-
 			if (is_root(path)) {
 				if (create) throw Node_already_exists();
-				else        return _root_handle;
+				else return _root_handle;
 			}
 
-			char name[MAX_NAME_LEN+1];
-			char const *sub_path = split_path(name, path_str);
+			char new_path[MAX_PATH_LEN];
+			char const *sub_path = split_path(new_path, path.string());
+			char const *root_name = new_path+1;
 
-			Hash_root *root = _root_registry.lookup(name+1);
-			Directory *dir_node = 0;
-			if (!root) {
-				if (!create || *sub_path)
-					throw Lookup_failed();
+			/* get a local node */
+			Hash_root &root = (create && !*sub_path)
+				? _root_registry.alloc_dir(root_name, _strict)
+				: _root_registry.lookup(root_name);
 
-				if (not_output(name+1))
-					throw Permission_denied();
-
-				dir_node = new (_alloc) Directory(name+1, _alloc);
-				try { root = _root_registry.alloc(dir_node); }
-				catch (...) { destroy(_alloc, dir_node); throw; }
-			} else
-				dir_node = dynamic_cast<Directory *>(root->hash);
-
-			if (!*sub_path) {
-				/* Just a top level directory. */
-
-				Dir_handle handle;
-				strncpy(name+1, root->filename, sizeof(name)-1);
-				try {
-					handle = _fs.dir(name, create);
-				} catch (Permission_denied) {
-					PERR("permission denied at backend");
-					throw;
-				} catch (...) {
-					try {
-						_fs.unlink(_root_handle, name+1);
-					} catch (Not_empty) {
-						empty_dir(_fs, name);
-						_fs.unlink(_root_handle, name+1);
-					}
-					handle = _fs.dir(name, true);
-				}
-
-				_registry.insert(handle, dir_node);
-				return handle;
+			Directory *parent_dir = dynamic_cast<Directory *>(root.node);
+			if (!parent_dir) {
+				PERR("%s is not a directory", root_name);
+				throw Lookup_failed();
 			}
+
+			Directory &dir_node = *sub_path ?
+				parent_dir->dir(sub_path, create) : *parent_dir;
+
+			/* get a handle for the remote directory */
 
 			/* Rewrite the directory path. */
-			char new_path[MAX_PATH_LEN];
-			*new_path = '/';
-			strncpy(new_path+1, root->filename, sizeof(new_path)-1);
-			size_t len = strlen(new_path);
-			new_path[len++] = '/';
-			strncpy(new_path+len, sub_path, sizeof(new_path)-len);
+			strncpy(new_path+1, root.filename, sizeof(new_path)-1);
+			if (*sub_path) {
+				size_t len = strlen(new_path);
+				new_path[len++] = '/';
+				strncpy(new_path+len, sub_path, sizeof(new_path)-len);
+			}
 
-			/* Open the directory and walk down the hash node tree. */
-			Dir_handle handle = _fs.dir(new_path, create);
-			_registry.insert(handle, dir_node->dir(sub_path, create));
+			Dir_handle handle;
+			try {
+				handle = _fs.dir(new_path, create);
+			} catch (Permission_denied) {
+				PERR("permission denied at backend"); throw;
+			} catch (Out_of_metadata) {
+				if ((_alloc.quota() - _alloc.consumed()) > 8192) {
+					_alloc.withdraw(8192);
+					Genode::env()->parent()->upgrade(_fs.cap(), "ram_quota=8K");
+					handle = _fs.dir(new_path, create);
+				} else
+					throw;
+			} /* TODO: destroy the node if creating */
+
+			_node_registry.insert(handle, &dir_node);
 			return handle;
 		}
 
 		File_handle file(Dir_handle dir_handle, File_system::Name const &name, Mode mode, bool create) override
 		{
-			if (create &&
-			    (_alloc.quota()-_alloc.consumed() < sizeof(File)))
-				throw No_space();
-
 			File_handle handle;
+
+			/* get a local node */
+			Hash_root *root = nullptr;
 			File *file_node;
-
-			char const *name_str = name.string();
-
+			
 			if (dir_handle == _root_handle) {
-				Hash_root *root = _root_registry.lookup(name_str);
-
 				if (create) {
-					if (root)
-						throw Node_already_exists();
-					else if (not_output(name_str))
-						throw Permission_denied();
-
-					file_node = new (_alloc) File(name_str);
-					try { root = _root_registry.alloc(file_node); }
-					catch (...) { destroy(_alloc, file_node); throw; }
-
-				} else if (!root) {
-					throw Lookup_failed();
+					root = &_root_registry.alloc_file(name.string(), _strict);
 				} else {
-					file_node = dynamic_cast<File *>(root->hash);
-					if (!file_node)
+					root = &_root_registry.lookup(name.string());
+				}
+				if (!root)
+					throw Lookup_failed();
+
+				file_node = dynamic_cast<File *>(root->node);
+				if (!file_node) {
+					if (create)
+						throw Node_already_exists();
+					else
 						throw Lookup_failed();
 				}
 
-				try {
-					handle = _fs.file(_root_handle, root->filename, mode, create);
-				} catch (Permission_denied) {
-					PERR("permission denied at backend");
-					throw;
-				} catch (...) {
-					try { _fs.unlink(_root_handle, root->filename); }
-					catch (Not_empty) {
-						Genode::Path<MAX_PATH_LEN> path(root->filename);
-						empty_dir(_fs, path.base());
-						_fs.unlink(_root_handle, path.base());
-					}
-					handle = _fs.file(_root_handle, root->filename, mode, true);
-				}
-
-				if (mode >= WRITE_ONLY)
-					_registry.insert(handle, file_node);
-
-				return handle;
+			} else {
+				Directory &dir_node = _node_registry.lookup_dir(dir_handle);
+				file_node = &dir_node.file(name.string(), create);
 			}
 
-			handle = _fs.file(dir_handle, name, mode, create);
+			/* get a handle for the remote file */
+			try {
+				handle = root
+					? _fs.file(dir_handle, root->filename, mode, create)
+					: _fs.file(dir_handle, name, mode, create);
+			} catch (Permission_denied) {
+				PERR("permission denied at backend"); throw;
+			} catch (Out_of_metadata) {
+				if ((_alloc.quota() - _alloc.consumed()) > 8192) {
+					_alloc.withdraw(8192);
+					Genode::env()->parent()->upgrade(_fs.cap(), "ram_quota=8K");
+					handle = root
+						? _fs.file(dir_handle, root->filename, mode, create)
+						: _fs.file(dir_handle, name, mode, create);
+					} else
+						throw;
+			} /* TODO: destroy the node if creating */
 
 			/*
 			 * If this node can't be used to modify data,
 			 * then it is not a node we are concerned with.
 			 */
-			if (mode < WRITE_ONLY)
-				return handle;
-
-			Directory &dir_node = _registry.lookup_dir(dir_handle);
-			_registry.insert(handle, dir_node.file(name_str, create));
+			if (mode >= WRITE_ONLY)
+				_node_registry.insert(handle, file_node);
 			return handle;
 		}
 
@@ -579,10 +556,22 @@ class Store_ingest::Fs_component : public File_system::Session_rpc_object
 				    (_alloc.quota()-_alloc.consumed() < sizeof(File)))
 					throw No_space();
 
-				Symlink_handle handle = _fs.symlink(dir_handle, name, create);
+				Symlink_handle handle;
+				try {
+					handle = _fs.symlink(dir_handle, name, create);
+				} catch (Permission_denied) {
+					PERR("permission denied at backend"); throw;
+				} catch (Out_of_metadata) {
+					if ((_alloc.quota() - _alloc.consumed()) > 8192) {
+						_alloc.withdraw(8192);
+						Genode::env()->parent()->upgrade(_fs.cap(), "ram_quota=8K");
+						handle = _fs.symlink(dir_handle, name, create);
+					} else
+						throw;
+				} /* TODO: dangling hash node*/
 
-				Directory &dir_node = _registry.lookup_dir(dir_handle);
-				_registry.insert(handle, dir_node.symlink(name_str, create));
+				Directory &dir_node = _node_registry.lookup_dir(dir_handle);
+				_node_registry.insert(handle, dir_node.symlink(name_str, create));
 
 				return handle;
 			}
@@ -595,20 +584,16 @@ class Store_ingest::Fs_component : public File_system::Session_rpc_object
 			 * find the final name by reading the symlink.
 			 */
 			if (!create) {
-				Hash_root *root = _root_registry.lookup(name_str);
-				if (!root || !root->done)
+				Hash_root &root = _root_registry.lookup(name_str);
+				if (!root.done)
 					throw Lookup_failed();
 
-				return root->handle();
+				return root.handle();
 			}
 
-			Hash_root *root = _root_registry.lookup(name_str);
-			if (!root)
-				throw Lookup_failed();
-
+			Hash_root &root = _root_registry.lookup(name_str);
 			finish(root);
-
-			return root->handle();
+			return root.handle();
 		}
 
 		/**
@@ -618,32 +603,32 @@ class Store_ingest::Fs_component : public File_system::Session_rpc_object
 		 */
 		Node_handle node(File_system::Path const &path) override
 		{
-			char const *path_str = path.string();
-
 			if (is_root(path))
 				return _root_handle;
 
 			char new_path[MAX_PATH_LEN];
-			path_str = split_path(new_path, path_str);
+			char const *sub_path = split_path(new_path, path.string());
+			char const *root_name = new_path+1;
 
-			Hash_root *root = _root_registry.lookup(new_path+1);
-			if (!root)
-				throw Lookup_failed();
+			Hash_root &root = _root_registry.lookup(root_name);
 
 			/* If the root is done, pretend it is a symlink. */
-			if (root->done) {
-				return root->handle();
+			if (root.done) {
+				if (*sub_path)
+					throw Lookup_failed();
+				return root.handle();
 			}
 
-			strncpy(new_path+1, root->filename, sizeof(new_path)-1);
+			strncpy(new_path+1, root.filename, sizeof(new_path)-1);
 
-			if (*path_str) {
+			if (*sub_path) {
 				size_t len = strlen(new_path);
 				new_path[len++] = '/';
-				strncpy(new_path+len, path_str, sizeof(new_path)-len);
+				strncpy(new_path+len, sub_path, sizeof(new_path)-len);
 			}
 
-			return _fs.node(new_path);
+			Node_handle node = _fs.node(new_path);
+			return node;
 		}
 
 		void close(Node_handle handle) override
@@ -656,12 +641,10 @@ class Store_ingest::Fs_component : public File_system::Session_rpc_object
 		Status status(Node_handle node_handle) override
 		{
 			if (node_handle.value & ROOT_HANDLE_PREFIX) {
-				Hash_root *root = _root_registry.lookup(node_handle);
-				if (!root)
-					throw Invalid_handle();
+				Hash_root &root = _root_registry.lookup(node_handle);
 
 				return Status {
-					strlen(root->filename),
+					strlen(root.filename),
 					Status::MODE_SYMLINK,
 					0
 				};
@@ -692,22 +675,20 @@ class Store_ingest::Fs_component : public File_system::Session_rpc_object
 			_fs.unlink(dir_handle, name);
 
 			if (dir_handle == _root_handle) {
-				Hash_root *root = _root_registry.lookup(name_str);
-				if (!root)
-					throw Lookup_failed();
+				Hash_root &root = _root_registry.lookup(name_str);
 
-				_root_registry.remove(root);
+				_root_registry.remove(&root);
 				return;
 			}
 
-			Hash_node *node = _registry.lookup_dir(dir_handle).remove(name_str);
+			Hash_node *node = _node_registry.lookup_dir(dir_handle).remove(name_str);
 			if (node) destroy(_alloc, node);
 		}
 
 		void truncate(File_handle file_handle, file_size_t len) override
 		{
 			_fs.truncate(file_handle, len);
-			_registry.lookup_file(file_handle).truncate(len);
+			_node_registry.lookup_file(file_handle).truncate(len);
 		}
 
 		void move(Dir_handle from_dir_handle, File_system::Name const &from_name,
@@ -718,8 +699,8 @@ class Store_ingest::Fs_component : public File_system::Session_rpc_object
 				throw Permission_denied(); /* XXX: just being lazy */
 
 			/* this will trigger Invalid_handle if appropriate */
-			Directory &from_dir_node = _registry.lookup_dir(from_dir_handle);
-			Directory   &to_dir_node = _registry.lookup_dir(  to_dir_handle);
+			Directory &from_dir_node = _node_registry.lookup_dir(from_dir_handle);
+			Directory   &to_dir_node = _node_registry.lookup_dir(  to_dir_handle);
 
 			/* make the move now and propagate any exceptions */
 			_fs.move(from_dir_handle, from_name, to_dir_handle, to_name);

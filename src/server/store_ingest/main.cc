@@ -54,6 +54,12 @@ class Store_ingest::Ingest_root :
 			return session;
 		}
 
+		void _upgrade_session(Ingest_component *session, const char *args) override
+		{
+			size_t ram_quota = Arg_string::find_arg(args, "ram_quota").ulong_value(0);
+			session->upgrade_ram_quota(ram_quota);		
+		}
+
 	public:
 
 		Ingest_root(Server::Entrypoint &ep, Allocator &alloc)
@@ -101,6 +107,12 @@ class Store_ingest::Fs_root :
 
 			return new (md_alloc())
 				Fs_component(_ep, *md_alloc(), ram_quota, tx_buf_size);
+		}
+
+		void _upgrade_session(Fs_component *session, const char *args) override
+		{
+			size_t ram_quota = Arg_string::find_arg(args, "ram_quota").ulong_value(0);
+			session->upgrade_ram_quota(ram_quota);		
 		}
 
 	public:

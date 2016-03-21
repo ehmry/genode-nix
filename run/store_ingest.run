@@ -83,6 +83,8 @@ append config {
 		</route>
 		<config stdin="/dev/null" stdout="/dev/log" stderr="/dev/log">
 			<fstab>
+				<tar name="coreutils.tar"  />
+				<tar name="bash.tar"       />
 				<dir name="dev">
 					<jitterentropy name="random"/>
 					<log/>
@@ -92,8 +94,6 @@ append config {
 				<dir name="store" > <fs label="store"/> </dir>
 				<dir name="ingest"> <fs label="ingest" /> </dir>
 				<rom name="ingest_loop.sh" />
-				<tar name="coreutils.tar"  />
-				<tar name="bash.tar"       />
 			</fstab>
 			<start name="/bin/bash">
 				<arg value="/ingest_loop.sh"/>

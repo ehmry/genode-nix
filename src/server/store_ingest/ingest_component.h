@@ -50,6 +50,9 @@ class Store_ingest::Ingest_component :
 
 		~Ingest_component() { revoke_session(); }
 
+		void upgrade_ram_quota(size_t ram_quota) {
+			_fs_session.upgrade_ram_quota(ram_quota); }
+
 		void expect(Name const &name) override {
 			_fs_session.expect(name.string()); }
 
