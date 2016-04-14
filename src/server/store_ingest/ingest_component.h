@@ -85,7 +85,7 @@ class Store_ingest::Ingest_component :
 		Name ingest(Name const &name) override
 		{
 			try { return _fs_session.ingest(name.string()); }
-			catch (...) { PERR("error in %s", __func__); }
+			catch (...) { PERR("ingest of %s failed", name.string()); }
 			return "";
 		}
 

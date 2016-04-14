@@ -194,8 +194,10 @@ class Store_ingest::Hash_root_registry
 				return *(_roots[i]);
 			}
 
-			if (strict) /* do not create new roots */
+			if (strict) {
+				PERR("'%s' is not a declared ingest root", name);
 				throw Permission_denied();
+			}
 
 			for (int i = 0; i < MAX_ROOT_NODES; ++i) {
 				if (_roots[i])
@@ -233,6 +235,8 @@ class Store_ingest::Hash_root_registry
 
 		/**
 		 * Find the root for a given name
+		 *
+		 * \throw Lookup_failed
 		 */
 		Hash_root &lookup(char const *name)
 		{
@@ -248,6 +252,8 @@ class Store_ingest::Hash_root_registry
 
 		/**
 		 * Find the root by index
+		 *
+		 * \throw Lookup_failed
 		 */
 		Hash_root &lookup(Node_handle handle)
 		{

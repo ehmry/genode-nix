@@ -46,12 +46,18 @@ class Store_ingest::Ingest_root :
 			if (!tx_buf_size)
 				throw Root::Invalid_args();
 
-			Ingest_component *session;
-			try { session = new (md_alloc())
-				Ingest_component(_ep, *md_alloc(), ram_quota, tx_buf_size); }
-			/* XXX: redundant, Root::Component should catch this */
-			catch (Genode::Allocator::Out_of_memory) { throw Root::Quota_exceeded(); }
-			return session;
+			try {
+				return new (md_alloc())
+					Ingest_component(_ep, *md_alloc(), ram_quota, tx_buf_size);
+			} catch (Genode::Allocator::Out_of_memory) {
+				/* XXX: redundant, Root::Component should catch this */
+				throw Root::Quota_exceeded();
+			} catch (Genode::Parent::Service_denied) {
+				PERR("cannot issue session, parent service denied");
+			} catch (...) {
+				PERR("cannot issue session");
+			}
+			throw Root::Unavailable();
 		}
 
 		void _upgrade_session(Ingest_component *session, const char *args) override
@@ -105,8 +111,11 @@ class Store_ingest::Fs_root :
 			}
 			ram_quota -= tx_buf_size;
 
-			return new (md_alloc())
-				Fs_component(_ep, *md_alloc(), ram_quota, tx_buf_size);
+			try {
+				return new (md_alloc())
+					Fs_component(_ep, *md_alloc(), ram_quota, tx_buf_size);
+			} catch (...) { PERR("cannot issue session"); }
+			throw Root::Unavailable();
 		}
 
 		void _upgrade_session(Fs_component *session, const char *args) override
@@ -159,7 +168,7 @@ namespace Server {
 
 		/* create an empty file to be sure we have write access */
 		Genode::Allocator_avl   fs_alloc(env()->heap());
-		File_system::Connection fs(fs_alloc, 32);
+		File_system::Connection fs(fs_alloc, 4096);
 
 		static char const *placeholder = ".store";
 

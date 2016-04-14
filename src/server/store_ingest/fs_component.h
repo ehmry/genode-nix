@@ -372,11 +372,11 @@ class Store_ingest::Fs_component : public File_system::Session_rpc_object
 
 			uint8_t final_name[MAX_NAME_LEN];
 			root.node->digest(&final_name[1], sizeof(final_name)-1);
-			Store_hash::encode(&final_name[1], root.node->name(), sizeof(final_name)-1);
+			Store_hash::encode(&final_name[1], root.name, sizeof(final_name)-1);
 			final_name[0] = '/';
 
 			try {
-				/* check if the final path already exists */
+				/* if the final path already exists, delete this ingest */
 				_fs.close(_fs.node((char *)final_name));
 				try {
 					_fs.unlink(_root_handle, root.filename);
@@ -385,27 +385,26 @@ class Store_ingest::Fs_component : public File_system::Session_rpc_object
 					empty_dir(_fs, path.base());
 					_fs.unlink(_root_handle, root.filename);
 				}
-
 			} catch (Lookup_failed) {
 				/* move the ingest root to its final location */
 				_fs.move(_root_handle, root.filename,
 				         _root_handle, (char *)final_name+1);
-			}
 
-			root.finalize((char *)final_name+1);
+				root.finalize((char *)final_name+1);
+			}
 		}
 
 		/**
 		 * Used by the ingest component to get the final name
+		 *
+		 * \throw Lookup_failed
 		 */
 		char const *ingest(char const *name)
 		{
-			try {
-				Hash_root &root = _root_registry.lookup(name);
+			Hash_root &root = _root_registry.lookup(name);
 
-				finish(root);
-				return root.filename;
-			} catch (Lookup_failed) { return ""; }
+			finish(root);
+			return root.filename;
 		}
 
 		/*
