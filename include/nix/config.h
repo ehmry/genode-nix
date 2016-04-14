@@ -1,95 +1,126 @@
-/* config.h.  Generated from config.h.in by configure.  */
+#include <sys/time.h>
+
+
 /* config.h.in.  Generated from configure.ac by autoheader.  */
-/* Edited by Emery */
 
 /* Whether link() works on symlinks. */
-#define CAN_LINK_SYMLINK 1
+#undef CAN_LINK_SYMLINK
+
+/* Whether to use the Boehm garbage collector. */
+#undef HAVE_BOEHMGC
 
 /* Define to 1 if you have the <bzlib.h> header file. */
-#define HAVE_BZLIB_H 1
+#undef HAVE_BZLIB_H
+
+/* Define to 1 if you have the <dirent.h> header file, and it defines `DIR'.
+   */
+#undef HAVE_DIRENT_H
 
 /* Define to 1 if you have the <inttypes.h> header file. */
-#define HAVE_INTTYPES_H 1
+#undef HAVE_INTTYPES_H
+
+/* Define to 1 if you have the `lchown' function. */
+#undef HAVE_LCHOWN
 
 /* Define to 1 if you have the <locale> header file. */
-#define HAVE_LOCALE 1
+#undef HAVE_LOCALE
+
+/* Define to 1 if you have the `lutimes' function. */
+#undef HAVE_LUTIMES
 
 /* Define to 1 if you have the <memory.h> header file. */
-#define HAVE_MEMORY_H 1
+#undef HAVE_MEMORY_H
 
 /* Define to 1 if you have the `nanosleep' function. */
-#define HAVE_NANOSLEEP 1
+#undef HAVE_NANOSLEEP
+
+/* Define to 1 if you have the <ndir.h> header file, and it defines `DIR'. */
+#undef HAVE_NDIR_H
+
+/* Define to 1 if you have the `posix_fallocate' function. */
+#undef HAVE_POSIX_FALLOCATE
 
 /* Whether pubsetbuf is available. */
-#define HAVE_PUBSETBUF 1
+#undef HAVE_PUBSETBUF
+
+/* Define to 1 if you have the `setresuid' function. */
+#undef HAVE_SETRESUID
+
+/* Define to 1 if you have the `setreuid' function. */
+#undef HAVE_SETREUID
+
+/* Whether to use libsodium for cryptography. */
+#undef HAVE_SODIUM
+
+/* Define to 1 if you have the `statvfs' function. */
+#undef HAVE_STATVFS
 
 /* Define to 1 if you have the <stdint.h> header file. */
-#define HAVE_STDINT_H 1
+#undef HAVE_STDINT_H
 
 /* Define to 1 if you have the <stdlib.h> header file. */
-#define HAVE_STDLIB_H 1
+#undef HAVE_STDLIB_H
 
 /* Define to 1 if you have the <strings.h> header file. */
-#define HAVE_STRINGS_H 1
+#undef HAVE_STRINGS_H
 
 /* Define to 1 if you have the <string.h> header file. */
-#define HAVE_STRING_H 1
+#undef HAVE_STRING_H
 
 /* Define to 1 if you have the `strsignal' function. */
-#define HAVE_STRSIGNAL 1
+#undef HAVE_STRSIGNAL
+
+/* Define to 1 if `d_type' is a member of `struct dirent'. */
+#undef HAVE_STRUCT_DIRENT_D_TYPE
 
 /* Define to 1 if you have the `sysconf' function. */
-#define HAVE_SYSCONF 1
+#undef HAVE_SYSCONF
 
-/* Define to 1 if you have the <sys/mount.h> header file. */
-#define HAVE_SYS_MOUNT_H 1
+/* Define to 1 if you have the <sys/dir.h> header file, and it defines `DIR'.
+   */
+#undef HAVE_SYS_DIR_H
 
-/* Define to 1 if you have the <sys/param.h> header file. */
-#define HAVE_SYS_PARAM_H 1
+/* Define to 1 if you have the <sys/ndir.h> header file, and it defines `DIR'.
+   */
+#undef HAVE_SYS_NDIR_H
 
 /* Define to 1 if you have the <sys/stat.h> header file. */
-#define HAVE_SYS_STAT_H 1
+#undef HAVE_SYS_STAT_H
 
 /* Define to 1 if you have the <sys/types.h> header file. */
-#define HAVE_SYS_TYPES_H 1
+#undef HAVE_SYS_TYPES_H
 
 /* Define to 1 if you have the <unistd.h> header file. */
-#define HAVE_UNISTD_H 1
+#undef HAVE_UNISTD_H
 
-/* Define to 1 if you have the `unshare' function. */
-#define HAVE_UNSHARE 1
+/* Path of the OpenSSL binary */
+#undef OPENSSL_PATH
 
 /* Define to the address where bug reports for this package should be sent. */
-#define PACKAGE_BUGREPORT ""
+#undef PACKAGE_BUGREPORT
 
 /* Define to the full name of this package. */
-#define PACKAGE_NAME "nix"
+#undef PACKAGE_NAME
 
 /* Define to the full name and version of this package. */
-#define PACKAGE_STRING "nix 1.8"
+#undef PACKAGE_STRING
 
 /* Define to the one symbol short name of this package. */
-#define PACKAGE_TARNAME "nix"
+#undef PACKAGE_TARNAME
 
 /* Define to the home page for this package. */
-#define PACKAGE_URL ""
-
-/* Define to the version of this package. */
-#define PACKAGE_VERSION "1.8"
+#undef PACKAGE_URL
 
 /* Define to 1 if you have the ANSI C header files. */
-#define STDC_HEADERS 1
+#undef STDC_HEADERS
+
+/* Enable large inode numbers on Mac OS X 10.5.  */
+#ifndef _DARWIN_USE_64_BIT_INODE
+# define _DARWIN_USE_64_BIT_INODE 1
+#endif
 
 /* Number of bits in a file offset, on hosts where this is settable. */
-/* #undef _FILE_OFFSET_BITS */
+#undef _FILE_OFFSET_BITS
 
 /* Define for large files, on AIX-style hosts. */
-/* #undef _LARGE_FILES */
-
-#define NIX_STORE_DIR   "/nix/store"
-#define NIX_DATA_DIR    "/nix/data"
-#define NIX_LOG_DIR     "/nix/log"
-#define NIX_STATE_DIR   "/nix/state"
-#define NIX_CONF_DIR    "/nix/conf"
-#define NIX_LIBEXEC_DIR "/nix/libexec"
-#define NIX_BIN_DIR     "/nix/bin"
+#undef _LARGE_FILES

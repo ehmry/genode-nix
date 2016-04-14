@@ -42,8 +42,6 @@ SRC_CC = \
 INC_DIR += $(NIX_DIR)/libexpr
 INC_DIR += $(NIX_DIR)/libmain
 
-CC_OPT += -DVERSION=\"1.11\"
-
 vpath %.cc $(NIX_DIR)/libexpr
 
 SHARED_LIB = yes
