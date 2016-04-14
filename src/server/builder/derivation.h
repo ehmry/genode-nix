@@ -103,8 +103,10 @@ namespace Builder {
 					 ** Args **
 					 **********/
 
-					parser.list([] (Aterm::Parser &parser) {
-						PERR("ignoring command line argument"); });
+					parser.list([name] (Aterm::Parser &parser) {
+						PERR("%s contains a command line argument", name);
+						throw Invalid_derivation();
+					});
 
 					/*****************
 					 ** Environment **
