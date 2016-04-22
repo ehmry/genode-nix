@@ -14,12 +14,15 @@
 /* Genode includes */
 #include <libstore/derivations.hh>
 #include <libstore/store-api.hh>
-#include <builder_session/connection.h>
 #include <file_system/util.h>
 #include <vfs/file_system.h>
 #include <base/allocator_avl.h>
 #include <base/lock.h>
 #include <os/path.h>
+
+/* Genode Nix includes */
+#include <nix_store_session/connection.h>
+
 
 namespace nix {
 
@@ -32,14 +35,14 @@ namespace nix {
 
 /**
  * Stores fulfils nix::StoreAPI but imports files to the store
- * using a file system session and builds with a Builder sessions.
+ * using a file system session and builds with a Nix_store sessions.
  */
 class nix::Store : public nix::StoreAPI
 {
 	private:
 
-		Builder::Connection  _builder;
-		Genode::Lock         _packet_lock;
+		Nix_store::Connection _store_session;
+		Genode::Lock          _packet_lock;
 
 		void hash_dir(uint8_t *buf, nix::Path const &src_path);
 		void hash_file(uint8_t *buf, nix::Path const &src_path);
@@ -67,7 +70,7 @@ class nix::Store : public nix::StoreAPI
 
 		Store() { if (_vfs == nullptr) throw Error("Nix VFS uninitialized"); }
 
-		Builder::Session &builder() { return _builder; }
+		Nix_store::Session &store_session() { return _store_session; }
 
 		/************************
 		 ** StoreAPI interface **

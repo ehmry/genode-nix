@@ -1,5 +1,5 @@
 /*
- * \brief  Service for writing outputs to the store
+ * \brief  Service for file system inputs and outputs
  * \author Emery Hemingway
  * \date   2015-06-27
  */
@@ -11,20 +11,28 @@
  * under the terms of the GNU General Public License version 2.
  */
 
-#ifndef _BUILDER__INGEST_SERVICE_H_
-#define _BUILDER__INGEST_SERVICE_H_
+#ifndef _NIX_STORE__INGEST_FS_SERVICE_H_
+#define _NIX_STORE__INGEST_FS_SERVICE_H_
 
-#include <store_ingest_session/connection.h>
+/* Genode includes */
 #include <file_system/util.h>
 #include <file_system_session/capability.h>
 
-namespace Builder { class Store_ingest_service; }
+/* Nix includes */
+#include <nix_store/derivation.h>
 
-class Builder::Store_ingest_service : public Genode::Service
+/* Local includes */
+#include "ingest_component.h"
+
+namespace Nix_store { class Ingest_service; }
+
+class Nix_store::Ingest_service : public Genode::Service
 {
 	private:
 
-		Store_ingest::Connection _ingest;
+		Server::Entrypoint             &_ep;
+		Ingest_component                _component;
+		File_system::Session_capability _cap = _ep.manage(_component);
 
 		/**
 		 * Create a link from input addressed path
@@ -37,25 +45,23 @@ class Builder::Store_ingest_service : public Genode::Service
 			while (*path == '/') ++path;
 			using namespace File_system;
 
-			Store_ingest::Name const name = _ingest.ingest(id);
+			Nix_store::Name const name = _component.ingest(id);
 			char const *final_str = name.string();
 
 			/* create symlink at real file system */
 			Dir_handle root = fs.dir("/", false);
 			Handle_guard root_guard(fs, root);
 
-			Symlink_handle link =
-				fs.symlink(root, path, true);
-			Handle_guard link_guard(fs, link);
-
-			File_system::write(fs, link, final_str, strlen(final_str));
+			Symlink_handle link = fs.symlink(root, path, true);
+			File_system::write(fs, link, final_str, Genode::strlen(final_str));
+			fs.close(link);
 		}
 
 		/**
 		 * Finalize the derivation outputs at the ingest session and
 		 * create symlinks from the derivation outputs to hashed outputs.
 		 */
-		bool _finalize(File_system::Session &fs, Derivation &drv)
+		bool _finalize(File_system::Session &fs, Nix_store::Derivation &drv)
 		{
 			using namespace File_system;
 
@@ -63,14 +69,14 @@ class Builder::Store_ingest_service : public Genode::Service
 
 			/* run thru the outputs and finalize the paths */
 			drv.outputs([&] (Aterm::Parser &parser) {
-				String<MAX_NAME_LEN> id;
-				String<MAX_NAME_LEN> path;
-				String<MAX_NAME_LEN> algo;
-				String<MAX_NAME_LEN> hash;
+				Nix_store::Name id;
+				Nix_store::Name path;
+				Nix_store::Name algo;
+				Nix_store::Name hash;
 
 				parser.string(&id);
 
-				Store_ingest::Name output = _ingest.ingest(id.string());
+				Nix_store::Name output = _component.ingest(id.string());
 				if (output == "") {
 					/* If output symlinks are missing, then failure is implicit. */
 					PERR("'%s' not found at the ingest session", id.string());
@@ -95,18 +101,14 @@ class Builder::Store_ingest_service : public Genode::Service
 			 * links are only created if all outputs are valid.
 			 */
 			drv.outputs([&] (Aterm::Parser &parser) {
-				String<MAX_NAME_LEN> id;
-				String<1024> path;
+				Nix_store::Name id;
+				Nix_store::Name path;
 
 				parser.string(&id);
 				parser.string(&path);
 
-				try {
-					_link_from_inputs(fs, id.string(), path.string());
-					--outstanding;
-				} catch (...) {
-					PERR("failed to create link at %s", path.string());
-				}
+				_link_from_inputs(fs, id.string(), path.string());
+				--outstanding;
 
 				parser.string(/* Algo */); 
 				parser.string(/* Hash */);
@@ -114,28 +116,29 @@ class Builder::Store_ingest_service : public Genode::Service
 			return outstanding == 0;
 		}
 
+		void revoke_cap()
+		{
+			if (_cap.valid()) {
+				_ep.dissolve(_component);
+				_cap = File_system::Session_capability();
+			}
+		}
+
 	public:
 
 		/**
 		 * Constructor
 		 */
-		Store_ingest_service(Derivation &drv)
-		: Genode::Service("File_system")
-		{
-			/* declare the outputs in advance */
-			drv.outputs([&] (Aterm::Parser &parser) {
-				Store_ingest::Name id;
+		Ingest_service(Nix_store::Derivation &drv, Server::Entrypoint &ep, Genode::Allocator &alloc)
+		:
+			Genode::Service("File_system"), _ep(ep), _component(ep, alloc)
+		{ }
 
-				parser.string(&id); _ingest.expect(id);
-				parser.string(/* path */);
-				parser.string(/* algo */);
-				parser.string(/* hash */);
-			});
-		}
+		~Ingest_service() { revoke_cap(); }
 
-		bool finalize(File_system::Session &fs, Derivation &drv)
+		bool finalize(File_system::Session &fs, Nix_store::Derivation &drv)
 		{
-			_ingest.revoke_session();
+			revoke_cap();
 
 			try { return _finalize(fs, drv); }
 			catch (...) { }
@@ -147,16 +150,16 @@ class Builder::Store_ingest_service : public Genode::Service
 		 ** Service interface **
 		 ***********************/
 
-		Session_capability session(char const *args, Affinity const &) override
+		Genode::Session_capability session(char const *args, Genode::Affinity const &) override
 		{
-			PWRN("requesting fs session from ingest, %s", args);
-			return _ingest.file_system_session(args);
+			PDBG("%s", args);
+			return _cap;
 		}
 
-		void upgrade(Session_capability, const char *args)
+		void upgrade(Genode::Session_capability, const char *args)
 		{
-			PWRN("client is upgrading ingest session, %s", args);
-			Genode::env()->parent()->upgrade(_ingest.cap(), args);
+			PERR("client is upgrading session, but don't know where to send it, %s", args);
+			//Genode::env()->parent()->upgrade(_component.cap(), args);
 		}
 
 };

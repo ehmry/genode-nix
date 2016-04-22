@@ -4,8 +4,8 @@
  * \date   2015-03-13
  */
 
-#ifndef _BUILDER__CHILD_H_
-#define _BUILDER__CHILD_H_
+#ifndef _NIX_STORE__BUILD_CHILD_H_
+#define _NIX_STORE__BUILD_CHILD_H_
 
 /* Genode includes */
 #include <store_hash/encode.h>
@@ -22,62 +22,37 @@
 #include <os/server.h>
 #include <util/avl_string.h>
 
+/* Nix includes */
+#include <nix_store/derivation.h>
+
 /* Local imports */
-#include "derivation.h"
-#include "ingest_service.h"
+#include "ingest_fs_service.h"
+#include "filter_fs_service.h"
 
-namespace Builder {
+namespace Nix_store {
 
-	class Quota_exceeded : public Genode::Exception { };
-
-	struct Resources;
-	class  Child_policy;
-	class  Child;
-
-	enum Quota : size_t {
+	/**
+	 * Used here and in build_job.h
+	 */
+	enum QUOTA : size_t {
 		MEGABYTE      = 1 << 20,
 		QUOTA_STEP    = 8*MEGABYTE,
 		QUOTA_RESERVE = 1*MEGABYTE,
 
 		ENTRYPOINT_STACK_SIZE = 8*1024*sizeof(long)
 	};
+
+	class Child;
+
 }
 
-/**
- * Resources assigned to the child.
- */
-struct Builder::Resources
-{
-	Genode::Pd_connection  pd;
-	Genode::Ram_connection ram;
-	Genode::Cpu_connection cpu;
-	Genode::Rm_connection  rm;
-
-	/**
-	 * Constructor
-	 */
-	Resources(char const               *label,
-	          Signal_context_capability exit_sigh)
-	:
-		pd(label), ram(label), cpu(label)
-	{
-		cpu.exception_handler(Thread_capability(), exit_sigh);
-		rm.fault_handler(exit_sigh);
-
-		ram.ref_account(Genode::env()->ram_session_cap());
-
-		Genode::env()->ram_session()->transfer_quota(ram.cap(), QUOTA_STEP);
-	}
-};
-
-
-class Builder::Child : public Genode::Child_policy
+class Nix_store::Child : public Genode::Child_policy
 {
 	private:
 
-		char const           *_name;
-		File_system::Session &_fs;
-		Derivation           &_drv;
+		char const            *_name;
+		File_system::Session  &_fs;
+		Nix_store::Derivation  _drv { _name };
 
 		struct Mapping : Avl_node<Mapping>
 		{
@@ -115,9 +90,9 @@ class Builder::Child : public Genode::Child_policy
 
 			struct Input :  List<Input>::Element
 			{
-				String<MAX_NAME_LEN> const _link;
-				String<MAX_NAME_LEN> const _dest;
-				size_t               const _len;
+				Nix_store::Name const _link;
+				Nix_store::Name const _dest;
+				size_t          const _len;
 
 				Input (char const *link, char const *target)
 				:
@@ -134,13 +109,15 @@ class Builder::Child : public Genode::Child_policy
 				size_t old_len() { return _len; }
 			};
 
+			/**
+			 * XXX: is this duplicated in the filtered fs service?
+			 */
 			struct Inputs : List<Input>
 			{
-				Inputs(File_system::Session &fs, Derivation &drv)
+				Inputs(File_system::Session &fs, Nix_store::Derivation &drv)
 				{
 					using namespace File_system;
-
-					typedef Genode::String<MAX_NAME_LEN> Name;
+					using Nix_store::Name;
 
 					Dir_handle root_handle = fs.dir("/", false);
 					Handle_guard guard_root(fs, root_handle);
@@ -149,7 +126,7 @@ class Builder::Child : public Genode::Child_policy
 						Name input_drv;
 						parser.string(&input_drv);
 
-						Derivation depend(input_drv.string());
+						Nix_store::Derivation depend(input_drv.string());
 
 						parser.list([&] (Aterm::Parser &parser) {
 							Name want_id;
@@ -204,7 +181,7 @@ class Builder::Child : public Genode::Child_policy
 				}
 			};
 
-			Environment(File_system::Session &fs, Derivation &drv)
+			Environment(File_system::Session &fs, Nix_store::Derivation &drv)
 			{
 				using namespace File_system;
 
@@ -262,14 +239,41 @@ class Builder::Child : public Genode::Child_policy
 				return m ? m->value.string() : 0;
 			}
 
-		} _environment;
+		} _environment { _fs, _drv };
 
-		Signal_context_capability  _exit_sigh;
-		Resources                  _resources;
+		/**
+		 * Resources assigned to the child.
+ 		*/
+		struct Resources
+		{
+			Genode::Pd_connection  pd;
+			Genode::Ram_connection ram;
+			Genode::Cpu_connection cpu;
+			Genode::Rm_connection  rm;
+
+			/**
+			 * Constructor
+			 */
+			Resources(char const               *label,
+			          Signal_context_capability exit_sigh)
+			: pd(label), ram(label), cpu(label)
+			{
+				cpu.exception_handler(Thread_capability(), exit_sigh);
+				rm.fault_handler(exit_sigh);
+
+				ram.ref_account(Genode::env()->ram_session_cap());
+
+				Genode::env()->ram_session()->transfer_quota(ram.cap(), QUOTA_STEP);
+			}
+		} _resources;
+
 		Rom_connection             _binary_rom;
 		Server::Entrypoint         _entrypoint;
-		Parent_service             _fs_input_service;
-		Store_ingest_service       _fs_output_service;
+		Signal_context_capability  _exit_sigh;
+		/* XXX: use an allocator with a lifetime bound to the child */
+		Ingest_service             _fs_ingest_service { _drv, _entrypoint, *Genode::env()->heap() };
+		Filter_service             _fs_filter_service { _drv, _entrypoint, *Genode::env()->heap() };
+		Parent_service             _fs_parent_service { "File_system" };
 		Service_registry           _parent_services;
 
 		Genode::Child  _child;
@@ -281,18 +285,13 @@ class Builder::Child : public Genode::Child_policy
 		 */
 		Child(char const               *name,
 		      File_system::Session     &fs,
-		      Derivation               &drv,
 		      Signal_context_capability exit_sigh)
 		:
 			_name(name),
 			_fs(fs),
-			_drv(drv),
-			_environment(fs, drv),
-			_exit_sigh(exit_sigh),
 			_resources(name, exit_sigh),
-			_binary_rom(drv.builder()),
-			_fs_input_service("File_system"),
-			_fs_output_service(drv),
+			_binary_rom(_drv.builder()),
+			_exit_sigh(exit_sigh),
 			_child(_binary_rom.dataspace(),
 			       _resources.pd.cap(),
 			       _resources.ram.cap(),
@@ -343,16 +342,15 @@ class Builder::Child : public Genode::Child_policy
 
 		char const *name() const { return _name; }
 
-		/**
-		 * Rewrite ROM and File_system requests to enforce purity, set session
-		 * labels to a user defined value so that the proper routing is enforced.
-		 */
 		void filter_session_args(const char *service, char *args, size_t args_len)
 		{
+			/*
+			 * Rewrite ROM requests to enforce purity
+			 */
 			if (strcmp(service, "ROM") == 0) {
 
 				Genode::Label label = Genode::Arg_string::label(args);
-				char const *request = label.tail();
+				char const *request = label.last_element();
 
 				/*
 				 * XXX: make a set_string method on Arg_string::
@@ -370,6 +368,9 @@ class Builder::Child : public Genode::Child_policy
 				return;
 			}
 
+			/*
+			 * Rewrite File_system roots
+			 */
 			else if (strcmp(service, "File_system") == 0) {
 				char root[File_system::MAX_PATH_LEN] = { '\0' };
 
@@ -382,36 +383,33 @@ class Builder::Child : public Genode::Child_policy
 						Arg_string::set_arg_string(args, args_len, "root", dest);
 						Arg_string::set_arg(args, args_len, "writeable", false);
 					} else {
-						PERR("impure FS request for '%s'", root);
+						PERR("impure File_system request for root '%s'", root);
 						*args = '\0';
-						return;
 					}
 				}
+				return;
 			}
 
 			/*
-			 * Obviously log messages need be seperated between build
-			 * runs, but labeling anything  else could endanger purity.
+			 * Log messages need be seperated between build jobs
 			 */
 			else if (strcmp(service, "LOG") == 0) {
 				char label_buf[Parent::Session_args::MAX_SIZE];
 				Arg_string::find_arg(args, "label").string(label_buf, sizeof(label_buf), "");
 
-				char value_buf[Parent::Session_args::MAX_SIZE];
-
-				/* XXX: some hackery to truncate the label */
-				Genode::snprintf(value_buf, 18, "\"%s", _name);
-
-				Genode::snprintf(value_buf+17, sizeof(value_buf)-16,
-				                 "%s%s%s\"",
-				                 _name+32,
-				                 Genode::strcmp(label_buf, "") == 0 ? "" : " -> ",
-				                 label_buf);
-
-				Arg_string::set_arg(args, args_len, "label", value_buf);
+				/* shorten the log label */
+				Genode::String<18> short_name(_name);
+				if (label_buf[0]) {
+					Genode::Label label(label_buf, short_name.string());
+					Arg_string::set_arg_string(args, args_len, "label", label.string());
+				} else
+					Arg_string::set_arg_string(args, args_len, "label", short_name.string());
 				return;
 			}
 
+			/*
+			 * labeling anything else could endanger purity.
+			 */
 			Arg_string::remove_arg(args, "label");
 		}
 
@@ -422,15 +420,27 @@ class Builder::Child : public Genode::Child_policy
 			if (!(*args)) /* invalidated by filter_session_args */
 				return 0;
 
-			if (strcmp("File_system", service_name) == 0) {
-				Path<File_system::MAX_PATH_LEN> root;
-				Arg_string::find_arg(args, "root").string(root.base(), root.capacity(), "");
+			if (strcmp("File_system", service_name) == 0)
+			{
+				Genode::Label label = Genode::Arg_string::label(args);
+				char root[3] = { '\0' };
 
-				if (root == "" || root == "/")
-					/* this is a session for writing the derivation outputs */
-					return &_fs_output_service;
+				if (!strcmp("ingest", label.last_element()))
+					return &_fs_ingest_service;
 
-				return &_fs_input_service;
+				Genode::Arg_string::find_arg(args, "root").string(
+					root, sizeof(root), "/");
+
+				if (strcmp(root, "", sizeof(root))
+				 && strcmp(root, "/", sizeof(root)))
+					return &_fs_filter_service;
+
+				/*
+				 * If there is a root argument then connect directly to 
+				 * the store backend because the session is isolated by
+				 * the root offset.
+				 */
+				return &_fs_parent_service;
 			}
 
 			/* get it from the parent if it is allowed */
@@ -443,7 +453,7 @@ class Builder::Child : public Genode::Child_policy
 
 		void exit(int exit_value)
 		{
-			if (exit_value == 0 && _fs_output_service.finalize(_fs, _drv))
+			if (exit_value == 0 && _fs_ingest_service.finalize(_fs, _drv))
 				PINF("success: %s", _name);
 			else
 				PERR("failure: %s", _name);
@@ -455,6 +465,7 @@ class Builder::Child : public Genode::Child_policy
 
 		void resource_request(Parent::Resource_args const &args)
 		{
+			PDBG("%s", args.string());
 			size_t ram_request =
 				Arg_string::find_arg(args.string(), "ram_quota").ulong_value(0);
 

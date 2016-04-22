@@ -9,11 +9,10 @@ build {
 	app/rom_logger
 	drivers/timer
 	lib/vfs/any-rom
-	server/builder
 	server/fs_rom
 	server/fs_log
 	server/nix
-	server/store_ingest
+	server/nix_store
 	server/vfs
 	test/libports/nixexpr
 	test/false
@@ -39,7 +38,7 @@ append config {
 	</parent-provides>
 	<default-route>
 		<service name="File_system" label_suffix="ingest">
-			<child name="store_ingest" />
+			<child name="nix_store" />
 		</service>
 		<any-service>
 			<child name="store_fs"/>
@@ -59,30 +58,10 @@ append config {
 		<config>
 			<vfs> <ram/> </vfs>
 
-			<policy label="store_ingest" writeable="yes" />
-			<policy label="builder" writeable="yes" />
+			<policy label_prefix="nix_store" writeable="yes" />
 			<policy label="store_rom" />
 			<policy label="nix" />
 		</config>
-	</start>
-
-	<start name="builder">
-		<resource name="RAM" quantum="8M"/>
-		<provides><service name="Builder"/></provides>
-		<route>
-			<service name="ROM" label="ld.lib.so">
-				<parent/>
-			</service>
-			<service name="ROM">
-				<child name="store_rom"/>
-			</service>
-			<service name="File_system">
-				<child name="store_fs"/>
-			</service>
-			<any-service>
-				<parent/> <any-child/>
-			</any-service>
-		</route>
 	</start>
 
 	<start name="store_rom">
@@ -91,9 +70,19 @@ append config {
 		<provides><service name="ROM"/></provides>
 	</start>
 
-	<start name="store_ingest">
-		<resource name="RAM" quantum="4M"/>
-		<provides><service name="File_system"/></provides>
+	<start name="nix_store">
+		<resource name="RAM" quantum="8M"/>
+		<provides>
+			<service name="Nix_store"/>
+			<service name="File_system"/>
+		</provides>
+		<route>
+			<any-service>
+				<child name="store_rom"/>
+				<child name="store_fs"/>
+				<parent/>
+			</any-service>
+		</route>
 	</start>
 
 	<start name="nix">
@@ -104,7 +93,10 @@ append config {
 				<child name="store_rom"/>
 			</service>
 			<service name="File_system" label="ingest">
-				<child name="store_ingest"/>
+				<child name="nix_store"/>
+			</service>
+			<service name="Nix_store">
+				<child name="nix_store"/>
 			</service>
 			<any-service>
 				<child name="store_fs"/>
@@ -210,7 +202,6 @@ install_config $config
 # generic modules
 set boot_modules {
 	core init ld.lib.so
-	builder
 	fs_log
 	fs_rom
 	curl.lib.so
@@ -229,7 +220,7 @@ set boot_modules {
 	nixutil.lib.so
 	rom_logger
 	stdcxx.lib.so
-	store_ingest
+	nix_store
 	test-false
 	test-printf
 	timer

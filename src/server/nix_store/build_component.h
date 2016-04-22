@@ -4,8 +4,8 @@
  * \date   2015-03-13
  */
 
-#ifndef _BUILDER__STORE_SESSION_H_
-#define _BUILDER__STORE_SESSION_H_
+#ifndef _NIX_STORE__BUILD_SESSION_H_
+#define _NIX_STORE__BUILD_SESSION_H_
 
 /* Genode includes */
 #include <file_system_session/connection.h>
@@ -25,11 +25,17 @@
 #include <cap_session/cap_session.h>
 
 /* Local includes */
-#include "job.h"
+#include "build_job.h"
 
-namespace Builder { class Session_component; };
+namespace Nix_store {
 
-class Builder::Session_component : public Genode::Rpc_object<Session>
+	using Nix_store::Derivation;
+
+	class Build_component;
+
+};
+
+class Nix_store::Build_component : public Genode::Rpc_object<Nix_store::Session>
 {
 	private:
 
@@ -43,10 +49,10 @@ class Builder::Session_component : public Genode::Rpc_object<Session>
 		/**
 		 * Constructor
 		 */
-		Session_component(Allocator            *session_alloc,
-		                  size_t                ram_quota,
-		                  File_system::Session &fs,
-		                  Jobs                 &jobs)
+		Build_component(Allocator            *session_alloc,
+		                size_t                ram_quota,
+		                File_system::Session &fs,
+		                Jobs                 &jobs)
 		:
 			_session_alloc(session_alloc, ram_quota),
 			_store_fs(fs),
@@ -61,13 +67,13 @@ class Builder::Session_component : public Genode::Rpc_object<Session>
 		{
 			Derivation(name).inputs([&] (Aterm::Parser &parser) {
 
-				Genode::String<Builder::MAX_NAME_LEN> input;
+				Name input;
 				parser.string(&input);
 
 				Derivation depend(input.string());
 
 				parser.list([&] (Aterm::Parser &parser) {
-					Genode::String<Builder::MAX_NAME_LEN> want_id;
+					Name want_id;
 					parser.string(&want_id);
 
 					depend.outputs([&] (Aterm::Parser &parser) {
@@ -76,7 +82,7 @@ class Builder::Session_component : public Genode::Rpc_object<Session>
 						parser.string(&id);
 
 						if (id == want_id) {
-							Genode::String<MAX_NAME_LEN> path;
+							Name path;
 							parser.string(&path);
 
 							char const *output = path.string();
@@ -98,9 +104,10 @@ class Builder::Session_component : public Genode::Rpc_object<Session>
 			});
 		}
 
-		/*******************************
-		 ** Builder session interface **
-		 *******************************/
+
+		/*************************
+		 ** Nix_store interface **
+		 *************************/
 
 		/**
 		 * Return true if a store object at 'name' exists in the
@@ -111,14 +118,14 @@ class Builder::Session_component : public Genode::Rpc_object<Session>
 		{
 			using namespace File_system;
 
-			char path[Builder::MAX_NAME_LEN+1];
+			char path[Nix_store::MAX_NAME_LEN+1];
 
 			/* XXX: slash hack */
 			char const *name_str = name.string();
 			while (*name_str == '/') ++name_str;
 
 			path[0] = '/';
-			strncpy(path+1, name_str, MAX_NAME_LEN);
+			strncpy(path+1, name_str, Nix_store::MAX_NAME_LEN);
 
 			try {
 				Node_handle node = _store_fs.node(path);
@@ -139,7 +146,7 @@ class Builder::Session_component : public Genode::Rpc_object<Session>
 							return false;
 
 					/* It would be embarassing to run in loop. */
-					if (strcmp(name.string(), path, MAX_NAME_LEN))
+					if (strcmp(name.string(), path, Nix_store::MAX_NAME_LEN))
 						return valid(path);
 				}}
 			} catch (Lookup_failed) { }
@@ -183,7 +190,7 @@ class Builder::Session_component : public Genode::Rpc_object<Session>
 
 			char const *name_str = name.string();
 
-			Genode::Path<Builder::MAX_NAME_LEN> path(name.string());
+			Genode::Path<Nix_store::MAX_NAME_LEN+1> path(name.string());
 
 			try {
 				Node_handle node = _store_fs.node(path.base());
@@ -208,4 +215,4 @@ class Builder::Session_component : public Genode::Rpc_object<Session>
 
 };
 
-#endif /* _BUILDER__STORE_SESSION_H_ */
+#endif

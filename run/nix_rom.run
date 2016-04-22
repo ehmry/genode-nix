@@ -5,10 +5,9 @@
 
 set build_components {
 	core init drivers/timer
-	server/builder
 	server/fs_rom
 	server/nix
-	server/store_ingest
+	server/nix_store
 	server/vfs
 	test/libports/ncurses
 	test/libports/nixexpr
@@ -46,8 +45,7 @@ append config {
 		<provides><service name="File_system"/></provides>
 		<config>
 			<vfs> <ram/> </vfs>
-			<policy label="store_ingest" writeable="yes"/>
-			<policy label="builder" writeable="yes"/>
+			<policy label_prefix="nix_store" writeable="yes"/>
 			<default-policy/>
 		</config>
 		<route>
@@ -68,20 +66,12 @@ append config {
 		<config verbose="true"/>
 	</start>
 
-	<start name="store_ingest">
+	<start name="nix_store">
 		<resource name="RAM" quantum="2M"/>
-		<provides><service name="File_system"/></provides>
-		<route>
-			<any-service>
-				<child name="store_fs"/>
-				<parent/>
-			</any-service>
-		</route>
-	</start>
-
-	<start name="builder">
-		<resource name="RAM" quantum="8M"/>
-		<provides><service name="Builder"/></provides>
+		<provides>
+			<service name="Nix_store"/>
+			<service name="File_system"/>
+		</provides>
 		<route>
 			<any-service>
 				<child name="store_fs"/>
@@ -101,7 +91,7 @@ append config {
 				<child name="store_rom"/>
 			</service>
 			<service name="File_system" label="ingest">
-				<child name="store_ingest"/>
+				<child name="nix_store"/>
 			</service>
 			<any-service>
 				<parent/> <any-child/>
@@ -148,9 +138,7 @@ append config {
 install_config $config
 
 set boot_modules {
-	core init ld.lib.so timer
-	builder
-	curl.lib.so
+	core init ld.lib.so
 	curl.lib.so
 	fs_rom
 	libc.lib.so
@@ -163,11 +151,12 @@ set boot_modules {
 	nixexpr.lib.so
 	nixformat.lib.so
 	nixmain.lib.so
+	nix_store
 	nixstore.lib.so
 	nixutil.lib.so
 	stdcxx.lib.so
-	store_ingest
 	test-printf
+	timer
 	vfs
 	zlib.lib.so
 }

@@ -232,11 +232,11 @@ void NixRepl::build(string arg)
     PathSet paths { drvPath };
     try {
         store.buildPaths(paths);
-    } catch (Builder::Invalid_derivation) {
+    } catch (Nix_store::Invalid_derivation) {
         _term.write("Builder reported that ");
         _term.write(drvPath);
         _term.write(" was invalid.\n");
-    } catch (Builder::Missing_dependency) {
+    } catch (Nix_store::Missing_dependency) {
         _term.write(drvPath);
         _term.write(" has missing dependencies.\n");
     }

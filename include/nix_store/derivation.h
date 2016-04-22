@@ -4,10 +4,8 @@
  * \date   2015-03-13
  */
 
-#ifndef _BUILDER__DERIVATION_H_
-#define _BUILDER__DERIVATION_H_
-
-#include <builder_session/builder_session.h>
+#ifndef _INCLUDE__NIX_STORE__DERIVATION_H_
+#define _INCLUDE__NIX_STORE__DERIVATION_H_
 
 /*Genode includes. */
 #include <os/attached_rom_dataspace.h>
@@ -17,11 +15,11 @@
 #include <file_system_session/file_system_session.h>
 #include <nix/types.h>
 
-#include "aterm_parser.h"
+/* Nix store includes */
+#include <nix_store/aterm_parser.h>
+#include <nix_store/types.h>
 
-namespace Builder {
-
-	using namespace Genode;
+namespace Nix_store {
 
 	/**
 	 * Derivations are loaded from ROM rather than from the
@@ -29,20 +27,20 @@ namespace Builder {
 	 * has pushed or loaded a derviation, so there is a potential
 	 * for caching. Its also makes for much less local code.
 	 */
-	class Derivation : Attached_rom_dataspace {
+	class Derivation : Genode::Attached_rom_dataspace {
 
 		private:
 
-			String<File_system::MAX_PATH_LEN> _builder;
-			String<32>                        _platform;
+			Genode::String<File_system::MAX_PATH_LEN> _builder;
+			Genode::String<32>                        _platform;
 
-			size_t _len;
+			Genode::size_t _len;
 
 			char const *_outputs;
 			char const *_inputs;
 			char const *_environment;
 
-			inline size_t remain(char const *base) {
+			inline Genode::size_t remain(char const *base) {
 				return _len - (base - local_addr<char>()); }
 
 		public:
@@ -50,7 +48,7 @@ namespace Builder {
 			Derivation(char const *name)
 			:
 				Attached_rom_dataspace(name),
-				_len(strlen(local_addr<char>()))
+				_len(Genode::strlen(local_addr<char>()))
 			{
 				Aterm::Parser parser(local_addr<char>(), _len);
 

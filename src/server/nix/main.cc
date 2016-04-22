@@ -26,7 +26,6 @@
 #include <util.hh>
 
 /* Genode includes */
-#include <builder_session/builder_session.h>
 #include <vfs/file_system_factory.h>
 #include <vfs/dir_file_system.h>
 #include <os/session_policy.h>
@@ -239,8 +238,8 @@ class Nix::Service_proxy : public Genode::Rpc_object<Typed_root<SESSION_TYPE>>
 			while (out.front() == '/') out.erase(0,1);
 
 			/* XXX: and if out is not a top level store element? */
-			Builder::Name out_name =
-				state.eval_state.store().builder().dereference(out.c_str());
+			Nix_store::Name out_name =
+				state.eval_state.store().store_session().dereference(out.c_str());
 			return out_name.string();
 		}
 
@@ -318,7 +317,7 @@ class Nix::Rom_root : public Service_proxy<Rom_session>
 		                  Root::Session_args const &args) override
 		{
 			Genode::Label label = Genode::Arg_string::label(args.string());
-			Genode::strncpy(arg, label.tail(), arg_len);
+			Genode::strncpy(arg, label.last_element(), arg_len);
 		}
 
 		void rewrite_args(char *args, size_t args_len, nix::Path &out) override

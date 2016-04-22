@@ -9,8 +9,8 @@
  * policy externally in the parent or in a job multiplexer.
  */
 
-#ifndef _BUILDER__JOB_H_
-#define _BUILDER__JOB_H_
+#ifndef _NIX_STORE__BUILD_JOB_H_
+#define _NIX_STORE__BUILD_JOB_H_
 
 /* Genode includes */
 #include <os/signal_rpc_dispatcher.h>
@@ -20,12 +20,12 @@
 
 /* Nix includes */
 #include <nix/types.h>
+#include <nix_store/derivation.h>
 
 /* Local includes */
-#include "derivation.h"
-#include "child.h"
+#include "build_child.h"
 
-namespace Builder {
+namespace Nix_store {
 
 	using namespace Genode;
 
@@ -43,7 +43,7 @@ namespace Builder {
  *
  * From <file_system/listener.h>.
  */
-class Builder::Listener : public Genode::List<Listener>::Element
+class Nix_store::Listener : public Genode::List<Listener>::Element
 {
 	private:
 
@@ -68,19 +68,16 @@ class Builder::Listener : public Genode::List<Listener>::Element
  * A job wraps a child and informs its
  * listeners of the childs completion.
  */
-class Builder::Job : public Fifo<Job>::Element
+class Nix_store::Job : public Fifo<Job>::Element
 {
 	/* Job is thread-safe if methods are only exported to Jobs */
 	friend Jobs;
 
 	private:
 
-		typedef Genode::String<MAX_NAME_LEN> Name;
-
-		Name      const _name;
-		Derivation      _drv;
-		List<Listener>  _listeners;
-		Child          *_child;
+		Nix_store::Name const _name;
+		List<Listener>        _listeners;
+		Child                *_child = nullptr;
 
 	protected:
 
@@ -109,7 +106,7 @@ class Builder::Job : public Fifo<Job>::Element
 		{
 			try {
 				_child = new (Genode::env()->heap())
-					Child(_name.string(), fs, _drv, exit_sigh);
+					Child(_name.string(), fs, exit_sigh);
 			} catch (Missing_dependency) {
 				PERR("missing dependency for %s", _name.string());
 				Signal_transmitter(exit_sigh).submit();
@@ -132,7 +129,7 @@ class Builder::Job : public Fifo<Job>::Element
 		/**
 		 * Constructor
 		 */
-		Job(char const *name) : _name(name), _drv(name), _child(nullptr) { }
+		Job(char const *name) : _name(name) { }
 
 		/**
 		 * Destructor
@@ -156,7 +153,7 @@ class Builder::Job : public Fifo<Job>::Element
 };
 
 
-class Builder::Jobs : private Genode::Fifo<Job>
+class Nix_store::Jobs : private Genode::Fifo<Job>
 {
 	private:
 

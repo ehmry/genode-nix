@@ -11,8 +11,8 @@
  * under the terms of the GNU General Public License version 2.
  */
 
-#ifndef _STORE_INGEST__FS_COMPONENT_H_
-#define _STORE_INGEST__FS_COMPONENT_H_
+#ifndef _NIX_STORE__INGEST_COMPONENT_H_
+#define _NIX_STORE__INGEST_COMPONENT_H_
 
 /* Genode includes */
 #include <store_hash/encode.h>
@@ -32,12 +32,11 @@ namespace Jitter { extern "C" {
 } }
 
 /* Local includes */
-#include "registry.h"
-#include "node.h"
+#include "ingest_node.h"
 
-namespace Store_ingest {
+namespace Nix_store {
 
-	class     Fs_component;
+	class Ingest_component;
 
 	static bool is_root(File_system::Path const &path) {
 		return Genode::strcmp(path.string(), "/", 2) == 0; }
@@ -64,11 +63,11 @@ namespace Store_ingest {
 }
 
 
-class Store_ingest::Fs_component : public File_system::Session_rpc_object
+class Nix_store::Ingest_component : public File_system::Session_rpc_object
 {
 	private:
 
-		Genode::Allocator_guard  _alloc;
+		Genode::Allocator_guard _alloc;
 
 		/* top level hash nodes */
 		Hash_root_registry _root_registry { _alloc };
@@ -80,13 +79,13 @@ class Store_ingest::Fs_component : public File_system::Session_rpc_object
 		Hash_node_registry _node_registry;
 
 		/* a queue of packets from the client awaiting backend processing */
-		File_system::Packet_descriptor _packet_queue[TX_QUEUE_SIZE];
+		File_system::Packet_descriptor      _packet_queue[TX_QUEUE_SIZE];
 
-		Genode::Allocator_avl           _fs_tx_alloc;
-		File_system::Connection_base    _fs;
-		Signal_rpc_member<Fs_component> _process_packet_dispatcher;
-		Dir_handle                      _root_handle;
-		bool                            _strict = false;
+		Genode::Allocator_avl               _fs_tx_alloc;
+		File_system::Connection_base        _fs;
+		Signal_rpc_member<Ingest_component> _process_packet_dispatcher;
+		Dir_handle                          _root_handle;
+		bool                                _strict = false;
 
 
 		/******************************
@@ -300,16 +299,16 @@ class Store_ingest::Fs_component : public File_system::Session_rpc_object
 		 * The tx buffer size is split between the local
 		 * stream buffer and the backend buffer.
 		 */
-		Fs_component(Server::Entrypoint &ep,
-		             Genode::Allocator  &alloc,
-		             size_t              ram_quota,
-		             size_t              tx_buf_size)
+		Ingest_component(Server::Entrypoint &ep,
+		                 Genode::Allocator  &alloc,
+		                 size_t ram_quota = 16*4096,
+		                 size_t tx_buf_size = File_system::DEFAULT_TX_BUF_SIZE*2)
 		:
 			Session_rpc_object(env()->ram_session()->alloc(tx_buf_size/2), ep.rpc_ep()),
 			_alloc(&alloc, ram_quota),
 			_fs_tx_alloc(&_alloc),
-			_fs(_fs_tx_alloc, tx_buf_size/2),
-			_process_packet_dispatcher(ep, *this, &Fs_component::_process_packets)
+			_fs(_fs_tx_alloc, tx_buf_size/2, "ingest"),
+			_process_packet_dispatcher(ep, *this, &Ingest_component::_process_packets)
 		{
 			_root_handle = _fs.dir("/", false);
 
@@ -327,7 +326,7 @@ class Store_ingest::Fs_component : public File_system::Session_rpc_object
 		/**
 		 * Destructor
 		 */
-		~Fs_component()
+		~Ingest_component()
 		{
 			Dataspace_capability ds = tx_sink()->dataspace();
 			env()->ram_session()->free(static_cap_cast<Ram_dataspace>(ds));

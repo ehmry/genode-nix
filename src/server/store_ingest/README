@@ -1,1 +1,0 @@
-Store_ingest is not secure, clients can still write to nodes after the've been hashed.

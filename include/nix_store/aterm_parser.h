@@ -139,7 +139,8 @@ class Aterm::Parser
 			++_pos;
 			++_len;
 
-			while (_len  && (*_pos == '\\' || *_pos != '"')) {
+			while (*_pos != '"') {
+				if (*_pos == '\\') { ++_pos; ++_len; }
 				++_pos;
 				++_len;
 			}
@@ -157,9 +158,10 @@ class Aterm::Parser
 			size_t len = 0;
 			char const *pos = _pos + 1;
 
-			while (pos[len] == '\\' || pos[len] != '"') {
+			while (pos[len] != '"') {
+				if (pos[len] == '\\') ++len;
 				++len;
-				if (_len - len == 0) throw Malformed_element();
+				if (_len - len <= 0) throw Malformed_element();
 			}
 			_len -= 2 + len;
 			_pos += 2 + len;

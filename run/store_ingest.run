@@ -9,7 +9,7 @@ set build_components {
 	lib/libc_noux
 	lib/vfs/jitterentropy
 	noux/minimal
-	server/store_ingest
+	server/nix_store
 	server/vfs
 	test/libports/ncurses
 }
@@ -56,11 +56,11 @@ append config {
 		<provides><service name="File_system"/></provides>
 		<config>
 			<vfs> <ram/> </vfs>
-			<policy label="store_ingest" writeable="yes"/>
+			<policy label="nix_store" writeable="yes"/>
 			<default-policy/>
 		</config>
 	</start>
-	<start name="store_ingest">
+	<start name="nix_store">
 		<resource name="RAM" quantum="1M"/>
 		<provides> <service name="File_system"/> </provides>
 		<route>
@@ -74,7 +74,7 @@ append config {
 		<resource name="RAM" quantum="1G" />
 		<route>
 			<service name="File_system" label="ingest">
-				<child name="store_ingest" />
+				<child name="nix_store" />
 			</service>
 			<service name="File_system" label="store">
 				<child name="vfs" />
@@ -123,7 +123,7 @@ set boot_modules {
 	libm.lib.so
 	ncurses.lib.so
 	noux
-	store_ingest
+	nix_store
 	timer
 	vfs
 	vfs_jitterentropy.lib.so

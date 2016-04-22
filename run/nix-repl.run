@@ -1,12 +1,6 @@
-#
-# Test of Nix-repl
-#
-# Not much to see here, but there is a derivation named 'drv' that can be built with ":b drv".
-#
+source ${genode_dir}/repos/base/run/platform_drv.inc
 
 set use_usb_input [expr ![have_spec ps2] && ![have_spec sdl] && [have_spec usb]]
-
-source ${genode_dir}/repos/base/run/platform_drv.inc
 
 set build_components {
 	core init
@@ -14,22 +8,44 @@ set build_components {
 	drivers/framebuffer
 	drivers/input
 	drivers/timer
-	server/builder
+	lib/libc_noux
+	lib/vfs/any-rom
+	noux/minimal
 	server/fs_rom
-	server/store_ingest
+	server/nix
+	server/nix_store
+	server/ram_fs
 	server/terminal
 	server/vfs
-	test/libc_vfs
 	test/libports/ncurses
 	test/libports/nixexpr
-	test/timer
 }
 
+
+#
+# Build Noux packages only once
+#
+#set noux_pkgs { bash coreutils grep sed findutils make which $binutils $gcc }
+
+set noux_pkgs { }
+
+foreach pkg $noux_pkgs {
+	lappend_if [expr ![file exists bin/$pkg]] build_components noux-pkg/$pkg }
+
+source ${genode_dir}/repos/base/run/platform_drv.inc
 append_platform_drv_build_components
 
-lappend_if $use_usb_input       build_components drivers/usb
-
 build $build_components
+
+# strip all binaries prior archiving
+#set find_args ""
+#foreach pkg $noux_pkgs { append find_args " bin/$pkg" }
+#exec sh -c "find $find_args -type f | (xargs [cross_dev_prefix]strip -g || true) 2>/dev/null"
+
+#exec ln -sf bash bin/bash/bin/sh
+
+#foreach pkg $noux_pkgs {
+#	exec tar cfv bin/$pkg.tar -h -C bin/$pkg . }
 
 create_boot_directory
 
@@ -49,9 +65,8 @@ append config {
 		<service name="SIGNAL"/>
 	</parent-provides>
 	<default-route>
-		<service name="ROM">
-			<if-arg key="label" value="store"/>
-			<child name="store_rom"/>
+		<service name="File_system" label_suffix="ingest">
+			<child name="nix_store" />
 		</service>
 		<any-service>
 			<child name="store_fs"/>
@@ -96,32 +111,28 @@ append_if $use_usb_input config {
 	</start> }
 
 append config {
+
 	<start name="store_fs">
 		<binary name="vfs"/>
-		<resource name="RAM" quantum="8M"/>
+		<resource name="RAM" quantum="32M"/>
 		<provides><service name="File_system"/></provides>
 		<config>
-			<vfs> <ram/> </vfs>
-			<policy label="store_ingest" writeable="yes"/>
-			<policy label="builder" writeable="yes"/>
-			<default-policy/>
+			<vfs>
+				<ram/>
+				<dir name="nixpkgs"> <tar name="nixpkgs.tar"/> </dir>
+			</vfs>
+
+			<policy label="nix_store" writeable="yes" />
+			<default-policy root="/"/>
 		</config>
 	</start>
 
-	<start name="store_rom">
-		<binary name="fs_rom"/>
-		<resource name="RAM" quantum="8M"/>
-		<provides><service name="ROM"/></provides>
-	</start>
-
-	<start name="store_ingest">
-		<resource name="RAM" quantum="2M"/>
-		<provides><service name="File_system"/></provides>
-	</start>
-
-	<start name="builder">
-		<resource name="RAM" quantum="8M"/>
-		<provides><service name="Builder"/></provides>
+	<start name="nix_store">
+		<resource name="RAM" quantum="64M"/>
+		<provides>
+			<service name="Nix_store"/>
+			<service name="File_system"/>
+		</provides>
 		<route>
 			<service name="ROM" label="ld.lib.so">
 				<parent/>
@@ -134,16 +145,23 @@ append config {
 		</route>
 	</start>
 
+	<start name="store_rom">
+		<binary name="fs_rom"/>
+		<resource name="RAM" quantum="16M"/>
+		<provides><service name="ROM"/></provides>
+	</start>
+
 	<start name="terminal">
 		<resource name="RAM" quantum="2M"/>
 		<provides><service name="Terminal"/></provides>
 		<config>
-			<keyboard layout="dvorak"/>
+			<!-- <keyboard layout="dvorak"/> -->
 		</config>
 	</start>
 
 	<start name="nix-repl">
 		<resource name="RAM" quantum="8M"/>
+		<exit propagate="yes"/>
 		<route>
 			<service name="ROM" label_prefix="store">
 				<child name="store_rom"/>
@@ -151,80 +169,38 @@ append config {
 			<service name="File_system" label="store">
 				<child name="store_fs"/>
 			</service>
+			<service name="File_system" label="nixpkgs">
+				<child name="store_fs"/>
+			</service>
 			<service name="File_system" label="ingest">
-				<child name="store_ingest"/>
+				<child name="nix_store"/>
 			</service>
 			<any-service>
 				<parent/> <any-child/>
 			</any-service>
 		</route>
 		<config>
+			<nix verbosity="9">
+				<search-path name="store" path="/store"/>
+				<search-path name="foo" path="/bar"/>
+			</nix>
 			<vfs>
-				<dir name="store"> <fs label="store"/> </dir>
-				<dir name="nix"> <dir name="corepkgs"> <tar name="nix_corepkgs.tar"/> </dir> </dir>
-<inline name="default.nix">
+				<inline name="default.nix">
+with builtins;
 rec {
-
-  /* unix facsimilies */
-  cat = builtins.readFile;
-  ls = dir: builtins.attrNames (builtins.readDir dir);
-
-  /*
-   * The following is a test of a derivation
-   * referencing a dependency derivation.
-   */
-
-  romSet = roms: builtins.listToAttrs (map
-    (name: { inherit name; value = builtins.getRom name; })
-    roms
-  );
-
-  config1 = builtins.toFile
-      "config"
-      ''
-		<config>
-			<iterations value="1"/>
-			<libc stdout="/dev/log" cwd="/tmp" >
-				<vfs>
-					<dir name="tmp" >
-						<fs/>
-					</dir>
-					<dir name="dev"> <log/> </dir>
-				</vfs>
-			</libc>
-		</config>
-      '';
-
-  config2 = builtins.toFile
-      "config"
-      ''
-		<config>
-			<iterations value="1"/>
-			<libc stdout="/dev/log" cwd="/tmp" >
-				<vfs>
-					<fs root="foobar"/>
-					<dir name="tmp" >
-						<fs/>
-					</dir>
-					<dir name="dev"> <log/> </dir>
-				</vfs>
-			</libc>
-		</config>
-      '';
-
-  args = ((romSet [ "ld.lib.so" "libc.lib.so" ]) // {
-    name ="test-libc_vfs";
-    outputs = [ "testdir" ];
-    system  = builtins.currentSystem;
-    builder = builtins.getRom "test-libc_vfs";
-    config = config1;
-  });
-
-  drv = derivation (args // { foobar = derivation args; config = config2; });
+  ls = x: attrNames (readDir x);
+  se = n: elemAt (ls /store) n;
+  catN = n: readFile "/store/${se n}";
 }
-</inline>
+				</inline>
+				<dir name="nix"> <dir name="corepkgs">
+					<tar name="nix_corepkgs.tar"/>
+				</dir> </dir>
+				<dir name="store"> <fs label="store"/> </dir>
+				<dir name="nixpkgs"> <fs label="nixpkgs" root="nixpkgs"/> </dir>
+				<dir name="noux-pkg">
+				</dir>
 			</vfs>
-			<load file="/default.nix"/>
 		</config>
 	</start>
 
@@ -233,40 +209,55 @@ rec {
 
 install_config $config
 
+
+#
+# Boot modules
+#
+
+# generic modules
 set boot_modules {
 	core init ld.lib.so
-	builder
 	curl.lib.so
+	fb_drv
 	fs_rom
 	libc.lib.so
+	libc_noux.lib.so
 	libcrypto.lib.so
 	libm.lib.so
 	libssh.lib.so
 	libssl.lib.so
+	ncurses.lib.so
 	nix_corepkgs.tar
 	nixexpr.lib.so
 	nixformat.lib.so
 	nixmain.lib.so
 	nix-repl
+	nix_store
 	nixstore.lib.so
 	nixutil.lib.so
+	noux
+	ps2_drv
+	ram_fs
 	stdcxx.lib.so
-	store_ingest
 	terminal
-	test-libc_vfs
 	timer
 	vfs
+	vfs_any-rom.lib.so
 	zlib.lib.so
 }
 
-append_platform_drv_boot_modules
+append_if [have_spec sdl] boot_modules { fb_sdl }
 
-# platform-specific modules
-lappend_if [have_spec       linux] boot_modules fb_sdl
-lappend_if [have_spec framebuffer] boot_modules fb_drv
-lappend_if [have_spec         ps2] boot_modules ps2_drv
-lappend_if $use_usb_input          boot_modules usb_drv
+
+foreach pkg $noux_pkgs {
+	lappend boot_modules "$pkg.tar" }
+
+append_platform_drv_boot_modules
 
 build_boot_image $boot_modules
 
+append qemu_args " -m 246 "
+
 run_genode_until forever
+
+# vi: set ft=tcl :

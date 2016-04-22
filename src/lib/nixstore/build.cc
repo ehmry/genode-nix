@@ -656,7 +656,7 @@ void Goal::buildDone()
     debug(format("builder process for ‘%1%’ finished") % drvPath);
 
     for (auto & i : drv->outputs) {
-        if (worker.store.builder().valid(i.second.path.c_str()))
+        if (worker.store.store_session().valid(i.second.path.c_str()))
             continue;
         printMsg(lvlError, format("@ build-failed %1%") % drvPath);
         done(BuildResult::PermanentFailure);
@@ -933,7 +933,7 @@ void Worker::realize(GoalPtr goal)
     char const *name = goal->getDrvPath().c_str();
     while (*name == '/') ++name;
 
-    store.builder().realize(name, sigRec.manage(goal->context()));
+    store.store_session().realize(name, sigRec.manage(goal->context()));
     addToWeakGoals(builderPending, goal);
 }
 

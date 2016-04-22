@@ -44,7 +44,7 @@ template PathSet nix::readStorePaths(Source & from);
 static string hash_text(const string &name, const string &text)
 {
 	::Hash::Blake2s hash;
-	uint8_t         buf[Builder::MAX_NAME_LEN];
+	uint8_t         buf[Nix_store::MAX_NAME_LEN];
 
 	hash.update((uint8_t*)text.data(), text.size());
 	hash.update((uint8_t *)"\0f\0", 3);
@@ -75,9 +75,9 @@ static nix::Path finalize_ingest(File_system::Session &fs, char const *name)
 	File_system::Session::Tx::Source &source = *fs.tx();
 
 	File_system::Packet_descriptor
-		packet(source.alloc_packet(MAX_NAME_LEN),
+		packet(source.alloc_packet(Nix_store::MAX_NAME_LEN),
 		       link_handle, File_system::Packet_descriptor::READ,
-		       MAX_NAME_LEN, 0);
+		       Nix_store::MAX_NAME_LEN, 0);
 	Packet_guard packet_guard(source, packet);
 
 	source.submit_packet(packet);
@@ -470,7 +470,7 @@ nix::Store::isValidPath(const nix::Path & path)
 	// TODO just fix the damn double slash already
 	for (int i = 0; i < path.size(); ++i)
 		if (path[i] != '/')
-			return _builder.valid(path.c_str()+i);
+			return _store_session.valid(path.c_str()+i);
 }
 
 
@@ -556,14 +556,14 @@ Store::addToStore(const string & name, const nix::Path & srcPath,
 
 	Directory_service::Stat stat = status(srcPath);
 
-	uint8_t buf[Builder::MAX_NAME_LEN];
+	uint8_t buf[Nix_store::MAX_NAME_LEN];
 
 	string final_name;
 
 	if (stat.mode & Directory_service::STAT_MODE_DIRECTORY) {
 		hash_dir(buf, srcPath);
 		Store_hash::encode(buf, name.c_str(), sizeof(buf));
-		if (_builder.valid((char *) buf))
+		if (_store_session.valid((char *) buf))
 			return "/" + string((char *) buf);
 
 		final_name = add_dir(srcPath);
@@ -571,7 +571,7 @@ Store::addToStore(const string & name, const nix::Path & srcPath,
 	} else if (stat.mode & Directory_service::STAT_MODE_FILE) {
 		hash_file(buf, srcPath);
 		Store_hash::encode(buf, name.c_str(), sizeof(buf));
-		if (_builder.valid((char *) buf))
+		if (_store_session.valid((char *) buf))
 			return "/" + string((char *) buf);
 
 		final_name = add_file(srcPath);
@@ -594,7 +594,7 @@ nix::Path nix::Store::addTextToStore(const string & name, const string & text,
 	using namespace File_system;
 
 	string hashed_name = hash_text(name, text);
-	if (_builder.valid(hashed_name.c_str()))
+	if (_store_session.valid(hashed_name.c_str()))
 		return hashed_name;
 
 	{
@@ -664,7 +664,7 @@ nix::Path nix::Store::addDataToStore(const string & name,
 	size_t offset = 0;
 
 	::Hash::Blake2s hash;
-	uint8_t path_buf[Genode::max(size_t(MAX_NAME_LEN), hash.size())];
+	uint8_t path_buf[Genode::max(size_t(Nix_store::MAX_NAME_LEN), hash.size())];
 
 	hash.update((uint8_t*)buf, len);
 	hash.update((uint8_t*)"\0f\0", 3);
@@ -672,7 +672,7 @@ nix::Path nix::Store::addDataToStore(const string & name,
 
 	hash.digest(path_buf, sizeof(path_buf));
 	Store_hash::encode(path_buf, name.c_str(), sizeof(path_buf));
-	if (_builder.valid((char *)path_buf))
+	if (_store_session.valid((char *)path_buf))
 		return nix::Path((char *)path_buf);
 	{
 		debug(format("adding dataspace ‘%1%’ to the store") % name);
