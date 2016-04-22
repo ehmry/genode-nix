@@ -11,7 +11,7 @@
 #include <shared.hh>
 
 
-int main(void)
+int _main(void)
 {
 	using Genode::Signal_context;
 	using Genode::Signal_context_capability;
@@ -62,4 +62,23 @@ int main(void)
 
 	return 0;
 	});
+}
+
+typedef Genode::Thread<64*1024*sizeof(Genode::addr_t)> Big_thread_base;
+
+struct Big_thread : public Big_thread_base
+{
+	int exit_code;
+
+	Big_thread() : Big_thread_base("nix-repl") { };
+
+	void entry() { exit_code = _main(); }
+};
+
+int main (void)
+{
+	static Big_thread thread;
+	thread.start();
+	thread.join();
+	return thread.exit_code;
 }
