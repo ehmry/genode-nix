@@ -28,6 +28,9 @@
 /* Nix includes */
 #include <nix_store/derivation.h>
 
+/* Local includes */
+#include "environment.h"
+
 namespace Nix_store {
 
 	class Filter_component;
@@ -40,9 +43,7 @@ class Nix_store::Filter_component : public Genode::Rpc_object<File_system::Sessi
 {
 	private:
 
-		/**
-		 * XXX: redundant with the inputs in Child
-		 */
+		/*
 		struct Inputs : Genode::Avl_tree<Genode::Avl_string_base>
 		{
 			typedef Genode::Avl_string<Nix_store::MAX_NAME_LEN> Input;
@@ -52,31 +53,22 @@ class Nix_store::Filter_component : public Genode::Rpc_object<File_system::Sessi
 			Inputs(Derivation &drv, Genode::Allocator &alloc)
 			: alloc(alloc)
 			{
-				/*
-				 * XXX: move the symlink resolution to a lambda,
-				 * that should make this easier to read
-				 */
-
 				Genode::Allocator_avl fs_tx_alloc(&alloc);
 				File_system::Connection fs(fs_tx_alloc, 4096, "", "/", false);
 				Dir_handle root_handle = fs.dir("/", false);
 
-				/* read the derivation inputs */
 				drv.inputs([&] (Aterm::Parser &parser) {
 
 					Name input;
 					parser.string(&input);
 
-					/* load the input dependency */
 					Derivation dependency(input.string());
 
-					/* roll through the lists of inputs from this dependency */
 					parser.list([&] (Aterm::Parser &parser) {
 
 						Name want_id;
 						parser.string(&want_id);
 
-						/* roll through the dependency outputs to match the id */
 						dependency.outputs([&] (Aterm::Parser &parser) {
 
 							Name id;
@@ -92,14 +84,12 @@ class Nix_store::Filter_component : public Genode::Rpc_object<File_system::Sessi
 									input_path.import(path.string(), "/");
 								}
 
-								/* dereference the symlink */
 								for (;;) try {
 									if (input_path == "/" || input_path == "") {
 										PERR("invalid derivation %s", input.string());
 										throw Genode::Root::Unavailable();
 									}
 									Symlink_handle link = fs.symlink(root_handle, input_name, false);
-									/* insert the symlink so the client can dereference it too */
 									insert(new (alloc) Input(input_name));
 									size_t n = read(fs, link, input_name, input_path.capacity()-1, 0);
 									input_name[n] = '\0';
@@ -117,15 +107,14 @@ class Nix_store::Filter_component : public Genode::Rpc_object<File_system::Sessi
 									throw Genode::Root::Unavailable();
 								}
 
-								/* we now have a path that is not a symlink */
 								insert(new (alloc) Input(input_name));
 
 							} else {
-								parser.string(); /* Path */
+								parser.string();
 							}
 
-							parser.string(); /* Algo */
-							parser.string(); /* Hash */
+							parser.string();
+							parser.string();
 						});
 
 					});
@@ -142,6 +131,9 @@ class Nix_store::Filter_component : public Genode::Rpc_object<File_system::Sessi
 			}
 
 		} const _inputs;
+		*/
+
+		Inputs const &_inputs;
 
 		/**
 		 * A File_system connection without a packet buffer
@@ -204,7 +196,8 @@ class Nix_store::Filter_component : public Genode::Rpc_object<File_system::Sessi
 			void move(Dir_handle from_dir, File_system::Name const &from_name,
 			          Dir_handle to_dir,   File_system::Name const &to_name) override { }
 
-			void sigh(Node_handle node, Genode::Signal_context_capability sigh) override { }
+			bool sigh(Node_handle node, Genode::Signal_context_capability sigh) override {
+				return false; }
 
 			void sync(Node_handle node) override
 			{
@@ -217,10 +210,36 @@ class Nix_store::Filter_component : public Genode::Rpc_object<File_system::Sessi
 
 	public:
 
-		Filter_component(Derivation &drv, Genode::Allocator &alloc)
-		: _inputs(drv, alloc)
-		{ }
+		Filter_component(Inputs const &inputs)
+		: _inputs(inputs)
+		{ PDBG(""); }
 
+		Input const &_lookup_input(char const *name)
+		{
+			Input const *input = _inputs.lookup(name);
+			if (!input) {
+				PERR("lookup of %s at filter failed", name);
+				throw Lookup_failed();
+			}
+			return *input;
+		}
+
+		void _resolve(Nix_store::Path &new_path, char const *orig)
+		{
+			Nix_store::Path old_path(orig);
+			while(!old_path.has_single_element())
+				old_path.strip_last_element();
+
+			Input const &input = _lookup_input(old_path.base()+1);
+
+			while (*orig && *orig != '/')
+				++orig;
+
+			new_path.import(input.final.string(), "/");
+			new_path.append(orig);
+
+			PDBG("%s -> %s", old_path.base(), new_path.base());
+		}
 
 		/***************************
 		 ** File_system interface **
@@ -230,19 +249,26 @@ class Nix_store::Filter_component : public Genode::Rpc_object<File_system::Sessi
 
 		Dir_handle dir(File_system::Path const &path, bool create) override
 		{
+			char const *path_str = path.string();
+			if (!*path_str) throw Lookup_failed();
 			if (create) throw Permission_denied();
-			if (!Genode::strcmp("/", path.string()))
+			if (!strcmp("/", path_str))
 				return _root_handle;
-			_inputs.verify(path.string()+1);
-			return _backend.dir(path, false);
+			{
+				Nix_store::Path new_path;
+				_resolve(new_path, path.string());
+				return _backend.dir(new_path.base(), false);
+			}
 		}
 
 		File_handle file(Dir_handle dir_handle, File_system::Name const &name,
 		                 Mode mode, bool create) override
 		{
 			if (create) throw Permission_denied();
-			if (dir_handle == _root_handle)
-				_inputs.verify(name.string());
+			if (dir_handle == _root_handle) {
+				Input const &input = _lookup_input(name.string());
+				return _backend.file(dir_handle, input.final.string(), mode, false);
+			}
 			return _backend.file(dir_handle, name, mode, false);
 		}
 
@@ -250,17 +276,21 @@ class Nix_store::Filter_component : public Genode::Rpc_object<File_system::Sessi
 		{
 			if (create) throw Permission_denied();
 			if (dir_handle == _root_handle)
-				_inputs.verify(name.string());
+				throw Lookup_failed(); /* keep it simple */
 			return _backend.symlink(dir_handle, name, false);
 		}
 
 		Node_handle node(File_system::Path const &path) override
 		{
-			Nix_store::Path top_path(path.string());
-			while(!top_path.has_single_element())
-				top_path.strip_last_element();
-			_inputs.verify(top_path.base()+1);
-			return _backend.node(path);
+			char const *path_str = path.string();
+			if (!*path_str) throw Lookup_failed();
+			if (!strcmp("/", path_str))
+				return _root_handle;
+			{
+				Nix_store::Path new_path;
+				_resolve(new_path, path.string());
+				return _backend.node(new_path.base());
+			}
 		}
 
 		void close(Node_handle handle) override {
@@ -280,7 +310,8 @@ class Nix_store::Filter_component : public Genode::Rpc_object<File_system::Sessi
 		          Dir_handle to_dir_handle,   File_system::Name const &to_name) {
 			throw Permission_denied(); }
 
-		void sigh(Node_handle handle, Genode::Signal_context_capability sigh) override { }
+		bool sigh(Node_handle handle, Genode::Signal_context_capability sigh) override {
+			return false; }
 
 		void sync(Node_handle handle) { _backend.sync(handle); }
 
@@ -312,9 +343,9 @@ class Nix_store::Filter_service : public Genode::Service
 		/**
 		 * Constructor
 		 */
-		Filter_service(Nix_store::Derivation &drv, Server::Entrypoint &ep, Genode::Allocator &alloc)
+		Filter_service(Server::Entrypoint &ep, Inputs const &inputs)
 		:
-			Genode::Service("File_system"), _ep(ep), _component(drv, alloc)
+			Genode::Service("File_system"), _ep(ep), _component(inputs)
 		{ }
 
 		~Filter_service() { revoke_cap(); }

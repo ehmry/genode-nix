@@ -20,6 +20,8 @@
 
 /* Nix includes */
 #include <nix_store/derivation.h>
+#include <hash/sha256.h>
+#include <hash/blake2s.h>
 
 /* Local includes */
 #include "ingest_component.h"
@@ -34,6 +36,78 @@ class Nix_store::Ingest_service : public Genode::Service
 		Ingest_component                _component;
 		File_system::Session_capability _cap = _ep.manage(_component);
 
+		static void hash_file(File_system::Session &fs, File_system::File_handle handle, Hash::Function &hash)
+		{
+			using namespace File_system;
+
+			File_system::Session::Tx::Source &source = *fs.tx();
+			/* try to round to the nearest multiple of the hash block size */
+			size_t packet_size =
+			((source.bulk_buffer_size() / hash.block_size()) * hash.block_size()) / 2;
+			File_system::Packet_descriptor raw_packet = source.alloc_packet(packet_size);
+			Packet_guard guard(source, raw_packet);
+
+			while (packet_size > raw_packet.size())
+				packet_size /= 2;
+
+			/* Do a short read to align the packet stream with the block size */
+			size_t n = packet_size;
+			seek_off_t offset = 0;
+
+			collect_acknowledgements(source);
+			do {
+				File_system::Packet_descriptor
+					packet(raw_packet, handle, File_system::Packet_descriptor::READ, n, offset);
+
+				source.submit_packet(packet);
+				packet = source.get_acked_packet();
+				n = packet.length();
+				hash.update((uint8_t *)source.packet_content(packet), n);
+				offset += n;
+			} while (n);
+		}
+
+		/**
+		 * TODO: recursive hashing
+		 */
+		static bool _verify(File_system::Session &fs, Hash::Function &hash, char const *hex, char const *filename)
+		{
+			/* I'm too lazy to write a decoder, so encode to hex and compare the strings */
+			PDBG("%s %s", filename, hex);
+			uint8_t buf[hash.size()*2+1];
+			buf[hash.size()*2] = 0;
+
+			static uint8_t const base16[] = {
+				'0','1','2','3','4','5','6','7',
+				'8','9','a','b','c','d','e','f'
+			};
+
+			PDBG("open root");
+			File_system::Dir_handle root = fs.dir("/", false);
+			File_system::File_handle handle;
+			PDBG("%s", filename);
+			try { handle = fs.file(root, filename, File_system::READ_ONLY, false); }
+			catch (...) {
+				PERR("failed to open fixed output %s for verification", filename);
+				throw ~0;
+			}
+			File_system::Handle_guard guard(fs, handle);
+
+			hash_file(fs, handle, hash);
+			hash.digest(buf, sizeof(buf));
+
+			for (int i = hash.size()-1, j = hash.size()*2-1; i >= 0; --i) {
+				buf[j--] = base16[buf[i] & 0x0F];
+				buf[j--] = base16[buf[i] >> 4];
+			}
+
+			if (strcmp(hex, (char*)buf) == 0)
+				return true;
+
+			PERR("fixed output %s is invalid, wanted %s, got %s", filename, hex, (char*)buf);
+			return false;
+		}
+
 		/**
 		 * Create a link from input addressed path
 		 * to ouput addressed path
@@ -42,19 +116,30 @@ class Nix_store::Ingest_service : public Genode::Service
 		                       char              const *id,
 		                       char              const *path)
 		{
+			try {
+			int stack = 0; PDBG("%p %s:%s", &stack, id, path);
 			while (*path == '/') ++path;
 			using namespace File_system;
 
-			Nix_store::Name const name = _component.ingest(id);
-			char const *final_str = name.string();
+			char const *final_str = _component.ingest(id);
+			if (!(final_str && *final_str)) {
+				PERR("%s not found at ingest session", id);
+				throw ~0;
+			}
 
 			/* create symlink at real file system */
+			PDBG("open root");
 			Dir_handle root = fs.dir("/", false);
 			Handle_guard root_guard(fs, root);
 
+			PDBG("symlink %s", path);
 			Symlink_handle link = fs.symlink(root, path, true);
 			File_system::write(fs, link, final_str, Genode::strlen(final_str));
 			fs.close(link);
+			} catch (...) {
+				PERR("caught error in %s, %s:%s", __func__, id, path);
+				throw;
+			}
 		}
 
 		/**
@@ -63,6 +148,7 @@ class Nix_store::Ingest_service : public Genode::Service
 		 */
 		bool _finalize(File_system::Session &fs, Nix_store::Derivation &drv)
 		{
+			int stack = 0; PDBG("%p", &stack);
 			using namespace File_system;
 
 			unsigned outstanding = 0;
@@ -72,26 +158,45 @@ class Nix_store::Ingest_service : public Genode::Service
 				Nix_store::Name id;
 				Nix_store::Name path;
 				Nix_store::Name algo;
-				Nix_store::Name hash;
+				Nix_store::Name digest;
 
 				parser.string(&id);
 
-				Nix_store::Name output = _component.ingest(id.string());
-				if (output == "") {
+				PDBG("_component.ingest(%s)", id.string());
+				char const *output = _component.ingest(id.string());
+				if (!(output && *output)) {
 					/* If output symlinks are missing, then failure is implicit. */
 					PERR("'%s' not found at the ingest session", id.string());
 					throw ~0;
 				}
+				PDBG("%s is %s", id.string(), output);
 
 				parser.string(&path);
 				parser.string(&algo);
-				parser.string(&hash);
+				parser.string(&digest);
 
-				/*
-				if (((algo != "") || (hash != ""))
-				 && !_local_session.verify(id.string(), algo.string(), hash.string()))
-					throw Exception();
-				*/
+				try {
+				if ((algo != "") || (digest != "")) {
+					PDBG("_verify(fs, hash, %s %s)", digest.string(), output);
+
+					bool valid = false;
+					if (algo == "sha256") {
+						Hash::Sha256 hash;
+						valid = _verify(fs, hash, digest.string(), output);
+					} else if (algo == "blake2s") {
+						Hash::Blake2s hash;
+						valid = _verify(fs, hash, digest.string(), output);
+					} else
+						PERR("unknown hash algorithm `%s'", algo.string());
+					if (!valid) {
+						PERR("fixed output %s:%s is invalid", id.string(), path.string());
+						throw ~0;
+					}
+				}
+				} catch (...) {
+					PERR("caught an error verifying %s:%s", id.string(), path.string());
+					throw;
+				}
 				++outstanding;
 			});
 
@@ -113,6 +218,8 @@ class Nix_store::Ingest_service : public Genode::Service
 				parser.string(/* Algo */); 
 				parser.string(/* Hash */);
 			});
+			if (outstanding)
+				PERR("%d outputs outstanding", outstanding);
 			return outstanding == 0;
 		}
 
@@ -132,16 +239,15 @@ class Nix_store::Ingest_service : public Genode::Service
 		Ingest_service(Nix_store::Derivation &drv, Server::Entrypoint &ep, Genode::Allocator &alloc)
 		:
 			Genode::Service("File_system"), _ep(ep), _component(ep, alloc)
-		{ }
+		{ PDBG(""); }
 
 		~Ingest_service() { revoke_cap(); }
 
 		bool finalize(File_system::Session &fs, Nix_store::Derivation &drv)
 		{
+			int stack = 0; PDBG("%p", &stack);
 			revoke_cap();
-
-			try { return _finalize(fs, drv); }
-			catch (...) { }
+			try { return _finalize(fs, drv); } catch (...) { }
 			return false;
 		}
 

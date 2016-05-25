@@ -4,6 +4,13 @@
  * \date   2015-03-13
  */
 
+/*
+ * Copyright (C) 2015-2016 Genode Labs GmbH
+ *
+ * This file is part of the Genode OS framework, which is distributed
+ * under the terms of the GNU General Public License version 2.
+ */
+
 #ifndef _NIX_STORE__BUILD_CHILD_H_
 #define _NIX_STORE__BUILD_CHILD_H_
 
@@ -20,12 +27,12 @@
 #include <rm_session/connection.h>
 #include <init/child_policy.h>
 #include <os/server.h>
-#include <util/avl_string.h>
 
 /* Nix includes */
 #include <nix_store/derivation.h>
 
 /* Local imports */
+#include "environment.h"
 #include "ingest_fs_service.h"
 #include "filter_fs_service.h"
 
@@ -50,196 +57,11 @@ class Nix_store::Child : public Genode::Child_policy
 {
 	private:
 
-		char const            *_name;
+		Name            const  _name;
 		File_system::Session  &_fs;
-		Nix_store::Derivation  _drv { _name };
-
-		struct Mapping : Avl_node<Mapping>
-		{
-			Genode::String<File_system::MAX_NAME_LEN> const key;
-			Genode::String<File_system::MAX_PATH_LEN> const value;
-
-			Mapping(char const *key_str, char const *value_str)
-			: key(key_str), value(value_str) { }
-
-			/************************
-			 ** Avl node interface **
-			 ************************/
-
-			bool higher(Mapping *m) {
-				return (strcmp(m->key.string(), key.string()) > 0); }
-
-			Mapping *lookup(const char *key_str)
-			{
-				if (key == key_str) return this;
-
-				Mapping *m =
-					Avl_node<Mapping>::child(strcmp(key_str, key.string()) > 0);
-				return m ? m->lookup(key_str) : 0;
-			}
-
-		};
-
-		struct Environment : Genode::Avl_tree<Mapping>
-		{
-			/*
-			 * XXX: resolve inputs to content addressed paths
-			 * Parse the inputs first and resolve the symlinks before
-			 * populating the mappings.
-			 */
-
-			struct Input :  List<Input>::Element
-			{
-				Nix_store::Name const _link;
-				Nix_store::Name const _dest;
-				size_t          const _len;
-
-				Input (char const *link, char const *target)
-				:
-					_link(link),
-					_dest(target),
-					_len(strlen(_link.string()))
-				{ };
-
-				bool match (char const *other) {
-					return strcmp(other, _link.string(), _len) == 0; }
-
-				char const *dest() { return _dest.string(); }
-
-				size_t old_len() { return _len; }
-			};
-
-			/**
-			 * XXX: is this duplicated in the filtered fs service?
-			 */
-			struct Inputs : List<Input>
-			{
-				Inputs(File_system::Session &fs, Nix_store::Derivation &drv)
-				{
-					using namespace File_system;
-					using Nix_store::Name;
-
-					Dir_handle root_handle = fs.dir("/", false);
-					Handle_guard guard_root(fs, root_handle);
-
-					drv.inputs([&]  (Aterm::Parser &parser) {
-						Name input_drv;
-						parser.string(&input_drv);
-
-						Nix_store::Derivation depend(input_drv.string());
-
-						parser.list([&] (Aterm::Parser &parser) {
-							Name want_id;
-							parser.string(&want_id);
-
-							depend.outputs([&] (Aterm::Parser &parser) {
-								Name id;
-								parser.string(&id);
-
-								if (id != want_id) {
-									parser.string(); /* Path */
-									parser.string(); /* Algo */
-									parser.string(); /* Hash */
-									return;
-								}
-
-								Name input_path;
-								parser.string(&input_path);
-								parser.string(); /* Algo */
-								parser.string(); /* Hash */
-
-								char const *input_name = input_path.string();
-								/* XXX : slash hack */
-								while (*input_name == '/') ++input_name;
-
-								Symlink_handle link =
-									fs.symlink(root_handle, input_name, false);
-								Handle_guard guard(fs, link);
-								char target[MAX_NAME_LEN];
-								memset(target, 0x00, MAX_NAME_LEN);
-								read(fs, link, target, sizeof(target));
-								insert(new (env()->heap()) Input(input_path.string(), target));
-							});
-						});
-					});
-				}
-
-				~Inputs()
-				{
-					while (Input *input = first()) {
-						remove(input);
-						destroy(env()->heap(), input);
-					}
-				}
-
-				Input *lookup(char const *path)
-				{
-					for (Input *input = first(); input; input = input->next()) {
-						if (input->match(path)) return input;
-					}
-					return 0;
-				}
-			};
-
-			Environment(File_system::Session &fs, Nix_store::Derivation &drv)
-			{
-				using namespace File_system;
-
-				Inputs inputs(fs, drv);
-
-				typedef Genode::Path<MAX_PATH_LEN>   Path;
-				typedef Genode::String<MAX_PATH_LEN> String;
-				typedef Genode::String<MAX_NAME_LEN> Name;
-
-				drv.environment([&] (Aterm::Parser &parser) {
-					Name   key;
-					String value;
-					parser.string(&key);
-					parser.string(&value);
-
-					Path value_path(value.string());
-
-					bool top_level = value_path.has_single_element();
-					while(value.length() > 1 && !value_path.has_single_element())
-						value_path.strip_last_element();
-
-					Input *input = inputs.lookup(value_path.base());
-					Mapping *map;
-
-					if (!input) {
-						map = new (env()->heap())
-							Mapping(key.string(), value.string());
-
-					} else if (top_level) {
-						map = new (env()->heap())
-							Mapping(key.string(), input->dest());
-
-					} else {
-						/* rewrite the leading directory */
-						Path new_path(value.string()+input->old_len(), input->dest());
-						map = new (env()->heap())
-							Mapping(key.string(), new_path.base());
-					}
-					insert(map);
-				});
-			}
-
-			~Environment()
-			{
-				while(Mapping *map = (Mapping *)first()) {
-					remove(map);
-					destroy(env()->heap(), map);
-				}
-			}
-
-			char const *lookup(char const *key)
-			{
-				Mapping *m = first();
-				m = m ? m->lookup(key) : 0;
-				return m ? m->value.string() : 0;
-			}
-
-		} _environment { _fs, _drv };
+		Nix_store::Derivation  _drv { _name.string() };
+		Inputs           const _inputs      { _fs, _drv,          *Genode::env()->heap() };
+		Environment      const _environment { _fs, _drv, _inputs, *Genode::env()->heap() };
 
 		/**
 		 * Resources assigned to the child.
@@ -266,13 +88,14 @@ class Nix_store::Child : public Genode::Child_policy
 				Genode::env()->ram_session()->transfer_quota(ram.cap(), QUOTA_STEP);
 			}
 		} _resources;
+		// XXX: this far before fault
 
 		Rom_connection             _binary_rom;
 		Server::Entrypoint         _entrypoint;
 		Signal_context_capability  _exit_sigh;
 		/* XXX: use an allocator with a lifetime bound to the child */
 		Ingest_service             _fs_ingest_service { _drv, _entrypoint, *Genode::env()->heap() };
-		Filter_service             _fs_filter_service { _drv, _entrypoint, *Genode::env()->heap() };
+		Filter_service             _fs_filter_service { _entrypoint, _inputs };
 		Parent_service             _fs_parent_service { "File_system" };
 		Service_registry           _parent_services;
 
@@ -319,6 +142,11 @@ class Nix_store::Child : public Genode::Child_policy
 				char service_name[32];
 
 				char const *impure = _environment.lookup("impureServices");
+				if (!impure) {
+					PWRN("fixed output derivation without `impureSerices', %s", _name.string());
+					return;
+				}
+
 				size_t len = Genode::strlen(impure);
 				size_t start = 0, end = 1;
 
@@ -326,7 +154,7 @@ class Nix_store::Child : public Genode::Child_policy
 					if (impure[end] == ' ' || impure[end] == '\0') {
 						++end;
 						Genode::strncpy(service_name, impure+start, end-start);
-						PLOG("%s: forwarding impure service '%s' to parent", _name, service_name);
+						PLOG("%s: forwarding impure service '%s' to parent", _name.string(), service_name);
 						_parent_services.insert(new (env()->heap()) Parent_service(service_name));
 						start = end;
 					} else
@@ -340,7 +168,9 @@ class Nix_store::Child : public Genode::Child_policy
 		 ** Child policy interface **
 		 ****************************/
 
-		char const *name() const { return _name; }
+		char const *name() const {
+			return _name.string();
+		}
 
 		void filter_session_args(const char *service, char *args, size_t args_len)
 		{
@@ -398,7 +228,7 @@ class Nix_store::Child : public Genode::Child_policy
 				Arg_string::find_arg(args, "label").string(label_buf, sizeof(label_buf), "");
 
 				/* shorten the log label */
-				Genode::String<18> short_name(_name);
+				Genode::String<18> short_name(_name.string());
 				if (label_buf[0]) {
 					Genode::Label label(label_buf, short_name.string());
 					Arg_string::set_arg_string(args, args_len, "label", label.string());
@@ -447,16 +277,16 @@ class Nix_store::Child : public Genode::Child_policy
 			service = _parent_services.find(service_name);
 
 			if (!service)
-				PERR("%s request from %s rejected", service_name, _name);
+				PERR("%s request from %s rejected", service_name, _name.string());
 			return service;
 		}
 
 		void exit(int exit_value)
 		{
 			if (exit_value == 0 && _fs_ingest_service.finalize(_fs, _drv))
-				PINF("success: %s", _name);
+				PINF("success: %s", _name.string());
 			else
-				PERR("failure: %s", _name);
+				PERR("failure: %s", _name.string());
 
 			/* TODO: write a store placeholder that marks a failure */
 
@@ -465,7 +295,6 @@ class Nix_store::Child : public Genode::Child_policy
 
 		void resource_request(Parent::Resource_args const &args)
 		{
-			PDBG("%s", args.string());
 			size_t ram_request =
 				Arg_string::find_arg(args.string(), "ram_quota").ulong_value(0);
 

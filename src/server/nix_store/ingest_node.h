@@ -18,6 +18,16 @@
 #include <file_system/util.h>
 #include <hash/blake2s.h>
 #include <util/list.h>
+#include <trace/timestamp.h>
+
+/* Jitterentropy */
+/* DOESN'T WORK
+namespace Jitter { extern "C" {
+#include <jitterentropy.h>
+} }
+*/
+
+
 
 namespace Nix_store {
 
@@ -526,15 +536,25 @@ class Nix_store::Hash_root_registry
 		Hash_root_registry(Genode::Allocator &alloc)
 		: _alloc(alloc)
 		{
+			PDBG("");
 			for (unsigned i = 0; i < MAX_ROOT_NODES; ++i)
 				_roots[i] = nullptr;
 
+
 			/* use a random initial nonce */
+			_nonce = Genode::Trace::timestamp();
+
+			/* the Jitterentropy library is initialized in Nix_store::Main */
+			/*
 			using namespace Jitter;
-			jent_entropy_init();
-			rand_data *ec = Jitter::jent_entropy_collector_alloc(0, 0);
+			struct rand_data *ec = jent_entropy_collector_alloc(0, 0);
+			if (!ec) {
+				PERR("failed to initalize ingest nonce RNG");
+				throw ~0;
+			}
 			jent_read_entropy(ec, (char*)&_nonce, sizeof(_nonce));
 			jent_entropy_collector_free(ec);
+			*/
 		}
 
 		~Hash_root_registry()

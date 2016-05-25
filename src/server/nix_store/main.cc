@@ -18,6 +18,11 @@
 #include "ingest_component.h"
 #include "build_component.h"
 
+/* Jitterentropy */
+namespace Jitter { extern "C" {
+#include <jitterentropy.h>
+} }
+
 namespace Nix_store {
 
 	class Ingest_root;
@@ -174,6 +179,9 @@ struct Nix_store::Main
 	Main(Server::Entrypoint &ep)
 	: ep(ep)
 	{
+		/* used by the ingest component */
+		Jitter::jent_entropy_init();
+
 		Genode::env()->parent()->announce(ep.manage(ingest_root));
 		Genode::env()->parent()->announce(ep.manage(build_root));
 	}
@@ -188,7 +196,7 @@ namespace Server {
 
 	char const *name() { return "nix_store_ep"; }
 
-	size_t stack_size() { return 16*1024*sizeof(long); }
+	size_t stack_size() { return 32*1024*sizeof(long); }
 
 	void construct(Entrypoint &ep)
 	{

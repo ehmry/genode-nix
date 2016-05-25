@@ -26,41 +26,10 @@
 #include <base/allocator_avl.h>
 #include <base/allocator_guard.h>
 
-/* Jitterentropy */
-namespace Jitter { extern "C" {
-#include <jitterentropy.h>
-} }
-
 /* Local includes */
 #include "ingest_node.h"
 
-namespace Nix_store {
-
-	class Ingest_component;
-
-	static bool is_root(File_system::Path const &path) {
-		return Genode::strcmp(path.string(), "/", 2) == 0; }
-
-	static void empty_dir(File_system::Session &fs, char const *path)
-	{
-		using namespace File_system;
-		Directory_entry dirent;
-
-		Dir_handle dir_handle = fs.dir(path, false);
-		Handle_guard guard(fs, dir_handle);
-
-		while (read(fs, dir_handle, &dirent, sizeof(dirent)) == sizeof(dirent)) {
-			try {
-				fs.unlink(dir_handle, dirent.name);
-			} catch (Not_empty) {
-				Genode::Path<MAX_PATH_LEN> subdir(dirent.name, path);
-				empty_dir(fs, subdir.base());
-				fs.unlink(dir_handle, dirent.name);
-			}
-		}
-	}
-
-}
+namespace Nix_store { class Ingest_component; }
 
 
 class Nix_store::Ingest_component : public File_system::Session_rpc_object
@@ -81,7 +50,7 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 		/* a queue of packets from the client awaiting backend processing */
 		File_system::Packet_descriptor      _packet_queue[TX_QUEUE_SIZE];
 
-		Genode::Allocator_avl               _fs_tx_alloc;
+		Genode::Allocator_avl               _fs_tx_alloc { &_alloc };
 		File_system::Connection_base        _fs;
 		Signal_rpc_member<Ingest_component> _process_packet_dispatcher;
 		Dir_handle                          _root_handle;
@@ -100,9 +69,6 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 		 */
 		bool _process_incoming_packet(File_system::Packet_descriptor &theirs)
 		{
-			/* assume failure by default */
-			theirs.succeeded(false);
-
 			void *content = tx_sink()->packet_content(theirs);
 			size_t const length = theirs.length();
 
@@ -120,7 +86,6 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 						if (name_len <= length) {
 							memcpy(content, root.filename, name_len);
 							theirs.length(name_len);
-							theirs.succeeded(true);
 						}
 					}
 					/* we read from a local virtual node, so ack immediately */
@@ -224,7 +189,6 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 					break;
 			}
 			theirs.length(length);
-			theirs.succeeded(length > 0);
 
 			tx_sink()->acknowledge_packet(theirs);
 			source.release_packet(ours);
@@ -291,6 +255,28 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 			return dir_node.file(name, true);
 		}
 
+		static bool is_root(File_system::Path const &path) {
+			return Genode::strcmp(path.string(), "/", 2) == 0; }
+
+		static void empty_dir(File_system::Session &fs, char const *path)
+		{
+			using namespace File_system;
+			Directory_entry dirent;
+
+			Dir_handle dir_handle = fs.dir(path, false);
+			Handle_guard guard(fs, dir_handle);
+
+			while (read(fs, dir_handle, &dirent, sizeof(dirent)) == sizeof(dirent)) {
+				try {
+					fs.unlink(dir_handle, dirent.name);
+				} catch (Not_empty) {
+					Genode::Path<MAX_PATH_LEN> subdir(dirent.name, path);
+					empty_dir(fs, subdir.base());
+					fs.unlink(dir_handle, dirent.name);
+				}
+			}
+		}
+
 	public:
 
 		/**
@@ -306,10 +292,10 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 		:
 			Session_rpc_object(env()->ram_session()->alloc(tx_buf_size/2), ep.rpc_ep()),
 			_alloc(&alloc, ram_quota),
-			_fs_tx_alloc(&_alloc),
 			_fs(_fs_tx_alloc, tx_buf_size/2, "ingest"),
 			_process_packet_dispatcher(ep, *this, &Ingest_component::_process_packets)
 		{
+			PDBG("");
 			_root_handle = _fs.dir("/", false);
 
 			/* invalidate the packet queue */
@@ -321,6 +307,7 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 			 * handler for client packet submission signals.
 			 */
 			_tx.sigh_packet_avail(_process_packet_dispatcher);
+			PDBG("done");
 		}
 
 		/**
@@ -400,10 +387,12 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 		 */
 		char const *ingest(char const *name)
 		{
-			Hash_root &root = _root_registry.lookup(name);
-
-			finish(root);
-			return root.filename;
+			try {
+				Hash_root &root = _root_registry.lookup(name);
+				finish(root);
+				return root.filename;
+			} catch (...) { }
+			return 0;
 		}
 
 		/*
@@ -718,8 +707,8 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 			to_dir_node.insert(node);
 		}
 
-		void sigh(Node_handle node_handle, Signal_context_capability sigh) override {
-			_fs.sigh(node_handle, sigh); }
+		bool sigh(Node_handle node_handle, Signal_context_capability sigh) override {
+			return _fs.sigh(node_handle, sigh); }
 };
 
 

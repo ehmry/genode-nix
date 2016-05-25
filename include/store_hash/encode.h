@@ -18,11 +18,6 @@ namespace Store_hash {
 
 	using namespace Genode;
 
-	static uint8_t const base16[] = {
-		'0','1','2','3','4','5','6','7',
-		'8','9','a','b','c','d','e','f'
-	};
-
 	static uint8_t const base32[] = {
 		'0','1','2','3','4','5','6','7',
 		'8','9','a','b','c','d','f','g',
