@@ -5,10 +5,8 @@
 #include <vfs/file_system_factory.h>
 #include <vfs/dir_file_system.h>
 #include <terminal_session/terminal_session.h>
-#include <report_session/connection.h>
 #include <os/config.h>
-#include <os/attached_dataspace.h>
-#include <util/volatile_object.h>
+#include <base/log.h>
 
 /* Local includes */
 //#include "job.h"
@@ -66,12 +64,23 @@ struct NixRepl : Line_editor_base
     StringSet completions;
     StringSet::iterator curCompletion;
 
-    Genode::Lazy_volatile_object<Report::Connection> _report;
-
-    NixRepl(Terminal::Session &terminal,
-            const char        *prompt,
-            char              *buf,
-            size_t             buf_size);
+	NixRepl(Genode::Env       &env,
+ 	        Genode::Allocator &alloc,
+	        Terminal::Session &terminal,
+	        const char        *prompt,
+	        char              *buf,
+	        size_t             buf_size,
+	        Genode::Xml_node   config)
+	    : Line_editor_base(terminal, prompt, buf, buf_size)
+	    , _buf(buf)
+	    , _buf_size(buf_size)
+	    , store(env, alloc)
+	    , state(env, store, Genode::config()->xml_node().sub_node("nix"))
+	    , staticEnv(false, &state.staticBaseEnv)
+	    , _term(terminal)
+	{
+	    initEnv();
+	}
 
     void build(string arg);
     void completePrefix(string prefix);
@@ -144,21 +153,6 @@ struct NixRepl : Line_editor_base
 	} _term;
 
 };
-
-
-NixRepl::NixRepl(Terminal::Session &terminal,
-                 const char        *prompt,
-                 char              *buf,
-                 size_t             buf_size)
-    : Line_editor_base(terminal, prompt, buf, buf_size)
-    , _buf(buf)
-    , _buf_size(buf_size)
-    , state(store, Genode::config()->xml_node().sub_node("nix"))
-    , staticEnv(false, &state.staticBaseEnv)
-    , _term(terminal)
-{
-    initEnv();
-}
 
 
 void NixRepl::completePrefix(string prefix)
@@ -298,20 +292,6 @@ bool NixRepl::processLine(string line)
         Value v;
         evalString(arg, v);
         printValue(v, 1000000000);
-    }
-
-    else if (command == ":o" || command == ":report") {
-        Value v;
-        evalString(arg, v);
-        PathSet context;
-        string content = state.coerceToString(noPos, v, context);
-        if (!_report.is_constructed())
-			_report.construct("");
-
-		Genode::Attached_dataspace ds(_report->dataspace());
-		size_t len = min(content.size(), ds.size());
-		content.copy(ds.local_addr<char>(), len);
-		_report->submit(len);
     }
 
     else if (command == ":q" || command == ":quit") {
@@ -583,7 +563,7 @@ void NixRepl::printValue(Value & v, unsigned int maxDepth, ValuesSeen & seen)
 
 void NixRepl::perform_completion()
 {
-	PWRN("%s not implemented", __func__);
+	Genode::warning(__func__, " not implemented");
 }
 
 void NixRepl::evaluate()

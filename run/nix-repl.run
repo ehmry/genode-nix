@@ -52,7 +52,6 @@ create_boot_directory
 append config {
 <config>
 	<parent-provides>
-		<service name="CAP"/>
 		<service name="CPU"/>
 		<service name="IO_MEM"/>
 		<service name="IO_PORT"/>
@@ -62,16 +61,9 @@ append config {
 		<service name="RAM"/>
 		<service name="RM"/>
 		<service name="ROM"/>
-		<service name="SIGNAL"/>
 	</parent-provides>
 	<default-route>
-		<service name="File_system" label_suffix="ingest">
-			<child name="nix_store" />
-		</service>
-		<any-service>
-			<child name="store_fs"/>
-			<parent/> <any-child/>
-		</any-service>
+		<any-service> <parent/> <any-child/> </any-service>
 	</default-route>
 	<start name="timer">
 		<resource name="RAM" quantum="1M"/>
@@ -115,14 +107,18 @@ append config {
 	<start name="store_fs">
 		<binary name="vfs"/>
 		<resource name="RAM" quantum="32M"/>
-		<provides><service name="File_system"/></provides>
+		<provides>
+			<service name="ROM"/>
+			<service name="File_system"/>
+		</provides>
 		<config>
 			<vfs>
 				<ram/>
 			</vfs>
-
-			<policy label="nix_store" writeable="yes" />
-			<default-policy root="/"/>
+			<rom/>
+			<file_system>
+				<policy label_prefix="nix_store" writeable="yes" />
+			</file_system>
 		</config>
 	</start>
 
@@ -133,28 +129,21 @@ append config {
 			<service name="File_system"/>
 		</provides>
 		<route>
-			<service name="ROM" label="ld.lib.so">
-				<parent/>
-			</service>
+			<service name="ROM" label_prefix="store">
+				<child name="store_fs"/> </service>
+			<service name="File_system">
+				<child name="store_fs"/> </service>
 			<any-service>
-				<child name="store_rom"/>
-				<child name="store_fs"/>
 				<parent/> <any-child/>
 			</any-service>
 		</route>
-	</start>
-
-	<start name="store_rom">
-		<binary name="fs_rom"/>
-		<resource name="RAM" quantum="16M"/>
-		<provides><service name="ROM"/></provides>
 	</start>
 
 	<start name="terminal">
 		<resource name="RAM" quantum="2M"/>
 		<provides><service name="Terminal"/></provides>
 		<config>
-			<!-- <keyboard layout="dvorak"/> -->
+			<keyboard layout="dvorak"/>
 		</config>
 	</start>
 
@@ -163,7 +152,7 @@ append config {
 		<exit propagate="yes"/>
 		<route>
 			<service name="ROM" label_prefix="store">
-				<child name="store_rom"/>
+				<child name="store_fs"/>
 			</service>
 			<service name="File_system" label="store">
 				<child name="store_fs"/>
@@ -176,10 +165,7 @@ append config {
 			</any-service>
 		</route>
 		<config>
-			<nix verbosity="9">
-				<search-path name="store" path="/store"/>
-				<search-path name="foo" path="/bar"/>
-			</nix>
+			<nix verbosity="9"/>
 			<load file="/default.nix"/>
 			<vfs>
 				<inline name="default.nix">
@@ -194,8 +180,6 @@ rec {
 					<tar name="nix_corepkgs.tar"/>
 				</dir> </dir>
 				<dir name="store"> <fs label="store"/> </dir>
-				<dir name="noux-pkg">
-				</dir>
 			</vfs>
 		</config>
 	</start>
