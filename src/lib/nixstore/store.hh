@@ -14,6 +14,7 @@
 /* Genode includes */
 #include <libstore/derivations.hh>
 #include <libstore/store-api.hh>
+#include <file_system_session/connection.h>
 #include <file_system/util.h>
 #include <vfs/file_system.h>
 #include <base/allocator_avl.h>
@@ -41,8 +42,10 @@ class nix::Store : public nix::StoreAPI
 {
 	private:
 
-		Nix_store::Connection _store_session;
-		Genode::Lock          _packet_lock;
+		Genode::Env           &_env;
+		Genode::Allocator_avl  _fs_tx_alloc;
+		Nix_store::Connection  _store_session { _env };
+		Genode::Lock           _packet_lock;
 
 		void hash_dir(uint8_t *buf, nix::Path const &src_path);
 		void hash_file(uint8_t *buf, nix::Path const &src_path);
@@ -68,9 +71,15 @@ class nix::Store : public nix::StoreAPI
 
 	public:
 
-		Store() { if (_vfs == nullptr) throw Error("Nix VFS uninitialized"); }
+		Store(Genode::Env &env, Genode::Allocator &alloc)
+		: _env(env), _fs_tx_alloc(&alloc)
+		{
+			if (_vfs == nullptr) throw Error("Nix VFS uninitialized");
+		}
 
 		Nix_store::Session &store_session() { return _store_session; }
+
+		Genode::Env &env() { return _env; }
 
 		/************************
 		 ** StoreAPI interface **

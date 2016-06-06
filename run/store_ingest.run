@@ -56,8 +56,10 @@ append config {
 		<provides><service name="File_system"/></provides>
 		<config>
 			<vfs> <ram/> </vfs>
-			<policy label="nix_store" writeable="yes"/>
-			<default-policy/>
+			<file_system>
+				<policy label="nix_store" writeable="yes"/>
+				<default-policy/>
+			</file_system>
 		</config>
 	</start>
 	<start name="nix_store">

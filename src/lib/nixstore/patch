@@ -16,14 +16,15 @@ index a1c4b48..4d58850 100644
  
  }
 diff --git a/src/libstore/derivations.cc b/src/libstore/derivations.cc
-index 7959d5b..d95f139 100644
+index 7959d5b..0b2f210 100644
 --- a/src/libstore/derivations.cc
 +++ b/src/libstore/derivations.cc
-@@ -5,6 +5,11 @@
+@@ -5,6 +5,12 @@
  #include "misc.hh"
  #include "worker-protocol.hh"
  
 +/* Genode includes */
++#include <nix/attached_rom_dataspace.h>
 +#include <rom_session/connection.h>
 +#include <dataspace/client.h>
 +#include <util/label.h>
@@ -31,7 +32,7 @@ index 7959d5b..d95f139 100644
  
  namespace nix {
  
-@@ -48,7 +53,7 @@ Path writeDerivation(StoreAPI & store,
+@@ -48,7 +54,7 @@ Path writeDerivation(StoreAPI & store,
  static Path parsePath(std::istream & str)
  {
      string s = parseString(str);
@@ -40,10 +41,11 @@ index 7959d5b..d95f139 100644
          throw FormatError(format("bad path ‘%1%’ in derivation") % s);
      return s;
  }
-@@ -113,10 +118,41 @@ static Derivation parseDerivation(const string & s)
+@@ -113,10 +119,35 @@ static Derivation parseDerivation(const string & s)
  }
  
  
+-Derivation readDerivation(const Path & drvPath)
 +/**
 + * Derivations are read from ROM session.
 + * Serving them over ROM makes sense because
@@ -54,7 +56,7 @@ index 7959d5b..d95f139 100644
 + * operations, so a ROM server can act as a
 + * shared cache.
 + */
- Derivation readDerivation(const Path & drvPath)
++Derivation readDerivation(Genode::Env &env, const Path & drvPath)
  {
 +    using namespace Genode;
 +
@@ -65,14 +67,8 @@ index 7959d5b..d95f139 100644
 +    string raw_drv;
 +
 +    try {
-+        Label label(drv_name, "store");
-+        Rom_connection rom(label.string());
-+        Rom_dataspace_capability ds_cap = rom.dataspace();
-+
-+        char *p = env()->rm_session()->attach(ds_cap);
-+        raw_drv.assign(p, Dataspace_client(ds_cap).size());
-+        env()->rm_session()->detach(p);
-+
++		Nix::Attached_rom_dataspace drv_rom(env, drv_name);
++        raw_drv.assign(drv_rom.local_addr<char>(), drv_rom.size());
 +    } catch (Genode::Rom_connection::Rom_connection_failed) {
 +        throw Error(format("error opening ROM connection to derivation ‘%1%’") % drvPath);
 +    }
@@ -83,6 +79,28 @@ index 7959d5b..d95f139 100644
      } catch (FormatError & e) {
          throw Error(format("error parsing derivation ‘%1%’: %2%") % drvPath % e.msg());
      }
+@@ -251,7 +282,7 @@ Hash hashDerivationModulo(StoreAPI & store, Derivation drv)
+         Hash h = drvHashes[i.first];
+         if (h.type == htUnknown) {
+             assert(store.isValidPath(i.first));
+-            Derivation drv2 = readDerivation(i.first);
++            Derivation drv2 = readDerivation(store.env(), i.first);
+             h = hashDerivationModulo(store, drv2);
+             drvHashes[i.first] = h;
+         }
+diff --git a/src/libstore/derivations.hh b/src/libstore/derivations.hh
+index f084204..e5775fa 100644
+--- a/src/libstore/derivations.hh
++++ b/src/libstore/derivations.hh
+@@ -66,7 +66,7 @@ Path writeDerivation(StoreAPI & store,
+     const Derivation & drv, const string & name, bool repair = false);
+ 
+ /* Read a derivation from a file. */
+-Derivation readDerivation(const Path & drvPath);
++Derivation readDerivation(Genode::Env &env, const Path & drvPath);
+ 
+ /* Print a derivation. */
+ string unparseDerivation(const Derivation & drv);
 diff --git a/src/libstore/download.cc b/src/libstore/download.cc
 index 822e9a8..8d35231 100644
 --- a/src/libstore/download.cc
@@ -506,7 +524,7 @@ index 60b11af..5f752e3 100644
      SettingsMap settings, overrides;
  
 diff --git a/src/libstore/misc.cc b/src/libstore/misc.cc
-index 61a976c..86efb8f 100644
+index 61a976c..33d22a8 100644
 --- a/src/libstore/misc.cc
 +++ b/src/libstore/misc.cc
 @@ -1,6 +1,5 @@
@@ -514,6 +532,15 @@ index 61a976c..86efb8f 100644
  #include "store-api.hh"
 -#include "local-store.hh"
  #include "globals.hh"
+ 
+ 
+@@ -11,7 +10,7 @@ Derivation derivationFromPath(StoreAPI & store, const Path & drvPath)
+ {
+     assertStorePath(drvPath);
+     store.ensurePath(drvPath);
+-    return readDerivation(drvPath);
++    return readDerivation(store.env(), drvPath);
+ }
  
  
 diff --git a/src/libstore/optimise-store.cc b/src/libstore/optimise-store.cc
@@ -727,30 +754,10 @@ index 33eab5a..9d1ef1a 100644
  }
  
 diff --git a/src/libstore/store-api.cc b/src/libstore/store-api.cc
-index a73ebd8..bb426e5 100644
+index a73ebd8..d18662f 100644
 --- a/src/libstore/store-api.cc
 +++ b/src/libstore/store-api.cc
-@@ -6,17 +6,10 @@
- namespace nix {
- 
- 
--bool isInStore(const Path & path)
--{
--    return isInDir(path, settings.nixStore);
--}
-+bool isInStore(const Path & path) { return true; }
- 
- 
--bool isStorePath(const Path & path)
--{
--    return isInStore(path)
--        && path.find('/', settings.nixStore.size() + 1) == Path::npos;
--}
-+bool isStorePath(const Path & path) { return isInStore(path); }
- 
- 
- void assertStorePath(const Path & path)
-@@ -296,26 +289,3 @@ void exportPaths(StoreAPI & store, const Paths & paths,
+@@ -296,26 +296,3 @@ void exportPaths(StoreAPI & store, const Paths & paths,
  
  
  }
@@ -778,10 +785,19 @@ index a73ebd8..bb426e5 100644
 -
 -}
 diff --git a/src/libstore/store-api.hh b/src/libstore/store-api.hh
-index 9cc5fd4..b8e4630 100644
+index 9cc5fd4..76b43a3 100644
 --- a/src/libstore/store-api.hh
 +++ b/src/libstore/store-api.hh
-@@ -382,10 +382,6 @@ Path addPermRoot(StoreAPI & store, const Path & storePath,
+@@ -298,6 +298,8 @@ public:
+     /* Check the integrity of the Nix store.  Returns true if errors
+        remain. */
+     virtual bool verifyStore(bool checkContents, bool repair) = 0;
++
++    virtual Genode::Env &env() = 0;
+ };
+ 
+ 
+@@ -382,10 +384,6 @@ Path addPermRoot(StoreAPI & store, const Path & storePath,
  Paths topoSortPaths(StoreAPI & store, const PathSet & paths);
  
  
@@ -792,3 +808,9 @@ index 9cc5fd4..b8e4630 100644
  
  /* Factory method: open the Nix database, either through the local or
     remote implementation. */
+@@ -410,5 +408,4 @@ void exportPaths(StoreAPI & store, const Paths & paths,
+ MakeError(SubstError, Error)
+ MakeError(BuildError, Error) /* denotes a permanent build failure */
+ 
+-
+ }

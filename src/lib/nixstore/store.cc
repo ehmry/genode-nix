@@ -83,7 +83,7 @@ static nix::Path finalize_ingest(File_system::Session &fs, char const *name)
 	source.submit_packet(packet);
 	packet = source.get_acked_packet();
 
-	if (!packet.succeeded())
+	if (!packet.length())
 		throw nix::Error(format("finalising ingest of ‘%1%’") % name);
 	return nix::Path(source.packet_content(packet), packet.length());
 }
@@ -175,7 +175,7 @@ void Store::copy_file(File_system::Session    &fs,
 	Vfs_handle *vfs_handle = nullptr;
 	if (_vfs->open(src_path.c_str(),
 	                   Directory_service::OPEN_MODE_RDONLY,
-	                   &vfs_handle) != Directory_service::OPEN_OK)
+	                   &vfs_handle, *Genode::env()->heap()) != Directory_service::OPEN_OK)
 		throw Error(format("getting handle on file ‘%1%’") % dst_path);
 	Vfs_handle::Guard vfs_guard(vfs_handle);
 
@@ -208,7 +208,7 @@ void Store::copy_file(File_system::Session    &fs,
 		source.submit_packet(packet);
 
 		packet = source.get_acked_packet();
-		if (!packet.succeeded())
+		if (!packet.length())
 			throw nix::Error(format("writing file ‘%1%’") % dst_path);
 
 		/* prepare next iteration */
@@ -249,7 +249,7 @@ void Store::copy_symlink(File_system::Session       &fs,
 	source.submit_packet(packet);
 
 	packet = source.get_acked_packet();
-	if (!packet.succeeded())
+	if (!packet.length())
 		throw Error(format("writing symlink ‘%1%’") % src_path);
 }
 
@@ -270,7 +270,7 @@ Store::hash_file(uint8_t *buf, nix::Path const &src_path)
 	Vfs_handle *vfs_handle = nullptr;
 	if (_vfs->open(src_path.c_str(),
 	                        Directory_service::OPEN_MODE_RDONLY,
-	                        &vfs_handle) != Directory_service::OPEN_OK)
+	                        &vfs_handle, *Genode::env()->heap()) != Directory_service::OPEN_OK)
 		throw Error(format("getting handle on file ‘%1%’") % src_path);
 	Vfs_handle::Guard vfs_guard(vfs_handle);
 
@@ -328,13 +328,11 @@ Store::add_file(nix::Path const &src_path)
 	Vfs_handle *vfs_handle = nullptr;
 	if (_vfs->open(src_path.c_str(),
 	               Directory_service::OPEN_MODE_RDONLY,
-	               &vfs_handle) != Directory_service::OPEN_OK)
+	               &vfs_handle, *Genode::env()->heap()) != Directory_service::OPEN_OK)
 		throw Error(format("getting handle on file ‘%1%’") % src_path);
 	Vfs_handle::Guard vfs_guard(vfs_handle);
 
-	Genode::Allocator_avl fs_block_alloc(Genode::env()->heap());
-	File_system::Connection
-		fs(fs_block_alloc, File_system::DEFAULT_TX_BUF_SIZE, "ingest");
+	File_system::Connection fs(_env, _fs_tx_alloc, "ingest");
 
 	nix::Path name = src_path.substr(src_path.rfind("/")+1, src_path.size()-1);
 	File_system::File_handle ingest_handle;
@@ -372,7 +370,7 @@ Store::add_file(nix::Path const &src_path)
 
 		source.submit_packet(packet);
 		packet = source.get_acked_packet();
-		if (!packet.succeeded())
+		if (!packet.length())
 			throw nix::Error(format("addPathToStore: writing `%1%' failed") % src_path);
 		remaining -= packet.length();
 		offset    += packet.length();
@@ -434,9 +432,7 @@ Store::hash_dir(uint8_t *buf, nix::Path const &src_path)
 string
 Store::add_dir(nix::Path const &src_path)
 {
-	Genode::Allocator_avl fs_block_alloc(Genode::env()->heap());
-	File_system::Connection
-		fs(fs_block_alloc, File_system::DEFAULT_TX_BUF_SIZE, "ingest");
+	File_system::Connection fs(_env, _fs_tx_alloc, "ingest");
 
 	/* The index of the begining of the last path element. */
 	int path_offset = src_path.rfind("/");
@@ -563,16 +559,17 @@ Store::addToStore(const string & name, const nix::Path & srcPath,
 	if (stat.mode & Directory_service::STAT_MODE_DIRECTORY) {
 		hash_dir(buf, srcPath);
 		Store_hash::encode(buf, name.c_str(), sizeof(buf));
-		if (_store_session.valid((char *) buf))
+		if (_store_session.valid((char *) buf)) {
 			return "/" + string((char *) buf);
-
+		}
 		final_name = add_dir(srcPath);
 
 	} else if (stat.mode & Directory_service::STAT_MODE_FILE) {
 		hash_file(buf, srcPath);
 		Store_hash::encode(buf, name.c_str(), sizeof(buf));
-		if (_store_session.valid((char *) buf))
+		if (_store_session.valid((char *) buf)) {
 			return "/" + string((char *) buf);
+		}
 
 		final_name = add_file(srcPath);
 	} else
@@ -604,9 +601,7 @@ nix::Path nix::Store::addTextToStore(const string & name, const string & text,
 		size_t remaining = text.size();
 		size_t offset = 0;
 
-		Genode::Allocator_avl fs_block_alloc(Genode::env()->heap());
-		File_system::Connection
-			fs(fs_block_alloc, File_system::DEFAULT_TX_BUF_SIZE, "ingest");
+		File_system::Connection fs(_env, _fs_tx_alloc, "ingest");
 		
 		File_handle handle;
 		try {
@@ -637,7 +632,7 @@ nix::Path nix::Store::addTextToStore(const string & name, const string & text,
 
 			source.submit_packet(packet);
 			packet = source.get_acked_packet();
-			if (!packet.succeeded())
+			if (!packet.length())
 				throw nix::Error(format("addTextToStore: writing `%1%' failed") % name);
 
 			offset    += packet.length();
@@ -679,9 +674,7 @@ nix::Path nix::Store::addDataToStore(const string & name,
 
 		char const *name_str = name.c_str();
 
-		Genode::Allocator_avl fs_block_alloc(Genode::env()->heap());
-		File_system::Connection
-			fs(fs_block_alloc, File_system::DEFAULT_TX_BUF_SIZE, "ingest");
+		File_system::Connection fs(_env, _fs_tx_alloc, "ingest");
 		
 		File_handle handle;
 		try {
@@ -712,7 +705,7 @@ nix::Path nix::Store::addDataToStore(const string & name,
 
 			source.submit_packet(packet);
 			packet = source.get_acked_packet();
-			if (!packet.succeeded())
+			if (!packet.length())
 				throw nix::Error(format("addTextToStore: writing `%1%' failed") % name);
 
 			offset += packet.length();

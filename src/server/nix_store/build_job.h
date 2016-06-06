@@ -101,12 +101,14 @@ class Nix_store::Job : public Fifo<Job>::Element
 			return true;
 		}
 
-		void start(File_system::Session              &fs,
-		           Genode::Signal_context_capability  exit_sigh)
+		void start(Genode::Env                       &env,
+		           File_system::Session              &fs,
+		           Genode::Signal_context_capability  exit_sigh,
+		           Genode::Dataspace_capability       ldso_ds)
 		{
 			try {
 				_child = new (Genode::env()->heap())
-					Child(_name.string(), fs, exit_sigh);
+					Child(_name.string(), env, fs, exit_sigh, ldso_ds);
 			} catch (Missing_dependency) {
 				PERR("missing dependency for %s", _name.string());
 				Signal_transmitter(exit_sigh).submit();
@@ -156,6 +158,11 @@ class Nix_store::Job : public Fifo<Job>::Element
 class Nix_store::Jobs : private Genode::Fifo<Job>
 {
 	private:
+
+		Genode::Env             &_env;
+		Genode::Allocator       &_alloc;
+
+		Genode::Attached_rom_dataspace _ldso_rom { "ld.lib.so" };
 
 		Signal_rpc_member<Jobs>  _resource_dispatcher;
 		Signal_rpc_member<Jobs>  _yield_dispatcher;
@@ -224,7 +231,7 @@ class Nix_store::Jobs : private Genode::Fifo<Job>
 				Lock::Guard guard(_lock);
 
 				/* Job destructor notifies listeners */
-				destroy(env()->heap(), dequeue());
+				destroy(_alloc, dequeue());
 
 				_pending = false;
 			}
@@ -234,16 +241,17 @@ class Nix_store::Jobs : private Genode::Fifo<Job>
 
 	public:
 
-		Jobs(Server::Entrypoint &ep, File_system::Session &fs)
+		Jobs(Genode::Env &env, Genode::Allocator &alloc, File_system::Session &fs)
 		:
-			_resource_dispatcher(ep, *this, &Jobs::_resource_handler),
-			_yield_dispatcher(   ep, *this, &Jobs::_yield_handler),
-			_exit_dispatcher(    ep, *this, &Jobs::_exit_handler),
+			_env(env), _alloc(alloc),
+			_resource_dispatcher(env.ep(), *this, &Jobs::_resource_handler),
+			_yield_dispatcher(   env.ep(), *this, &Jobs::_yield_handler),
+			_exit_dispatcher(    env.ep(), *this, &Jobs::_exit_handler),
 			_fs(fs),
 			_pending(false)
 		{
-			Genode::env()->parent()->resource_avail_sigh(_resource_dispatcher);
-			Genode::env()->parent()->yield_sigh(_yield_dispatcher);
+			env.parent().resource_avail_sigh(_resource_dispatcher);
+			env.parent().yield_sigh(_yield_dispatcher);
 		}
 
 		/**
@@ -258,7 +266,7 @@ class Nix_store::Jobs : private Genode::Fifo<Job>
 			Job *job = head();
 			while (job->abandoned()) {
 				dequeue();
-				destroy(Genode::env()->heap(), job);
+				destroy(_alloc, job);
 				job = head();
 				if (!job) return;
 			}
@@ -270,7 +278,7 @@ class Nix_store::Jobs : private Genode::Fifo<Job>
 			if (Genode::env()->ram_session()->avail() >
 			    QUOTA_STEP+QUOTA_RESERVE)
 			{
-				job->start(_fs, _exit_dispatcher);
+				job->start(_env, _fs, _exit_dispatcher, _ldso_rom.cap());
 				_pending = true;
 				return;
 			}
@@ -297,7 +305,7 @@ class Nix_store::Jobs : private Genode::Fifo<Job>
 					}
 
 				if (!job) try {
-					job = new (env()->heap()) Job(drv_name);
+					job = new (_alloc) Job(drv_name);
 					enqueue(job);
 				} catch (Aterm::Parser::Malformed_element) {
 					PERR("canceling job with malformed derivation file at %s", drv_name);

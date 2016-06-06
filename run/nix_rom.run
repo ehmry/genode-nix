@@ -19,51 +19,39 @@ build $build_components
 create_boot_directory
 
 append config {
-<config>
+<config verbose="yes">
 	<parent-provides>
-		<service name="CAP"/>
 		<service name="CPU"/>
 		<service name="LOG"/>
 		<service name="PD"/>
 		<service name="RAM"/>
 		<service name="RM"/>
 		<service name="ROM"/>
-		<service name="SIGNAL"/>
 	</parent-provides>
+	<default-route>
+		<any-service> <parent/> </any-service>
+	</default-route>
 
 	<start name="timer">
 		<resource name="RAM" quantum="1M"/>
 		<provides><service name="Timer"/></provides>
-		<route>
-			<any-service> <parent/> </any-service>
-		</route>
 	</start>
 
 	<start name="store_fs">
 		<binary name="vfs"/>
 		<resource name="RAM" quantum="8M"/>
-		<provides><service name="File_system"/></provides>
+		<provides>
+			<service name="File_system"/>
+			<service name="ROM"/>
+		</provides>
 		<config>
 			<vfs> <ram/> </vfs>
-			<policy label_prefix="nix_store" writeable="yes"/>
-			<default-policy/>
+			<rom/>
+			<file_system>
+				<policy label_prefix="nix_store" writeable="yes"/>
+				<default-policy/>
+			</file_system>
 		</config>
-		<route>
-			<any-service> <parent/> </any-service>
-		</route>
-	</start>
-
-	<start name="store_rom">
-		<binary name="fs_rom"/>
-		<resource name="RAM" quantum="8M"/>
-		<provides><service name="ROM"/></provides>
-		<route>
-			<any-service>
-				<child name="store_fs"/>
-				<parent/>
-			</any-service>
-		</route>
-		<config verbose="true"/>
 	</start>
 
 	<start name="nix_store">
@@ -73,11 +61,11 @@ append config {
 			<service name="File_system"/>
 		</provides>
 		<route>
-			<any-service>
-				<child name="store_fs"/>
-				<child name="store_rom"/>
-				<parent/>
-			</any-service>
+			<service name="ROM" label_suffix="store">
+				<child name="store_fs"/> </service>
+			<service name="File_system">
+				<child name="store_fs"/> </service>
+			<any-service> <parent/> </any-service>
 		</route>
 	</start>
 
@@ -86,17 +74,6 @@ append config {
 		<provides>
 			<service name="ROM"/>
 		</provides>
-		<route>
-			<service name="ROM" label_prefix="store">
-				<child name="store_rom"/>
-			</service>
-			<service name="File_system" label="ingest">
-				<child name="nix_store"/>
-			</service>
-			<any-service>
-				<parent/> <any-child/>
-			</any-service>
-		</route>
 		<config verbosity="9">
 			<vfs>
 				<dir name="nix"> <dir name="corepkgs"> <tar name="nix_corepkgs.tar"/> </dir> </dir>
@@ -106,22 +83,40 @@ append config {
 				<search-path name="nix" path="/corepkgs"/>
 				<search-path name="store" path="/store"/>
 			</nix>
-		<default-policy/>
+			<default-policy/>
 		</config>
+		<route>
+			<service name="Nix_store" >
+				<child name="nix_store"/> </service>
+			<service label_prefix="store" name="ROM" >
+				<child name="store_fs"/> </service>
+			<service label_prefix="store" name="File_system">
+				<child name="store_fs"/> </service>
+			<service label_prefix="ingest" name="File_system">
+				<child name="nix_store"/> </service>
+			<service name="Timer">
+				<child name="timer"/> </service>
+			<any-service> <parent/> </any-service>
+		</route>
 	</start>
 
-	<start name="init">
+	<start name="init" verbose="yes">
 		<resource name="RAM" quantum="2M"/>
 		<route>
+			<service name="ROM">
+				<child name="nix"/> </service>
 			<any-service>
-				<child name="nix"/>
 				<parent/>
 			</any-service>
 		</route>
 		<config>
 			<parent-provides>
+				<service name="CPU"/>
 				<service name="LOG"/>
+				<service name="PD"/>
+				<service name="RAM"/>
 				<service name="RM"/>
+				<service name="ROM"/>
 			</parent-provides>
 			<start name="test-printf">
 				<resource name="RAM" quantum="1M"/>

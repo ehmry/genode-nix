@@ -1,5 +1,5 @@
 diff --git a/src/libutil/archive.cc b/src/libutil/archive.cc
-index 6ee7981..b83154a 100644
+index 6ee7981..a4e2546 100644
 --- a/src/libutil/archive.cc
 +++ b/src/libutil/archive.cc
 @@ -9,12 +9,6 @@
@@ -23,7 +23,7 @@ index 6ee7981..b83154a 100644
 +    using namespace Vfs;
 +
 +    Vfs_handle *handle = nullptr;
-+    if (_vfs->open(path.c_str(), Directory_service::OPEN_MODE_RDONLY, &handle)
++    if (_vfs->open(path.c_str(), Directory_service::OPEN_MODE_RDONLY, &handle, *Genode::env()->heap())
 +        != Vfs::Directory_service::OPEN_OK)
 +        throw SysError(format("opening file ‘%1%’") % path);
 +
@@ -113,7 +113,7 @@ index 6ee7981..b83154a 100644
 +    ~RestoreSink()
 +    {
 +        if (handle)
-+            _vfs->close(handle);
++            destroy(Genode::env()->heap(), handle);
 +    }
  
      void createDirectory(const Path & path)
@@ -141,11 +141,11 @@ index 6ee7981..b83154a 100644
 -        if (fchmod(fd, st.st_mode | (S_IXUSR | S_IXGRP | S_IXOTH)) == -1)
 -            throw SysError("fchmod");
 +        if (handle)
-+            _vfs->close(handle);
++            destroy(Genode::env()->heap(), handle);
 +
 +        Path p = dstPath + path;
 +        enum { MODE = Directory_service::OPEN_MODE_WRONLY | Directory_service::OPEN_MODE_CREATE };
-+        if (_vfs->open(path.c_str(), MODE, &handle) != Directory_service::OPEN_OK)
++        if (_vfs->open(path.c_str(), MODE, &handle, *Genode::env()->heap()) != Directory_service::OPEN_OK)
 +            throw SysError(format("creating file ‘%1%’") % p);
      }
  
@@ -172,14 +172,14 @@ index c216e97..3fb5111 100644
  
  namespace nix {
 diff --git a/src/libutil/hash.cc b/src/libutil/hash.cc
-index 2d97c5e..9b4f297 100644
+index 2d97c5e..775aa56 100644
 --- a/src/libutil/hash.cc
 +++ b/src/libutil/hash.cc
 @@ -33,6 +33,7 @@ Hash::Hash(HashType type)
      else if (type == htSHA1) hashSize = sha1HashSize;
      else if (type == htSHA256) hashSize = sha256HashSize;
      else if (type == htSHA512) hashSize = sha512HashSize;
-+    else if (type == htBLAKE2S) hashSize = blake2sHashSize;
++    else if (type == htBLAKE2s) hashSize = blake2sHashSize;
      else throw Error("unknown hash type");
      assert(hashSize <= maxHashSize);
      memset(hash, 0, maxHashSize);
@@ -199,34 +199,22 @@ index 2d97c5e..9b4f297 100644
          if (n == -1) throw SysError(format("reading file ‘%1%’") % path);
          update(ht, ctx, buf, n);
      }
-@@ -318,6 +317,7 @@ HashType parseHashType(const string & s)
-     else if (s == "sha1") return htSHA1;
-     else if (s == "sha256") return htSHA256;
-     else if (s == "sha512") return htSHA512;
-+    else if (s == "blake2s") return htBLAKE2S;
-     else return htUnknown;
- }
- 
-@@ -328,6 +328,7 @@ string printHashType(HashType ht)
-     else if (ht == htSHA1) return "sha1";
-     else if (ht == htSHA256) return "sha256";
-     else if (ht == htSHA512) return "sha512";
-+    else if (ht == htBLAKE2S) return "blake2s";
-     else throw Error("cannot print unknown hash type");
- }
- 
 diff --git a/src/libutil/hash.hh b/src/libutil/hash.hh
-index 841b4cb..d1d46e7 100644
+index 841b4cb..fbec8e7 100644
 --- a/src/libutil/hash.hh
 +++ b/src/libutil/hash.hh
-@@ -7,13 +7,16 @@
+@@ -7,13 +7,20 @@
  namespace nix {
  
  
 -typedef enum { htUnknown, htMD5, htSHA1, htSHA256, htSHA512 } HashType;
-+typedef enum { htUnknown, htMD5, htSHA1, htSHA256, htSHA512, htBLAKE2S } HashType;
-+
-+HashType const htDEFAULT = htBLAKE2S;
++typedef enum {
++	htUnknown,
++	htMD5,
++	htSHA1, htSHA256, htSHA512,
++	htBLAKE2s,
++	htDEFAULT = htBLAKE2s
++} HashType;
  
  
  const int md5HashSize = 16;
@@ -307,7 +295,7 @@ index f136a13..93618eb 100644
  {
      if (pos == s.size()) throw EndOfFile("end of string reached");
 diff --git a/src/libutil/util.cc b/src/libutil/util.cc
-index 16d3296..023d525 100644
+index 16d3296..1061b97 100644
 --- a/src/libutil/util.cc
 +++ b/src/libutil/util.cc
 @@ -10,18 +10,8 @@
@@ -389,17 +377,13 @@ index 16d3296..023d525 100644
      return canonPath(path);
  }
  
-@@ -174,171 +162,189 @@ bool isInDir(const Path & path, const Path & dir)
+@@ -174,171 +162,180 @@ bool isInDir(const Path & path, const Path & dir)
  }
  
  
 -struct stat lstat(const Path & path)
 +Vfs::Directory_service::Stat status(const Path & path)
- {
--    struct stat st;
--    if (lstat(path.c_str(), &st))
--        throw SysError(format("getting status of ‘%1%’") % path);
--    return st;
++{
 +    using namespace Vfs;
 +
 +    Directory_service::Stat stat;
@@ -412,7 +396,11 @@ index 16d3296..023d525 100644
 +
 +
 +void mkdir(const Path & path)
-+{
+ {
+-    struct stat st;
+-    if (lstat(path.c_str(), &st))
+-        throw SysError(format("getting status of ‘%1%’") % path);
+-    return st;
 +    if (_vfs->mkdir(path.c_str(), 0) != Vfs::Directory_service::MKDIR_OK)
 +        throw Error(format("creating directory ‘%1%’") % path);
  }
@@ -541,31 +529,22 @@ index 16d3296..023d525 100644
 -    return drain ? drainFD(fd) : readFile(fd);
 +    using namespace Vfs;
 +
-+    string s;
++    Directory_service::Stat stat = status(path);
 +
-+    auto total_size = status(path).size;
-+    s.reserve(total_size);
-+    char buf[min(4096, total_size)];
-+
++    char buf[stat.size];
 +    Vfs_handle *handle = nullptr;
-+    if (_vfs->open(path.c_str(), Vfs::Directory_service::OPEN_MODE_RDONLY, &handle)
++    if (_vfs->open(path.c_str(), Vfs::Directory_service::OPEN_MODE_RDONLY, &handle, *Genode::env()->heap())
 +        != Vfs::Directory_service::OPEN_OK)
 +        throw Error(format("open ‘%1%’") % path);
 +
 +    Vfs_handle::Guard guard(handle);
 +
-+    Vfs::file_size n = 0;
-+    while (s.length() < total_size) {
-+        if (handle->fs().read(handle, buf, sizeof(buf), n)
-+            != Vfs::File_io_service::READ_OK)
-+        {
-+            throw Error(format("open ‘%1%’") % path);
-+        }
-+        s.append(buf, n);
-+		handle->advance_seek(n);
-+    }
++    file_size n = 0;
++    if (handle->fs().read(handle, buf, sizeof(buf), n)
++        != Vfs::File_io_service::READ_OK)
++        throw Error(format("open ‘%1%’") % path);
 +
-+    return s;
++    return string(buf, n);
  }
  
  
@@ -580,7 +559,7 @@ index 16d3296..023d525 100644
 +    Directory_service::Stat stat = status(path);
 +
 +    Vfs_handle *handle = nullptr;
-+    if (_vfs->open(path.c_str(), Vfs::Directory_service::OPEN_MODE_RDONLY, &handle)
++    if (_vfs->open(path.c_str(), Vfs::Directory_service::OPEN_MODE_RDONLY, &handle, *Genode::env()->heap())
 +        != Vfs::Directory_service::OPEN_OK)
 +        throw Error(format("opening file ‘%1%’") % path);
 +
@@ -641,19 +620,17 @@ index 16d3296..023d525 100644
 -    checkInterrupt();
 +    if (_vfs->unlink(path.c_str()) != Vfs::Directory_service::UNLINK_OK)
 +        throw Error(format("cannot unlink ‘%1%’") % path);
-+
-+}
  
 -    printMsg(lvlVomit, format("%1%") % path);
++}
  
 -    struct stat st = lstat(path);
-+static void _deletePath(const Path & path, unsigned long long & bytesFreed)
-+{
-+    printMsg(lvlVomit, format("%1%") % path);
  
 -    if (!S_ISDIR(st.st_mode) && st.st_nlink == 1)
 -        bytesFreed += st.st_blocks * 512;
-+    Vfs::Directory_service::Stat stat = status(path);
++static void _deletePath(const Path & path, unsigned long long & bytesFreed)
++{
++    printMsg(lvlVomit, format("%1%") % path);
  
 -    if (S_ISDIR(st.st_mode)) {
 -        /* Make the directory writable. */
@@ -661,6 +638,8 @@ index 16d3296..023d525 100644
 -            if (chmod(path.c_str(), st.st_mode | S_IWUSR) == -1)
 -                throw SysError(format("making ‘%1%’ writable") % path);
 -        }
++    Vfs::Directory_service::Stat stat = status(path);
++
 +    if (!(S_ISDIR(stat.mode)))
 +        bytesFreed += stat.size;
  
@@ -675,7 +654,7 @@ index 16d3296..023d525 100644
  }
  
  
-@@ -362,60 +368,62 @@ static Path tempName(Path tmpRoot, const Path & prefix, bool includePid,
+@@ -362,60 +359,62 @@ static Path tempName(Path tmpRoot, const Path & prefix, bool includePid,
      int & counter)
  {
      tmpRoot = canonPath(tmpRoot.empty() ? getEnv("TMPDIR", "/tmp") : tmpRoot, true);
@@ -762,7 +741,7 @@ index 16d3296..023d525 100644
  
      return created;
  }
-@@ -423,8 +431,9 @@ Paths createDirs(const Path & path)
+@@ -423,8 +422,9 @@ Paths createDirs(const Path & path)
  
  void createSymlink(const Path & target, const Path & link)
  {
@@ -774,7 +753,7 @@ index 16d3296..023d525 100644
  }
  
  
-@@ -511,7 +520,6 @@ void printMsg_(Verbosity level, const FormatOrString & fs)
+@@ -511,7 +511,6 @@ void printMsg_(Verbosity level, const FormatOrString & fs)
      }
  
      string s = (format("%1%%2%\n") % prefix % fs.s).str();
@@ -782,7 +761,7 @@ index 16d3296..023d525 100644
      writeToStderr(s);
  }
  
-@@ -531,7 +539,7 @@ void writeToStderr(const string & s)
+@@ -531,7 +530,7 @@ void writeToStderr(const string & s)
          if (_writeToStderr)
              _writeToStderr((const unsigned char *) s.data(), s.size());
          else
@@ -791,7 +770,7 @@ index 16d3296..023d525 100644
      } catch (SysError & e) {
          /* Ignore failing writes to stderr if we're in an exception
             handler, otherwise throw an exception.  We need to ignore
-@@ -546,58 +554,48 @@ void writeToStderr(const string & s)
+@@ -546,58 +545,48 @@ void writeToStderr(const string & s)
  void (*_writeToStderr) (const unsigned char * buf, size_t count) = 0;
  
  
@@ -874,7 +853,7 @@ index 16d3296..023d525 100644
  }
  
  
-@@ -644,20 +642,20 @@ void AutoDelete::reset(const Path & p, bool recursive) {
+@@ -644,20 +633,20 @@ void AutoDelete::reset(const Path & p, bool recursive) {
  
  //////////////////////////////////////////////////////////////////////
  
@@ -883,7 +862,7 @@ index 16d3296..023d525 100644
 +AutoCloseHandle::AutoCloseHandle(const Path & path, unsigned mode)
  {
 -    fd = -1;
-+    if (_vfs->open(path.c_str(), mode, &_handle) != Vfs::Directory_service::Open_result::OPEN_OK)
++    if (_vfs->open(path.c_str(), mode, &_handle, *Genode::env()->heap()) != Vfs::Directory_service::Open_result::OPEN_OK)
 +        throw SysError(format("opening file ‘%1%’") % path);
  }
  
@@ -901,7 +880,7 @@ index 16d3296..023d525 100644
  {
      /* Copying an AutoCloseFD isn't allowed (who should get to close
         it?).  But as an edge case, allow copying of closed
-@@ -665,302 +663,62 @@ AutoCloseFD::AutoCloseFD(const AutoCloseFD & fd)
+@@ -665,302 +654,62 @@ AutoCloseFD::AutoCloseFD(const AutoCloseFD & fd)
         involving copy constructor use on default object values in STL
         containers (like when you do `map[value]' where value isn't in
         the map yet). */
@@ -1229,7 +1208,7 @@ index 16d3296..023d525 100644
  
  std::vector<char *> stringsToCharPtrs(const Strings & ss)
  {
-@@ -971,101 +729,13 @@ std::vector<char *> stringsToCharPtrs(const Strings & ss)
+@@ -971,101 +720,13 @@ std::vector<char *> stringsToCharPtrs(const Strings & ss)
  }
  
  
@@ -1332,7 +1311,7 @@ index 16d3296..023d525 100644
  }
  
  
-@@ -1144,32 +814,6 @@ string replaceStrings(const std::string & s,
+@@ -1144,32 +805,6 @@ string replaceStrings(const std::string & s,
  }
  
  

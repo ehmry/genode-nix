@@ -22,10 +22,9 @@ set build_components {
 	lib/vfs/any-rom
 	noux/minimal
 	noux/net
-	server/builder
 	server/fs_rom
 	server/nix
-	server/store_ingest
+	server/nix_store
 	server/terminal
 	server/vfs
 	test/libports/ncurses
@@ -52,7 +51,7 @@ if {[have_spec x86]} {
 #
 # Build Noux packages only once
 #
-set noux_pkgs "bash coreutils curl grep sed findutils make which $binutils $gcc"
+set noux_pkgs "bash coreutils grep sed findutils make which $binutils $gcc"
 
 foreach pkg $noux_pkgs {
 	lappend_if [expr ![file exists bin/$pkg]] build_components noux-pkg/$pkg }
@@ -147,10 +146,11 @@ append config {
 		<provides><service name="File_system"/></provides>
 		<config>
 			<vfs> <ram/> </vfs>
-
-			<policy label="store_ingest" writeable="yes" />
-			<policy label="builder" writeable="yes" />
-			<default-policy/>
+			<file_system>
+				<policy label="store_ingest" writeable="yes" />
+				<policy label="builder" writeable="yes" />
+				<default-policy/>
+			</file_system>
 		</config>
 	</start>
 
@@ -251,7 +251,6 @@ install_config $config
 # generic modules
 set boot_modules {
 	core init ld.lib.so
-	builder
 	curl.lib.so
 	expr.tar
 	fb_drv
@@ -271,19 +270,18 @@ set boot_modules {
 	nixformat.lib.so
 	nixmain.lib.so
 	nix-repl
+	nix_store
 	nixstore.lib.so
 	nixutil.lib.so
 	noux
 	noux_net
 	ps2_drv
 	stdcxx.lib.so
-	store_ingest
 	terminal
 	timer
 	vfs
 	vfs_any-rom.lib.so
 	zlib.lib.so
-
 }
 
 foreach pkg $noux_pkgs {

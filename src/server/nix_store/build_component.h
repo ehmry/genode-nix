@@ -18,8 +18,6 @@
 #include <base/signal.h>
 #include <ram_session/client.h>
 #include <root/component.h>
-#include <os/config.h>
-#include <os/server.h>
 #include <dataspace/client.h>
 #include <rom_session/connection.h>
 #include <cap_session/cap_session.h>
@@ -32,6 +30,7 @@ namespace Nix_store {
 	using Nix_store::Derivation;
 
 	class Build_component;
+	class Build_root;
 
 };
 
@@ -39,6 +38,7 @@ class Nix_store::Build_component : public Genode::Rpc_object<Nix_store::Session>
 {
 	private:
 
+		Genode::Env             &_env;
 		Genode::Allocator_guard  _session_alloc;
 		File_system::Session    &_store_fs;
 		File_system::Dir_handle  _store_dir;
@@ -49,11 +49,13 @@ class Nix_store::Build_component : public Genode::Rpc_object<Nix_store::Session>
 		/**
 		 * Constructor
 		 */
-		Build_component(Allocator            *session_alloc,
+		Build_component(Genode::Env          &env,
+		                Allocator            *session_alloc,
 		                size_t                ram_quota,
 		                File_system::Session &fs,
 		                Jobs                 &jobs)
 		:
+			_env(env),
 			_session_alloc(session_alloc, ram_quota),
 			_store_fs(fs),
 			_store_dir(_store_fs.dir("/", false)),
@@ -65,12 +67,12 @@ class Nix_store::Build_component : public Genode::Rpc_object<Nix_store::Session>
 		 */
 		void check_inputs(char const *name)
 		{
-			Derivation(name).inputs([&] (Aterm::Parser &parser) {
+			Derivation(_env, name).inputs([&] (Aterm::Parser &parser) {
 
 				Name input;
 				parser.string(&input);
 
-				Derivation depend(input.string());
+				Derivation depend(_env, input.string());
 
 				parser.list([&] (Aterm::Parser &parser) {
 					Name want_id;
@@ -214,5 +216,75 @@ class Nix_store::Build_component : public Genode::Rpc_object<Nix_store::Session>
 		}
 
 };
+
+
+class Nix_store::Build_root : public Genode::Root_component<Build_component>
+{
+	private:
+
+		Genode::Env                 &_env;
+		Genode::Allocator_avl        _fs_block_alloc;
+		Nix::File_system_connection  _fs;
+		Jobs                         _jobs;
+
+	protected:
+
+		Build_component *_create_session(const char *args, Affinity const &affinity) override
+		{
+			size_t ram_quota =
+				Arg_string::find_arg(args, "ram_quota"  ).ulong_value(0);
+
+			/*
+			 * Check if donated ram quota suffices for session data,
+			 * and communication buffer.
+			 */
+			size_t session_size = sizeof(Build_component);
+			if (max((size_t)4096, session_size) > ram_quota) {
+				PERR("insufficient 'ram_quota', got %zd, need %zd",
+				     ram_quota, session_size);
+				throw Root::Quota_exceeded();
+			}
+
+			return new(md_alloc())
+				Build_component(_env, md_alloc(), ram_quota, _fs, _jobs);
+		}
+
+	public:
+
+		/**
+		 * Constructor
+		 */
+		Build_root(Genode::Env       &env,
+		           Genode::Allocator &md_alloc,
+		           Genode::Allocator &alloc)
+		:
+			Genode::Root_component<Build_component>(&env.ep().rpc_ep(), &md_alloc),
+			_env(env),
+			_fs_block_alloc(&alloc),
+			_fs(env, _fs_block_alloc, "/", true, 128*1024),
+			_jobs(env, alloc, _fs)
+		{
+			using namespace File_system;
+			static char const *placeholder = ".builder";
+
+			/* verify permissions */
+			try {
+				Dir_handle root_handle = _fs.dir("/", false);
+				Handle_guard root_guard(_fs, root_handle);
+
+				try { _fs.unlink(root_handle, placeholder); }
+				catch (Lookup_failed) { }
+
+				_fs.close(_fs.file(
+					root_handle, placeholder, READ_WRITE, true));
+			} catch (...) {
+				PERR("insufficient File_system access");
+				throw;
+			}
+
+			env.parent().announce(env.ep().manage(*this));
+		}
+};
+
 
 #endif

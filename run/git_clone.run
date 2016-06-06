@@ -58,7 +58,9 @@ append config {
 		<provides> <service name="File_system"/> </provides>
 		<config>
 			<vfs> <ram/> </vfs>
-			<default-policy writeable="yes"/>
+			<file_system>
+				<default-policy writeable="yes"/>
+			</file_system>
 		</config>
 	</start>
 

@@ -1,3 +1,3 @@
 TARGET = nix
-SRC_CC = main.cc
+SRC_CC = component.cc
 LIBS = vfs nixmain nixexpr nixstore nixutil stdcxx

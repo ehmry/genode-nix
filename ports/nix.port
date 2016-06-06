@@ -8,7 +8,8 @@ DOWNLOADS := nix.git
 $(call check_tool,lex)
 $(call check_tool,bison)
 
-URL(nix) := https://github.com/NixOS/nix.git
+#URL(nix) := https://github.com/NixOS/nix.git
+URL(nix) := /home/emery/repo/nix
 REV(nix) := 8b4577ac9da810862235bd8452a6ba47de35fd86
 DIR(nix) := src/lib/nix
 

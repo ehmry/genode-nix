@@ -32,9 +32,9 @@ class Nix_store::Ingest_service : public Genode::Service
 {
 	private:
 
-		Server::Entrypoint             &_ep;
+		Genode::Env                    &_env;
 		Ingest_component                _component;
-		File_system::Session_capability _cap = _ep.manage(_component);
+		File_system::Session_capability _cap = _env.ep().manage(_component);
 
 		static void hash_file(File_system::Session &fs, File_system::File_handle handle, Hash::Function &hash)
 		{
@@ -226,7 +226,7 @@ class Nix_store::Ingest_service : public Genode::Service
 		void revoke_cap()
 		{
 			if (_cap.valid()) {
-				_ep.dissolve(_component);
+				_env.ep().dissolve(_component);
 				_cap = File_system::Session_capability();
 			}
 		}
@@ -236,9 +236,9 @@ class Nix_store::Ingest_service : public Genode::Service
 		/**
 		 * Constructor
 		 */
-		Ingest_service(Nix_store::Derivation &drv, Server::Entrypoint &ep, Genode::Allocator &alloc)
+		Ingest_service(Nix_store::Derivation &drv, Genode::Env &env, Genode::Allocator &alloc)
 		:
-			Genode::Service("File_system"), _ep(ep), _component(ep, alloc)
+			Genode::Service("File_system"), _env(env), _component(env, alloc)
 		{ PDBG(""); }
 
 		~Ingest_service() { revoke_cap(); }

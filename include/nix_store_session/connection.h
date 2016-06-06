@@ -21,9 +21,10 @@ namespace Nix_store { struct Connection; }
 
 struct Nix_store::Connection : public Genode::Connection<Session>, public Genode::Rpc_client<Session>
 {
-	Connection(char const *label = "")
+	Connection(Genode::Env &env, char const *label = "")
 	:
-		Genode::Connection<Session>(session("ram_quota=8K, label=\"%s\"", label)),
+		Genode::Connection<Session>(
+			env, session(env.parent(), "ram_quota=8K, label=\"%s\"", label)),
 		Genode::Rpc_client<Session>(cap())
 	{}
 

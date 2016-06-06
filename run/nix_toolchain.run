@@ -101,11 +101,12 @@ append config {
 		<provides><service name="File_system"/></provides>
 		<config>
 			<vfs> <ram/> </vfs>
-
-			<policy label="store_ingest" writeable="yes" />
-			<policy label="builder" writeable="yes" />
-			<policy label="store_rom" />
-			<policy label="nix" />
+			<file_system>
+				<policy label="store_ingest" writeable="yes" />
+				<policy label="builder" writeable="yes" />
+				<policy label="store_rom" />
+				<policy label="nix" />
+			</file_system>
 		</config>
 	</start>
 

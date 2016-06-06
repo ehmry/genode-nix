@@ -1,5 +1,5 @@
 /*
- * \brief  File system hashing proxy
+ * \brief  File_system service for ingesting from naive clients
  * \author Emery Hemingway
  * \date   2015-05-28
  */
@@ -20,23 +20,27 @@
 #include <file_system_session/connection.h>
 #include <file_system_session/rpc_object.h>
 #include <os/path.h>
-#include <os/signal_rpc_dispatcher.h>
-#include <os/server.h>
-#include <util/string.h>
+#include <root/component.h>
 #include <base/allocator_avl.h>
 #include <base/allocator_guard.h>
+#include <base/signal.h>
+#include <util/label.h>
 
 /* Local includes */
 #include "ingest_node.h"
 
-namespace Nix_store { class Ingest_component; }
+namespace Nix_store {
+	class Ingest_component;
+	class Ingest_root;
+}
 
 
 class Nix_store::Ingest_component : public File_system::Session_rpc_object
 {
 	private:
 
-		Genode::Allocator_guard _alloc;
+		Genode::Env             &_env;
+		Genode::Allocator_guard  _alloc;
 
 		/* top level hash nodes */
 		Hash_root_registry _root_registry { _alloc };
@@ -48,13 +52,12 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 		Hash_node_registry _node_registry;
 
 		/* a queue of packets from the client awaiting backend processing */
-		File_system::Packet_descriptor      _packet_queue[TX_QUEUE_SIZE];
+		File_system::Packet_descriptor _packet_queue[TX_QUEUE_SIZE];
 
-		Genode::Allocator_avl               _fs_tx_alloc { &_alloc };
-		File_system::Connection_base        _fs;
-		Signal_rpc_member<Ingest_component> _process_packet_dispatcher;
-		Dir_handle                          _root_handle;
-		bool                                _strict = false;
+		Genode::Allocator_avl          _fs_tx_alloc { &_alloc };
+		File_system::Connection_base   _fs;
+		Dir_handle                     _root_handle;
+		bool                           _strict = false;
 
 
 		/******************************
@@ -204,7 +207,7 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 		 * of the concrete syntax tree and import objects in parallel, but for
 		 * now its one thread and one packet at a time. The rest is for style.
 		 */
-		void _process_packets(unsigned)
+		void _process_packets()
 		{
 			/*
 			 * Keep local copies of the client packets that come in
@@ -277,6 +280,9 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 			}
 		}
 
+		Genode::Signal_handler<Ingest_component> _process_packet_handler
+			{ _env.ep(), *this, &Ingest_component::_process_packets };
+
 	public:
 
 		/**
@@ -285,17 +291,15 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 		 * The tx buffer size is split between the local
 		 * stream buffer and the backend buffer.
 		 */
-		Ingest_component(Server::Entrypoint &ep,
+		Ingest_component(Genode::Env        &env,
 		                 Genode::Allocator  &alloc,
 		                 size_t ram_quota = 16*4096,
 		                 size_t tx_buf_size = File_system::DEFAULT_TX_BUF_SIZE*2)
 		:
-			Session_rpc_object(env()->ram_session()->alloc(tx_buf_size/2), ep.rpc_ep()),
-			_alloc(&alloc, ram_quota),
-			_fs(_fs_tx_alloc, tx_buf_size/2, "ingest"),
-			_process_packet_dispatcher(ep, *this, &Ingest_component::_process_packets)
+			Session_rpc_object(env.ram().alloc(tx_buf_size/2), env.ep().rpc_ep()),
+			_env(env), _alloc(&alloc, ram_quota),
+			_fs(env, _fs_tx_alloc,  "store -> ingest", "/", true, tx_buf_size/2)
 		{
-			PDBG("");
 			_root_handle = _fs.dir("/", false);
 
 			/* invalidate the packet queue */
@@ -306,8 +310,7 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 			 * Register '_process_packets' dispatch function as signal
 			 * handler for client packet submission signals.
 			 */
-			_tx.sigh_packet_avail(_process_packet_dispatcher);
-			PDBG("done");
+			_tx.sigh_packet_avail(_process_packet_handler);
 		}
 
 		/**
@@ -316,7 +319,7 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 		~Ingest_component()
 		{
 			Dataspace_capability ds = tx_sink()->dataspace();
-			env()->ram_session()->free(static_cap_cast<Ram_dataspace>(ds));
+			_env.ram().free(static_cap_cast<Ram_dataspace>(ds));
 
 			_root_registry.unlink(_fs, _root_handle);
 		}
@@ -334,7 +337,8 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 
 		void finish(Hash_root &root)
 		{
-			if (root.done) return;
+			if (root.done)
+				return;
 
 			_node_registry.close_all(_fs);
 
@@ -362,22 +366,28 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 			final_name[0] = '/';
 
 			try {
-				/* if the final path already exists, delete this ingest */
-				_fs.close(_fs.node((char *)final_name));
-				try {
-					_fs.unlink(_root_handle, root.filename);
-				} catch (Not_empty) {
-					Genode::Path<MAX_PATH_LEN> path(root.filename);
-					empty_dir(_fs, path.base());
-					_fs.unlink(_root_handle, root.filename);
-				}
-			} catch (Lookup_failed) {
 				/* move the ingest root to its final location */
 				_fs.move(_root_handle, root.filename,
 				         _root_handle, (char *)final_name+1);
-
-				root.finalize((char *)final_name+1);
+			} catch (Permission_denied) {
+				/* if the final path already exists, delete this ingest */
+				PDBG("move permission denied, try unlink");
+				_fs.close(_fs.node((char *)final_name));
+				try {
+					PDBG("try unlink");
+					_fs.unlink(_root_handle, root.filename);
+				} catch (Not_empty) {
+					PDBG("Not_empty");
+					Genode::Path<MAX_PATH_LEN> path(root.filename);
+					empty_dir(_fs, path.base());
+					_fs.unlink(_root_handle, root.filename);
+					_fs.move(_root_handle, root.filename,
+					         _root_handle, (char *)final_name+1);
+				}
+			} catch (Lookup_failed) {
+				PDBG("caught lookup failed");
 			}
+			root.finalize((char *)final_name+1);
 		}
 
 		/**
@@ -466,7 +476,7 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 			} catch (Out_of_metadata) {
 				if ((_alloc.quota() - _alloc.consumed()) > 8192) {
 					_alloc.withdraw(8192);
-					Genode::env()->parent()->upgrade(_fs.cap(), "ram_quota=8K");
+					_env.parent().upgrade(_fs.cap(), "ram_quota=8K");
 					handle = _fs.dir(new_path, create);
 				} else
 					throw;
@@ -516,7 +526,7 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 			} catch (Out_of_metadata) {
 				if ((_alloc.quota() - _alloc.consumed()) > 8192) {
 					_alloc.withdraw(8192);
-					Genode::env()->parent()->upgrade(_fs.cap(), "ram_quota=8K");
+					_env.parent().upgrade(_fs.cap(), "ram_quota=8K");
 					handle = root
 						? _fs.file(dir_handle, root->filename, mode, create)
 						: _fs.file(dir_handle, name, mode, create);
@@ -551,7 +561,7 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 				} catch (Out_of_metadata) {
 					if ((_alloc.quota() - _alloc.consumed()) > 8192) {
 						_alloc.withdraw(8192);
-						Genode::env()->parent()->upgrade(_fs.cap(), "ram_quota=8K");
+						_env.parent().upgrade(_fs.cap(), "ram_quota=8K");
 						handle = _fs.symlink(dir_handle, name, create);
 					} else
 						throw;
@@ -710,6 +720,71 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 		bool sigh(Node_handle node_handle, Signal_context_capability sigh) override {
 			return _fs.sigh(node_handle, sigh); }
 };
+
+
+/**
+ * File_system service for ingesting from naive clients
+ */
+class Nix_store::Ingest_root :
+	public Genode::Root_component<Ingest_component>
+{
+	private:
+
+		Genode::Env       &_env;
+		Genode::Allocator &_alloc;
+
+	protected:
+
+		Ingest_component *_create_session(const char *args)
+		{
+			if (!Arg_string::find_arg(args, "writeable").bool_value(true)) {
+				PERR("refusing read-only session");
+				throw Root::Invalid_args();
+			}
+
+			size_t tx_buf_size =
+				Arg_string::find_arg(args, "tx_buf_size")
+					.ulong_value(File_system::DEFAULT_TX_BUF_SIZE);
+			if (!tx_buf_size)
+				throw Root::Invalid_args();
+
+			size_t ram_quota =
+				Arg_string::find_arg(args, "ram_quota").ulong_value(0);
+
+			size_t session_size = sizeof(Ingest_component) + tx_buf_size;
+
+			if (max((size_t)4096, session_size) > ram_quota) {
+				Genode::Label const label(args);
+				PERR("insufficient 'ram_quota' from %s, got %zd, need %zd",
+				     label.string(), ram_quota, session_size);
+				throw Root::Quota_exceeded();
+			}
+			ram_quota -= session_size;
+
+			try {
+				return new (md_alloc())
+					Ingest_component(_env, _alloc, ram_quota, tx_buf_size);
+			} catch (...) { PERR("cannot issue session"); }
+			throw Root::Unavailable();
+		}
+
+		void _upgrade_session(Ingest_component *session, const char *args) override
+		{
+			size_t ram_quota = Arg_string::find_arg(args, "ram_quota").ulong_value(0);
+			session->upgrade_ram_quota(ram_quota);		
+		}
+
+	public:
+
+		Ingest_root(Genode::Env &env, Allocator &md_alloc, Allocator &alloc)
+		:
+			Genode::Root_component<Ingest_component>(&env.ep().rpc_ep(), &md_alloc),
+			_env(env), _alloc(alloc)
+		{
+			env.parent().announce(env.ep().manage(*this));
+		}
+};
+
 
 
 #endif

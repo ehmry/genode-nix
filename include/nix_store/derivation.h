@@ -13,11 +13,12 @@
 #include <util/string.h>
 #include <util/token.h>
 #include <file_system_session/file_system_session.h>
-#include <nix/types.h>
 
 /* Nix store includes */
 #include <nix_store/aterm_parser.h>
 #include <nix_store/types.h>
+#include <nix/attached_rom_dataspace.h>
+#include <nix/types.h>
 
 namespace Nix_store {
 
@@ -27,7 +28,7 @@ namespace Nix_store {
 	 * has pushed or loaded a derviation, so there is a potential
 	 * for caching. Its also makes for much less local code.
 	 */
-	class Derivation : Genode::Attached_rom_dataspace {
+	class Derivation : Nix::Attached_rom_dataspace {
 
 		private:
 
@@ -45,9 +46,9 @@ namespace Nix_store {
 
 		public:
 
-			Derivation(char const *name)
+			Derivation(Genode::Env &env, char const *name)
 			:
-				Attached_rom_dataspace(name),
+				Nix::Attached_rom_dataspace(env, name),
 				_len(Genode::strlen(local_addr<char>()))
 			{
 				Aterm::Parser parser(local_addr<char>(), _len);

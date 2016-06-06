@@ -498,7 +498,7 @@ struct Nix_store::Hash_root
 		char           filename[MAX_NAME_LEN];
 		Hash_node     *node = nullptr;
 		unsigned const index;
-		bool           done;
+		bool           done = false;
 
 		Hash_root(char const *root_name, int index, uint64_t nonce) : index(index)
 		{
@@ -536,7 +536,6 @@ class Nix_store::Hash_root_registry
 		Hash_root_registry(Genode::Allocator &alloc)
 		: _alloc(alloc)
 		{
-			PDBG("");
 			for (unsigned i = 0; i < MAX_ROOT_NODES; ++i)
 				_roots[i] = nullptr;
 

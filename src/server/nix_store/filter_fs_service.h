@@ -50,11 +50,11 @@ class Nix_store::Filter_component : public Genode::Rpc_object<File_system::Sessi
 
 			Genode::Allocator &alloc;
 
-			Inputs(Derivation &drv, Genode::Allocator &alloc)
+			Inputs(Genode::Env &env, Genode::Allocator &alloc, Derivation &drv)
 			: alloc(alloc)
 			{
 				Genode::Allocator_avl fs_tx_alloc(&alloc);
-				File_system::Connection fs(fs_tx_alloc, 4096, "", "/", false);
+				Nix::File_system_connection fs(env, fs_tx_alloc, "/", false, 4096);
 				Dir_handle root_handle = fs.dir("/", false);
 
 				drv.inputs([&] (Aterm::Parser &parser) {
@@ -142,10 +142,11 @@ class Nix_store::Filter_component : public Genode::Rpc_object<File_system::Sessi
 			Genode::Connection<File_system::Session>,
 			Genode::Rpc_client<File_system::Session>
 		{
-			Backend()
+			Backend(Genode::Env &env)
 			:
-				Genode::Connection<File_system::Session>(
-					session("ram_quota=%zd, tx_buf_size=%zd, writeable=0, label=\"filter\"",
+				Genode::Connection<File_system::Session>(env,
+					session(env.parent(),
+					        "ram_quota=%zd, tx_buf_size=%zd, writeable=0, label=\"store -> filter\"",
 					        8*1024*sizeof(long) + File_system::DEFAULT_TX_BUF_SIZE,
 					        File_system::DEFAULT_TX_BUF_SIZE)),
 				Rpc_client<File_system::Session>(cap())
@@ -210,8 +211,8 @@ class Nix_store::Filter_component : public Genode::Rpc_object<File_system::Sessi
 
 	public:
 
-		Filter_component(Inputs const &inputs)
-		: _inputs(inputs)
+		Filter_component(Genode::Env &env, Inputs const &inputs)
+		: _inputs(inputs), _backend(env)
 		{ PDBG(""); }
 
 		Input const &_lookup_input(char const *name)
@@ -326,14 +327,14 @@ class Nix_store::Filter_service : public Genode::Service
 {
 	private:
 
-		Server::Entrypoint             &_ep;
+		Genode::Env                    &_env;
 		Filter_component                _component;
-		File_system::Session_capability _cap = _ep.manage(_component);
+		File_system::Session_capability _cap = _env.ep().manage(_component);
 
 		void revoke_cap()
 		{
 			if (_cap.valid()) {
-				_ep.dissolve(_component);
+				_env.ep().dissolve(_component);
 				_cap = File_system::Session_capability();
 			}
 		}
@@ -343,9 +344,9 @@ class Nix_store::Filter_service : public Genode::Service
 		/**
 		 * Constructor
 		 */
-		Filter_service(Server::Entrypoint &ep, Inputs const &inputs)
+		Filter_service(Genode::Env &env, Inputs const &inputs)
 		:
-			Genode::Service("File_system"), _ep(ep), _component(inputs)
+			Genode::Service("File_system"), _env(env), _component(env, inputs)
 		{ }
 
 		~Filter_service() { revoke_cap(); }

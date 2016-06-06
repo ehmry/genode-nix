@@ -17,6 +17,7 @@
 /* Genode includes */
 #include <store_hash/encode.h>
 #include <file_system_session/file_system_session.h>
+#include <os/attached_rom_dataspace.h>
 #include <base/env.h>
 #include <base/child.h>
 #include <base/printf.h>
@@ -58,10 +59,11 @@ class Nix_store::Child : public Genode::Child_policy
 	private:
 
 		Name            const  _name;
+		Genode::Env           &_env;
 		File_system::Session  &_fs;
-		Nix_store::Derivation  _drv { _name.string() };
-		Inputs           const _inputs      { _fs, _drv,          *Genode::env()->heap() };
-		Environment      const _environment { _fs, _drv, _inputs, *Genode::env()->heap() };
+		Nix_store::Derivation  _drv { _env, _name.string() };
+		Inputs           const _inputs      { _env, *Genode::env()->heap(), _fs, _drv };
+		Environment      const _environment { _env, *Genode::env()->heap(), _fs, _drv, _inputs };
 
 		/**
 		 * Resources assigned to the child.
@@ -80,48 +82,49 @@ class Nix_store::Child : public Genode::Child_policy
 			          Signal_context_capability exit_sigh)
 			: pd(label), ram(label), cpu(label)
 			{
-				cpu.exception_handler(Thread_capability(), exit_sigh);
-				rm.fault_handler(exit_sigh);
-
 				ram.ref_account(Genode::env()->ram_session_cap());
 
 				Genode::env()->ram_session()->transfer_quota(ram.cap(), QUOTA_STEP);
 			}
 		} _resources;
-		// XXX: this far before fault
 
-		Rom_connection             _binary_rom;
-		Server::Entrypoint         _entrypoint;
+		Genode::Child::Initial_thread _initial_thread { _resources.cpu, _resources.pd,
+		                                                _name.string() };
+
+		Genode::Attached_rom_dataspace _elf_rom;
+
 		Signal_context_capability  _exit_sigh;
 		/* XXX: use an allocator with a lifetime bound to the child */
-		Ingest_service             _fs_ingest_service { _drv, _entrypoint, *Genode::env()->heap() };
-		Filter_service             _fs_filter_service { _entrypoint, _inputs };
+		Ingest_service             _fs_ingest_service { _drv, _env, *Genode::env()->heap() };
+		Filter_service             _fs_filter_service { _env, _inputs };
 		Parent_service             _fs_parent_service { "File_system" };
 		Service_registry           _parent_services;
 
-		Genode::Child  _child;
+		Genode::Region_map_client _address_space { _resources.pd.address_space() };
+		Genode::Child             _child;
 
 	public:
 
 		/**
 		 * Constructor
 		 */
-		Child(char const               *name,
-		      File_system::Session     &fs,
-		      Signal_context_capability exit_sigh)
+		Child(char const                   *name,
+		      Genode::Env                  &env,
+		      File_system::Session         &fs,
+		      Signal_context_capability     exit_sigh,
+		      Genode::Dataspace_capability  ldso_ds)
 		:
-			_name(name),
-			_fs(fs),
+			_name(name), _env(env), _fs(fs),
 			_resources(name, exit_sigh),
-			_binary_rom(_drv.builder()),
+			_elf_rom(_drv.builder()),
 			_exit_sigh(exit_sigh),
-			_child(_binary_rom.dataspace(),
-			       _resources.pd.cap(),
-			       _resources.ram.cap(),
-			       _resources.cpu.cap(),
-			       _resources.rm.cap(),
-			      &_entrypoint.rpc_ep(),
-			        this)
+			_child(_elf_rom.cap(), ldso_ds,
+			       _resources.pd.cap(),  _resources.pd,
+			       _resources.ram.cap(), _resources.ram,
+			       _resources.cpu.cap(), _initial_thread,
+			       env.rm(), _address_space, 
+			       env.ep().rpc_ep(),
+			       *this)
 		{
 			/*
 			 * A whitelist of services to forward from our parent.
@@ -135,7 +138,7 @@ class Nix_store::Child : public Genode::Child_policy
 			};
 			for (unsigned i = 0; service_names[i]; ++i)
 				_parent_services.insert(
-					new (env()->heap())
+					new (Genode::env()->heap())
 						Parent_service(service_names[i]));
 
 			if (_drv.has_fixed_output()) {
@@ -155,7 +158,8 @@ class Nix_store::Child : public Genode::Child_policy
 						++end;
 						Genode::strncpy(service_name, impure+start, end-start);
 						PLOG("%s: forwarding impure service '%s' to parent", _name.string(), service_name);
-						_parent_services.insert(new (env()->heap()) Parent_service(service_name));
+						_parent_services.insert(new (Genode::env()->heap())
+							Parent_service(service_name));
 						start = end;
 					} else
 						++end;
