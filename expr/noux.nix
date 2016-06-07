@@ -13,20 +13,25 @@ in
 , fstab
 , env  ? { }
 , args ? [ ]
+, roms ? { }
+, parentRoms ? [ ]
 , verbose ? false
 , passthru ? { }
 , ...
 } @ attrs:
 let
-  attrs' = removeAttrs attrs [ "fstab" "env" "args" "passthru" ];
+  attrs' = removeAttrs attrs [ "fstab" "env" "args" "passthru" "roms" "parentRoms" ];
   env' = strMap
     (name: ''<env name="${name}" value="${toString (getAttr name env)}"/>'')
     (attrNames env);
   args' = strMap (arg: ''<arg value="${arg}"/>'') args;
-  romSet = listToAttrs (map
+
+  romSet = roms // (listToAttrs (map
     (name: { inherit name; value = getRom name; })
-    [ "ld.lib.so" "libc.lib.so" "libm.lib.so" "libc_noux.lib.so" "vfs_any-rom.lib.so" ]
-  );
+    ( parentRoms ++
+      [ "ld.lib.so" "libc.lib.so" "libm.lib.so" "libc_noux.lib.so" "vfs_any-rom.lib.so" ]
+    )
+  ));
 in
 (derivation (attrs' // romSet // {
   inherit name;
