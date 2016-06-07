@@ -548,7 +548,7 @@ class Nix_store::Hash_root_registry
 			using namespace Jitter;
 			struct rand_data *ec = jent_entropy_collector_alloc(0, 0);
 			if (!ec) {
-				PERR("failed to initalize ingest nonce RNG");
+				Genode::error("failed to initalize ingest nonce RNG");
 				throw ~0;
 			}
 			jent_read_entropy(ec, (char*)&_nonce, sizeof(_nonce));
@@ -589,7 +589,7 @@ class Nix_store::Hash_root_registry
 			}
 
 			if (strict) {
-				PERR("'%s' is not a declared ingest root", name);
+				Genode::error(name, " is not a declared ingest root");
 				throw Permission_denied();
 			}
 

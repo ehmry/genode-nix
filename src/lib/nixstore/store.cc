@@ -14,10 +14,10 @@
 #include <hash/blake2s.h>
 #include <os/config.h>
 #include <dataspace/client.h>
-#include <base/printf.h>
+#include <base/log.h>
 
 
-#define NOT_IMP PERR("%s not implemented", __func__)
+#define NOT_IMP Genode::error(__func__, " not implemented")
 
 
 using namespace nix;
@@ -67,7 +67,7 @@ static nix::Path finalize_ingest(File_system::Session &fs, char const *name)
 		Handle_guard root_guard(fs, root);
 		link_handle = fs.symlink(root, name, true);
 	} catch (...) {
-		PERR("failed to close ingest handle for ‘%s’", name);
+		Genode::error("failed to close ingest handle for ", name);
 		throw;
 	}
 	Handle_guard link_guard(fs, link_handle);
@@ -116,7 +116,7 @@ void Store::copy_dir(File_system::Session   &fs,
 			try {
 				sub_handle = fs.dir(sub_dst_path.c_str(), true);
 			} catch (...) {
-				PERR("error opening ingest directory handle for ‘%s’", sub_dst_path.c_str());
+				Genode::error("error opening ingest directory handle for ", sub_dst_path.c_str());
 				throw;
 			}
 			File_system::Handle_guard sub_guard(fs, sub_handle);
@@ -131,7 +131,7 @@ void Store::copy_dir(File_system::Session   &fs,
 				file_handle = fs.file(ingest_dir, dirent.name,
 				                      File_system::WRITE_ONLY, true);
 			} catch (...) {
-				PERR("error opening ingest file handle for ‘%s’", sub_dst_path.c_str());
+				Genode::error("error opening ingest file handle for ", sub_dst_path.c_str());
 				throw;
 			}
 			File_system::Handle_guard sub_guard(fs, file_handle);
@@ -145,7 +145,7 @@ void Store::copy_dir(File_system::Session   &fs,
 			try {
 				link_handle = fs.symlink(ingest_dir, dirent.name, true);
 			} catch (...) {
-				PERR("error opening ingest symlink handle for ‘%s’", sub_dst_path.c_str());
+				Genode::error("error opening ingest symlink handle for ", sub_dst_path.c_str());
 				throw;
 			}
 			File_system::Handle_guard sub_guard(fs, link_handle);
@@ -155,7 +155,7 @@ void Store::copy_dir(File_system::Session   &fs,
 		}
 		
 		default:
-			PERR("skipping irregular file %s", sub_src_path.c_str());
+			Genode::error("skipping irregular file ", sub_src_path.c_str());
 		}
 	}
 }
@@ -250,7 +250,7 @@ void Store::copy_symlink(File_system::Session       &fs,
 
 	packet = source.get_acked_packet();
 	if (!packet.length())
-		throw Error(format("writing symlink ‘%1%’") % src_path);
+		throw Error(format("copying symlink ‘%1%’ to `%2%'") % src_path % dst_path);
 }
 
 
@@ -343,7 +343,7 @@ Store::add_file(nix::Path const &src_path)
 		ingest_handle = fs.file(root_handle, name.c_str(),
 		                        File_system::WRITE_ONLY, true);
 	} catch (...) {
-		PERR("error opening file handle at ingest session for ‘%s’", name.c_str());
+		Genode::error("error opening file handle at ingest session for ", name.c_str());
 		throw;
 	}
 	File_system::Handle_guard fs_guard(fs, ingest_handle);
@@ -416,7 +416,7 @@ Store::hash_dir(uint8_t *buf, nix::Path const &src_path)
 			hash.update(buf, hash.size());
 
 		} else {
-			PERR("unhandled file type for %s", subpath.c_str());
+			Genode::error("unhandled file type for ", subpath.c_str());
 		}
 	}
 
@@ -442,7 +442,7 @@ Store::add_dir(nix::Path const &src_path)
 	try {
 		ingest_dir = fs.dir(dst_path.c_str(), true);
 	} catch (...) {
-		PERR("opening ingest directory handle for ‘%s'", dst_path.c_str());
+		Genode::error("opening ingest directory handle for ", dst_path.c_str());
 		throw;
 	}
 	File_system::Handle_guard dir_guard(fs, ingest_dir);
@@ -463,10 +463,11 @@ Store::add_dir(nix::Path const &src_path)
 bool
 nix::Store::isValidPath(const nix::Path & path)
 {
-	// TODO just fix the damn double slash already
-	for (int i = 0; i < path.size(); ++i)
-		if (path[i] != '/')
-			return _store_session.valid(path.c_str()+i);
+	// slash hack
+	char const *_path = path.c_str();
+	while (*_path == '/') ++_path;
+
+	return _store_session.valid(_path);
 }
 
 
@@ -490,7 +491,11 @@ nix::Hash nix::Store::queryPathHash(const Path & path) {
 /* Query the set of outgoing FS references for a store path.	The
 	 result is not cleared. */
 void nix::Store::queryReferences(const nix::Path & path,
-		PathSet & references) { NOT_IMP; };
+		PathSet & references)
+{
+	if (!isValidPath(path))
+		throw Error(format("path ‘%1%’ is not valid") % path);
+};
 
 	/* Queries the set of incoming FS references for a store path.
 	 The result is not cleared. */
@@ -609,7 +614,7 @@ nix::Path nix::Store::addTextToStore(const string & name, const string & text,
 			Handle_guard root_guard(fs, root);
 			handle = fs.file(root, name_str, File_system::WRITE_ONLY, true);
 		} catch (...) {
-			PERR("error opening handle at ingest session for text '%s'", name.c_str());
+			Genode::error("error opening handle at ingest session for text ", name.c_str());
 			throw;
 		}
 		Handle_guard file_guard(fs, handle);
@@ -682,7 +687,7 @@ nix::Path nix::Store::addDataToStore(const string & name,
 			Handle_guard root_guard(fs, root);
 			handle = fs.file(root, name_str, File_system::WRITE_ONLY, true);
 		} catch (...) {
-			PERR("error opening handle  at ingest session for data ‘%s’", name.c_str());
+			Genode::error("error opening handle  at ingest session for data ", name.c_str());
 			throw;
 		}
 		Handle_guard file_guard(fs, handle);

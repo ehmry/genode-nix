@@ -20,7 +20,7 @@
 #include <root/component.h>
 #include <dataspace/client.h>
 #include <rom_session/connection.h>
-#include <cap_session/cap_session.h>
+#include <base/log.h>
 
 /* Local includes */
 #include "build_job.h"
@@ -68,6 +68,7 @@ class Nix_store::Build_component : public Genode::Rpc_object<Nix_store::Session>
 		void check_inputs(char const *name)
 		{
 			Derivation(_env, name).inputs([&] (Aterm::Parser &parser) {
+				Genode::warning("in the parser for ", name);
 
 				Name input;
 				parser.string(&input);
@@ -92,7 +93,7 @@ class Nix_store::Build_component : public Genode::Rpc_object<Nix_store::Session>
 							while (*output== '/') ++output;
 
 							if (!valid(output)) {
-								PERR("missing dependency %s", output);
+								Genode::error("missing dependency ", output);
 								throw Missing_dependency();
 							}
 						} else {
@@ -161,7 +162,7 @@ class Nix_store::Build_component : public Genode::Rpc_object<Nix_store::Session>
 			char const *name = drv_name.string();
 
 			if (File_system::string_contains(name, '/')) {
-				PERR("invalid derivation name %s", name);
+				Genode::error("invalid derivation name ", name);
 				throw Invalid_derivation();
 			}
 
@@ -175,11 +176,11 @@ class Nix_store::Build_component : public Genode::Rpc_object<Nix_store::Session>
 			 */
 			try { check_inputs(name); }
 			catch (Genode::Rom_connection::Rom_connection_failed) {
-				PERR("failed to load %s by ROM", name);
-				throw Invalid_derivation();
+				Genode::error("failed to load ", name, " by ROM");
+				throw Missing_dependency();
 			}
 			catch (...) {
-				PERR("invalid derivation %s", name);
+				Genode::error("invalid derivation ", name);
 				throw Invalid_derivation();
 			}
 
@@ -231,6 +232,7 @@ class Nix_store::Build_root : public Genode::Root_component<Build_component>
 
 		Build_component *_create_session(const char *args, Affinity const &affinity) override
 		{
+			Genode::Session_label label(args);
 			size_t ram_quota =
 				Arg_string::find_arg(args, "ram_quota"  ).ulong_value(0);
 
@@ -240,13 +242,15 @@ class Nix_store::Build_root : public Genode::Root_component<Build_component>
 			 */
 			size_t session_size = sizeof(Build_component);
 			if (max((size_t)4096, session_size) > ram_quota) {
-				PERR("insufficient 'ram_quota', got %zd, need %zd",
-				     ram_quota, session_size);
+				Genode::error("insufficient 'ram_quota', got ",
+				              ram_quota, ", need ", session_size);
 				throw Root::Quota_exceeded();
 			}
 
-			return new(md_alloc())
+			Build_component *session = new(md_alloc())
 				Build_component(_env, md_alloc(), ram_quota, _fs, _jobs);
+			Genode::log("serving Nix_store to ", label.string());
+			return session;
 		}
 
 	public:
@@ -278,7 +282,7 @@ class Nix_store::Build_root : public Genode::Root_component<Build_component>
 				_fs.close(_fs.file(
 					root_handle, placeholder, READ_WRITE, true));
 			} catch (...) {
-				PERR("insufficient File_system access");
+				Genode::error("insufficient File_system access");
 				throw;
 			}
 

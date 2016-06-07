@@ -86,7 +86,7 @@ class Nix_store::Filter_component : public Genode::Rpc_object<File_system::Sessi
 
 								for (;;) try {
 									if (input_path == "/" || input_path == "") {
-										PERR("invalid derivation %s", input.string());
+										Genode::error("invalid derivation ", input.string());
 										throw Genode::Root::Unavailable();
 									}
 									Symlink_handle link = fs.symlink(root_handle, input_name, false);
@@ -99,11 +99,11 @@ class Nix_store::Filter_component : public Genode::Rpc_object<File_system::Sessi
 								} catch (Lookup_failed) {
 									try { fs.close(fs.node(input_path.base())); break; }
 									catch (Lookup_failed) {
-										PERR("found dangling symlink to `%s'", input_path.base());
+										Genode::error("found dangling symlink to ", input_path);
 										throw Genode::Root::Unavailable();
 									}
 								} catch (...) {
-									PERR("failed to access input `%s'", input_path.base());
+									Genode::error("failed to access input ", input_path);
 									throw Genode::Root::Unavailable();
 								}
 
@@ -212,14 +212,13 @@ class Nix_store::Filter_component : public Genode::Rpc_object<File_system::Sessi
 	public:
 
 		Filter_component(Genode::Env &env, Inputs const &inputs)
-		: _inputs(inputs), _backend(env)
-		{ PDBG(""); }
+		: _inputs(inputs), _backend(env) { }
 
 		Input const &_lookup_input(char const *name)
 		{
 			Input const *input = _inputs.lookup(name);
 			if (!input) {
-				PERR("lookup of %s at filter failed", name);
+				Genode::error("lookup of ", name, " at filter failed");
 				throw Lookup_failed();
 			}
 			return *input;
@@ -238,8 +237,6 @@ class Nix_store::Filter_component : public Genode::Rpc_object<File_system::Sessi
 
 			new_path.import(input.final.string(), "/");
 			new_path.append(orig);
-
-			PDBG("%s -> %s", old_path.base(), new_path.base());
 		}
 
 		/***************************
@@ -358,14 +355,13 @@ class Nix_store::Filter_service : public Genode::Service
 
 		Genode::Session_capability session(char const *args, Genode::Affinity const &) override
 		{
-			PDBG("%s", args);
 			return _cap;
 		}
 
 		void upgrade(Genode::Session_capability, const char *args)
 		{
-			PERR("client is upgrading session, but don't know where to send it, %s", args);
-			//Genode::env()->parent()->upgrade(_nix_store.cap(), args);
+			Genode::error("client is upgrading session, but don't know where to send it, ", args);
+			//_env.parent().upgrade(_nix_store.cap(), args);
 		}
 
 };

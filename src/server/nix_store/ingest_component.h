@@ -19,12 +19,14 @@
 #include <file_system/util.h>
 #include <file_system_session/connection.h>
 #include <file_system_session/rpc_object.h>
+#include <os/session_policy.h>
 #include <os/path.h>
 #include <root/component.h>
 #include <base/allocator_avl.h>
 #include <base/allocator_guard.h>
 #include <base/signal.h>
 #include <util/label.h>
+#include <base/log.h>
 
 /* Local includes */
 #include "ingest_node.h"
@@ -112,7 +114,7 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 					Hash_node *hash_node = _node_registry.lookup(ours.handle());
 					if (!hash_node) {
 						/* if we don't hash it, they don't write it */
-						PERR("no hash node found for handle on client packet");
+						Genode::error("no hash node found for handle on client packet");
 						return false;
 					}
 					memcpy(source.packet_content(ours), content, length);
@@ -120,8 +122,8 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 				source.submit_packet(ours);
 				return true;
 			}
-			catch (Invalid_handle) { PERR("Invalid_handle"); }
-			catch (Lookup_failed)  { PERR("Lookup_failed"); }
+			catch (Invalid_handle) { Genode::error("Invalid_handle"); }
+			catch (Lookup_failed)  { Genode::error("Lookup_failed"); }
 			return false;
 		}
 
@@ -150,7 +152,7 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 			}
 			if (i == queue_size) {
 				/* this is bad, now there is probably a stuck packet */
-				PERR("unknown packet received from the backend");
+				Genode::error("unknown packet received from the backend");
 				source.release_packet(ours);
 				return false;
 			}
@@ -179,7 +181,7 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 						hash_node->write(content, length, ours.position());
 						break;
 					} catch (Invalid_handle) {
-						PERR("Invalid_handle");
+						Genode::error("Invalid_handle");
 						length = 0;
 					}
 					break;
@@ -371,21 +373,16 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 				         _root_handle, (char *)final_name+1);
 			} catch (Permission_denied) {
 				/* if the final path already exists, delete this ingest */
-				PDBG("move permission denied, try unlink");
 				_fs.close(_fs.node((char *)final_name));
 				try {
-					PDBG("try unlink");
 					_fs.unlink(_root_handle, root.filename);
 				} catch (Not_empty) {
-					PDBG("Not_empty");
 					Genode::Path<MAX_PATH_LEN> path(root.filename);
 					empty_dir(_fs, path.base());
 					_fs.unlink(_root_handle, root.filename);
 					_fs.move(_root_handle, root.filename,
 					         _root_handle, (char *)final_name+1);
 				}
-			} catch (Lookup_failed) {
-				PDBG("caught lookup failed");
 			}
 			root.finalize((char *)final_name+1);
 		}
@@ -418,12 +415,12 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 				Store_hash::encode_hash(buf, sizeof(buf));
 
 				if (strcmp(hash, (char *)&buf, sizeof(buf))) {
-					PERR("%s:%s:%s != %s", name, algo, hash, (char*)&buf);
+					Genode::error(name,":",algo,":",hash,"!=",(char const*)&buf);
 					return false;
 				}
-				PLOG("verified %s:%s:%s", name, algo, (char*)&buf);
+				Genode::log("verified ",name,":",algo,":",(char const*)&buf);
 			}
-			PERR("unhandled hash algorithm '%s'", algo);
+			Genode::error("unhandled hash algorithm ", algo);
 			throw File_system::Exception();
 		}
 		*/
@@ -451,7 +448,7 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 
 			Directory *parent_dir = dynamic_cast<Directory *>(root.node);
 			if (!parent_dir) {
-				PERR("%s is not a directory", root_name);
+				Genode::log(root_name, " is not a directory");
 				throw Lookup_failed();
 			}
 
@@ -472,7 +469,7 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 			try {
 				handle = _fs.dir(new_path, create);
 			} catch (Permission_denied) {
-				PERR("permission denied at backend"); throw;
+				Genode::error("permission denied at backend"); throw;
 			} catch (Out_of_metadata) {
 				if ((_alloc.quota() - _alloc.consumed()) > 8192) {
 					_alloc.withdraw(8192);
@@ -493,7 +490,7 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 			/* get a local node */
 			Hash_root *root = nullptr;
 			File *file_node;
-			
+
 			if (dir_handle == _root_handle) {
 				if (create) {
 					root = &_root_registry.alloc_file(name.string(), _strict);
@@ -522,7 +519,7 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 					? _fs.file(dir_handle, root->filename, mode, create)
 					: _fs.file(dir_handle, name, mode, create);
 			} catch (Permission_denied) {
-				PERR("permission denied at backend"); throw;
+				Genode::error("permission denied at backend"); throw;
 			} catch (Out_of_metadata) {
 				if ((_alloc.quota() - _alloc.consumed()) > 8192) {
 					_alloc.withdraw(8192);
@@ -557,7 +554,7 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 				try {
 					handle = _fs.symlink(dir_handle, name, create);
 				} catch (Permission_denied) {
-					PERR("permission denied at backend"); throw;
+					Genode::error("permission denied at backend"); throw;
 				} catch (Out_of_metadata) {
 					if ((_alloc.quota() - _alloc.consumed()) > 8192) {
 						_alloc.withdraw(8192);
@@ -708,7 +705,7 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 
 			node = from_dir_node.remove(from_name.string());
 			if (!node) {
-				PERR("internal state inconsistent with backend!");
+				Genode::error("internal state inconsistent with backend!");
 				throw Permission_denied();
 			}
 
@@ -738,7 +735,7 @@ class Nix_store::Ingest_root :
 		Ingest_component *_create_session(const char *args)
 		{
 			if (!Arg_string::find_arg(args, "writeable").bool_value(true)) {
-				PERR("refusing read-only session");
+				Genode::error("refusing read-only ingest session");
 				throw Root::Invalid_args();
 			}
 
@@ -753,18 +750,21 @@ class Nix_store::Ingest_root :
 
 			size_t session_size = sizeof(Ingest_component) + tx_buf_size;
 
+			Genode::Session_label const label(args);
+
 			if (max((size_t)4096, session_size) > ram_quota) {
-				Genode::Label const label(args);
-				PERR("insufficient 'ram_quota' from %s, got %zd, need %zd",
-				     label.string(), ram_quota, session_size);
+				Genode::error("insufficient 'ram_quota' from ",label.string(),
+				              ", got ",ram_quota,", need ",session_size);
 				throw Root::Quota_exceeded();
 			}
 			ram_quota -= session_size;
 
 			try {
-				return new (md_alloc())
+				Ingest_component *session = new (md_alloc())
 					Ingest_component(_env, _alloc, ram_quota, tx_buf_size);
-			} catch (...) { PERR("cannot issue session"); }
+				Genode::log("serving ingest to ", label.string());
+				return session;
+			} catch (...) { Genode::error("cannot issue ingest session"); }
 			throw Root::Unavailable();
 		}
 

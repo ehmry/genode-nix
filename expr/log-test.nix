@@ -19,13 +19,11 @@ derivation (roms // args // {
     ''
       <config verbose="yes">
         <parent-provides>
-          <service name="CAP"/>
           <service name="File_system"/>
           <service name="LOG"/>
           <service name="RAM"/>
           <service name="RM"/>
           <service name="ROM"/>
-          <service name="SIGNAL"/>
           <service name="Timer"/>
         </parent-provides>
 
@@ -37,7 +35,9 @@ derivation (roms // args // {
           </route>
           <config>
             <vfs> <fs label="ingest"/> </vfs>
-            <policy label="fs_log" writeable="yes"/>
+            <file_system>
+              <policy label="fs_log" writeable="yes"/>
+            </file_system>
           </config>
         </start>
 

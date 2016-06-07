@@ -37,12 +37,10 @@ append config {
 		<parent-provides>
 			<service name="ROM"/>
 			<service name="LOG"/>
-			<service name="CAP"/>
 			<service name="RAM"/>
 			<service name="RM"/>
 			<service name="CPU"/>
 			<service name="PD"/>
-			<service name="SIGNAL"/>
 		</parent-provides>
 		<default-route>
 			<any-service> <parent/> <any-child/> </any-service>
@@ -53,27 +51,34 @@ append config {
 		</start>
 	<start name="vfs">
 		<resource name="RAM" quantum="10M"/>
-		<provides><service name="File_system"/></provides>
+		<provides>
+			<service name="File_system"/>
+			<service name="ROM"/>
+		</provides>
 		<config>
 			<vfs> <ram/> </vfs>
 			<file_system>
-				<policy label="nix_store" writeable="yes"/>
+				<policy label_prefix="nix_store" writeable="yes"/>
 				<default-policy/>
 			</file_system>
+			<rom/>
 		</config>
 	</start>
 	<start name="nix_store">
-		<resource name="RAM" quantum="1M"/>
+		<resource name="RAM" quantum="4M"/>
 		<provides> <service name="File_system"/> </provides>
 		<route>
 			<service name="File_system">
+				<child name="vfs"/>
+			</service>
+			<service name="ROM" label_prefix="store">
 				<child name="vfs"/>
 			</service>
 			<any-service> <parent/> <any-child/> </any-service>
 		</route>
 	</start>
 	<start name="noux" verbose="yes">
-		<resource name="RAM" quantum="1G" />
+		<resource name="RAM" quantum="8M" />
 		<route>
 			<service name="File_system" label="ingest">
 				<child name="nix_store" />
@@ -85,13 +90,11 @@ append config {
 		</route>
 		<config stdin="/dev/null" stdout="/dev/log" stderr="/dev/log">
 			<fstab>
-				<tar name="coreutils.tar"  />
-				<tar name="bash.tar"       />
+				<tar name="coreutils.tar" />
+				<tar name="bash.tar"      />
 				<dir name="dev">
 					<jitterentropy name="random"/>
-					<log/>
-					<null/>
-					<zero/>
+					<log/> <null/> <zero/>
 				</dir>
 				<dir name="store" > <fs label="store"/> </dir>
 				<dir name="ingest"> <fs label="ingest" /> </dir>
@@ -140,6 +143,6 @@ if {[have_spec x86_64]} {
 	append qemu_args " -m 320"
 }
 
-run_genode_until "nd5p94bfndbmmj1n25fq3v79253w9mrq-zero-8" 60
+run_genode_until "nd5p94bfndbmmj1n25fq3v79253w9mrq-zero-8" 120
 
 file delete bin/bash.tar bin/coreutils.tar bin/ingest_loop.sh

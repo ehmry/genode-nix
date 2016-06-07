@@ -103,7 +103,7 @@ namespace Nix_store {
 					 **********/
 
 					parser.list([name] (Aterm::Parser &parser) {
-						PERR("%s contains a command line argument", name);
+						Genode::log(name, " contains a command line argument", name);
 						throw Invalid_derivation();
 					});
 

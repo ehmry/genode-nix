@@ -73,7 +73,6 @@ class Nix_store::Ingest_service : public Genode::Service
 		static bool _verify(File_system::Session &fs, Hash::Function &hash, char const *hex, char const *filename)
 		{
 			/* I'm too lazy to write a decoder, so encode to hex and compare the strings */
-			PDBG("%s %s", filename, hex);
 			uint8_t buf[hash.size()*2+1];
 			buf[hash.size()*2] = 0;
 
@@ -82,13 +81,11 @@ class Nix_store::Ingest_service : public Genode::Service
 				'8','9','a','b','c','d','e','f'
 			};
 
-			PDBG("open root");
 			File_system::Dir_handle root = fs.dir("/", false);
 			File_system::File_handle handle;
-			PDBG("%s", filename);
 			try { handle = fs.file(root, filename, File_system::READ_ONLY, false); }
 			catch (...) {
-				PERR("failed to open fixed output %s for verification", filename);
+				Genode::error("failed to open fixed output ", filename, " for verification", filename);
 				throw ~0;
 			}
 			File_system::Handle_guard guard(fs, handle);
@@ -104,7 +101,7 @@ class Nix_store::Ingest_service : public Genode::Service
 			if (strcmp(hex, (char*)buf) == 0)
 				return true;
 
-			PERR("fixed output %s is invalid, wanted %s, got %s", filename, hex, (char*)buf);
+			Genode::error("fixed output ", filename, " is invalid, wanted ", hex, ", got ", (char*)buf);
 			return false;
 		}
 
@@ -116,30 +113,22 @@ class Nix_store::Ingest_service : public Genode::Service
 		                       char              const *id,
 		                       char              const *path)
 		{
-			try {
-			int stack = 0; PDBG("%p %s:%s", &stack, id, path);
 			while (*path == '/') ++path;
 			using namespace File_system;
 
 			char const *final_str = _component.ingest(id);
 			if (!(final_str && *final_str)) {
-				PERR("%s not found at ingest session", id);
+				Genode::error(id, " not found at ingest session");
 				throw ~0;
 			}
 
 			/* create symlink at real file system */
-			PDBG("open root");
 			Dir_handle root = fs.dir("/", false);
 			Handle_guard root_guard(fs, root);
 
-			PDBG("symlink %s", path);
 			Symlink_handle link = fs.symlink(root, path, true);
 			File_system::write(fs, link, final_str, Genode::strlen(final_str));
 			fs.close(link);
-			} catch (...) {
-				PERR("caught error in %s, %s:%s", __func__, id, path);
-				throw;
-			}
 		}
 
 		/**
@@ -148,7 +137,6 @@ class Nix_store::Ingest_service : public Genode::Service
 		 */
 		bool _finalize(File_system::Session &fs, Nix_store::Derivation &drv)
 		{
-			int stack = 0; PDBG("%p", &stack);
 			using namespace File_system;
 
 			unsigned outstanding = 0;
@@ -162,14 +150,12 @@ class Nix_store::Ingest_service : public Genode::Service
 
 				parser.string(&id);
 
-				PDBG("_component.ingest(%s)", id.string());
 				char const *output = _component.ingest(id.string());
 				if (!(output && *output)) {
 					/* If output symlinks are missing, then failure is implicit. */
-					PERR("'%s' not found at the ingest session", id.string());
+					Genode::error(id.string(), " not found at the ingest session");
 					throw ~0;
 				}
-				PDBG("%s is %s", id.string(), output);
 
 				parser.string(&path);
 				parser.string(&algo);
@@ -177,8 +163,6 @@ class Nix_store::Ingest_service : public Genode::Service
 
 				try {
 				if ((algo != "") || (digest != "")) {
-					PDBG("_verify(fs, hash, %s %s)", digest.string(), output);
-
 					bool valid = false;
 					if (algo == "sha256") {
 						Hash::Sha256 hash;
@@ -187,14 +171,14 @@ class Nix_store::Ingest_service : public Genode::Service
 						Hash::Blake2s hash;
 						valid = _verify(fs, hash, digest.string(), output);
 					} else
-						PERR("unknown hash algorithm `%s'", algo.string());
+						Genode::error("unknown hash algorithm ", algo.string());
 					if (!valid) {
-						PERR("fixed output %s:%s is invalid", id.string(), path.string());
+						Genode::error("fixed output ", id.string(), ":", path.string(), " is invalid");
 						throw ~0;
 					}
 				}
 				} catch (...) {
-					PERR("caught an error verifying %s:%s", id.string(), path.string());
+					Genode::error("caught an error verifying ", id.string(), ":", path.string());
 					throw;
 				}
 				++outstanding;
@@ -219,7 +203,7 @@ class Nix_store::Ingest_service : public Genode::Service
 				parser.string(/* Hash */);
 			});
 			if (outstanding)
-				PERR("%d outputs outstanding", outstanding);
+				Genode::error(outstanding, " outputs outstanding");
 			return outstanding == 0;
 		}
 
@@ -237,15 +221,12 @@ class Nix_store::Ingest_service : public Genode::Service
 		 * Constructor
 		 */
 		Ingest_service(Nix_store::Derivation &drv, Genode::Env &env, Genode::Allocator &alloc)
-		:
-			Genode::Service("File_system"), _env(env), _component(env, alloc)
-		{ PDBG(""); }
+		: Genode::Service("File_system"), _env(env), _component(env, alloc) { }
 
 		~Ingest_service() { revoke_cap(); }
 
 		bool finalize(File_system::Session &fs, Nix_store::Derivation &drv)
 		{
-			int stack = 0; PDBG("%p", &stack);
 			revoke_cap();
 			try { return _finalize(fs, drv); } catch (...) { }
 			return false;
@@ -258,14 +239,13 @@ class Nix_store::Ingest_service : public Genode::Service
 
 		Genode::Session_capability session(char const *args, Genode::Affinity const &) override
 		{
-			PDBG("%s", args);
 			return _cap;
 		}
 
 		void upgrade(Genode::Session_capability, const char *args)
 		{
-			PERR("client is upgrading session, but don't know where to send it, %s", args);
-			//Genode::env()->parent()->upgrade(_component.cap(), args);
+			Genode::error("client is upgrading session, but don't know where to send it, ", args);
+			//_env().parent().upgrade(_component.cap(), args);
 		}
 
 };

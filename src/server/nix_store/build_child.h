@@ -17,7 +17,7 @@
 /* Genode includes */
 #include <store_hash/encode.h>
 #include <file_system_session/file_system_session.h>
-#include <os/attached_rom_dataspace.h>
+#include <base/attached_rom_dataspace.h>
 #include <base/env.h>
 #include <base/child.h>
 #include <base/printf.h>
@@ -62,8 +62,6 @@ class Nix_store::Child : public Genode::Child_policy
 		Genode::Env           &_env;
 		File_system::Session  &_fs;
 		Nix_store::Derivation  _drv { _env, _name.string() };
-		Inputs           const _inputs      { _env, *Genode::env()->heap(), _fs, _drv };
-		Environment      const _environment { _env, *Genode::env()->heap(), _fs, _drv, _inputs };
 
 		/**
 		 * Resources assigned to the child.
@@ -78,30 +76,33 @@ class Nix_store::Child : public Genode::Child_policy
 			/**
 			 * Constructor
 			 */
-			Resources(char const               *label,
-			          Signal_context_capability exit_sigh)
-			: pd(label), ram(label), cpu(label)
+			Resources(Genode::Env &env, char const *label)
+			: pd(env, label), ram(env, label), cpu(env, label)
 			{
-				ram.ref_account(Genode::env()->ram_session_cap());
+				ram.ref_account(env.ram_session_cap());
 
-				Genode::env()->ram_session()->transfer_quota(ram.cap(), QUOTA_STEP);
+				env.ram().transfer_quota(ram.cap(), QUOTA_STEP);
 			}
-		} _resources;
+		} _resources { _env, _name.string() };
 
 		Genode::Child::Initial_thread _initial_thread { _resources.cpu, _resources.pd,
 		                                                _name.string() };
 
-		Genode::Attached_rom_dataspace _elf_rom;
+
+		Genode::Label _binary_label { _drv.builder(), "store" };
+		Genode::Attached_rom_dataspace _elf_rom { _env, _binary_label.string() };
+
+		Genode::Region_map_client _address_space { _resources.pd.address_space() };
+
+		Genode::Child _child;
 
 		Signal_context_capability  _exit_sigh;
-		/* XXX: use an allocator with a lifetime bound to the child */
-		Ingest_service             _fs_ingest_service { _drv, _env, *Genode::env()->heap() };
+		Inputs           const _inputs      { _env, *_child.heap(), _fs, _drv };
+		Environment      const _environment { _env, *_child.heap(), _fs, _drv, _inputs };
+		Ingest_service             _fs_ingest_service { _drv, _env, *_child.heap() };
 		Filter_service             _fs_filter_service { _env, _inputs };
 		Parent_service             _fs_parent_service { "File_system" };
 		Service_registry           _parent_services;
-
-		Genode::Region_map_client _address_space { _resources.pd.address_space() };
-		Genode::Child             _child;
 
 	public:
 
@@ -115,30 +116,21 @@ class Nix_store::Child : public Genode::Child_policy
 		      Genode::Dataspace_capability  ldso_ds)
 		:
 			_name(name), _env(env), _fs(fs),
-			_resources(name, exit_sigh),
-			_elf_rom(_drv.builder()),
-			_exit_sigh(exit_sigh),
 			_child(_elf_rom.cap(), ldso_ds,
 			       _resources.pd.cap(),  _resources.pd,
 			       _resources.ram.cap(), _resources.ram,
 			       _resources.cpu.cap(), _initial_thread,
 			       env.rm(), _address_space, 
 			       env.ep().rpc_ep(),
-			       *this)
+			       *this),
+			_exit_sigh(exit_sigh)
 		{
-			/*
-			 * A whitelist of services to forward from our parent.
-			 *
-			 * TODO: enforce purity and do not forward ROM,
-			 * all executables and libraries should be in the store.
-			 */
 			static char const *service_names[] = {
-				"CAP", "CPU", "LOG", "PD", "RAM", "RM", "ROM", "SIGNAL",
-				"Timer", 0
+				"CPU", "LOG", "PD", "RAM", "ROM", "RM", "Timer", 0
 			};
 			for (unsigned i = 0; service_names[i]; ++i)
 				_parent_services.insert(
-					new (Genode::env()->heap())
+					new (_child.heap())
 						Parent_service(service_names[i]));
 
 			if (_drv.has_fixed_output()) {
@@ -157,8 +149,8 @@ class Nix_store::Child : public Genode::Child_policy
 					if (impure[end] == ' ' || impure[end] == '\0') {
 						++end;
 						Genode::strncpy(service_name, impure+start, end-start);
-						PLOG("%s: forwarding impure service '%s' to parent", _name.string(), service_name);
-						_parent_services.insert(new (Genode::env()->heap())
+						Genode::log(_name.string(), ": forwarding impure service ", service_name, " to parent");
+						_parent_services.insert(new (_child.heap())
 							Parent_service(service_name));
 						start = end;
 					} else
@@ -191,11 +183,12 @@ class Nix_store::Child : public Genode::Child_policy
 				 * that inserts the proper punctuation.
 				 */
 				if (strcmp("binary", request) == 0) {
-					Arg_string::set_arg_string(args, args_len, "label", _drv.builder());
+					Arg_string::set_arg_string(args, args_len, "label", _binary_label.string());
 				} else if (char const *dest = _environment.lookup(request)) {
-					Arg_string::set_arg_string(args, args_len, "label", dest);
+					Genode::Label const new_label(dest, "store");
+					Arg_string::set_arg_string(args, args_len, "label", new_label.string());
 				} else {
-					PERR("impure ROM request for '%s'", request);
+					Genode::error("impure ROM request for '", request, "'");
 					*args = '\0';
 				}
 
@@ -214,10 +207,11 @@ class Nix_store::Child : public Genode::Child_policy
 				if (strcmp(root, "", sizeof(root))
 				 && strcmp(root, "/", sizeof(root))) {
 					if (char const *dest = _environment.lookup(root)) {
+						Arg_string::set_arg_string(args, args_len, "label", "store");
 						Arg_string::set_arg_string(args, args_len, "root", dest);
 						Arg_string::set_arg(args, args_len, "writeable", false);
 					} else {
-						PERR("impure File_system request for root '%s'", root);
+						Genode::error("impure File_system request for root '",root,"'");
 						*args = '\0';
 					}
 				}
@@ -281,16 +275,19 @@ class Nix_store::Child : public Genode::Child_policy
 			service = _parent_services.find(service_name);
 
 			if (!service)
-				PERR("%s request from %s rejected", service_name, _name.string());
+				Genode::log(service_name, " request rejected from ", _name.string());
 			return service;
 		}
 
 		void exit(int exit_value)
 		{
+#define ESC_INF  "\033[32m"
+#define ESC_ERR  "\033[31m"
+#define ESC_END  "\033[0m"
 			if (exit_value == 0 && _fs_ingest_service.finalize(_fs, _drv))
-				PINF("success: %s", _name.string());
+				Genode::log(ESC_INF "success: ", _name.string(), ESC_END);
 			else
-				PERR("failure: %s", _name.string());
+				Genode::log(ESC_ERR "failure: ", _name.string(), ESC_END);
 
 			/* TODO: write a store placeholder that marks a failure */
 
@@ -307,11 +304,11 @@ class Nix_store::Child : public Genode::Child_policy
 			ram_request = max(size_t(QUOTA_STEP), size_t(ram_request));
 
 			size_t ram_avail =
-				Genode::env()->ram_session()->avail() - QUOTA_RESERVE;
+				_resources.ram.avail() - QUOTA_RESERVE;
 
 			if (ram_avail > ram_request) {
 
-				Genode::env()->ram_session()->transfer_quota(
+				_env.ram().transfer_quota(
 					_resources.ram.cap(), ram_avail);
 
 				_child.notify_resource_avail();
@@ -322,16 +319,15 @@ class Nix_store::Child : public Genode::Child_policy
 			snprintf(arg_buf, sizeof(arg_buf),
 			         "ram_quota=%ld", ram_request);
 
-			Genode::env()->parent()->resource_request(arg_buf);
+			_env.parent().resource_request(arg_buf);
 		}
 
 		void upgrade_ram()
 		{
-			size_t quota_avail =
-				Genode::env()->ram_session()->avail() - QUOTA_RESERVE;
+			size_t quota_avail = _env.ram().avail() - QUOTA_RESERVE;
 
-				Genode::env()->ram_session()->transfer_quota(
-					_resources.ram.cap(), quota_avail);
+			_env.ram().transfer_quota(
+				_resources.ram.cap(), quota_avail);
 
 			_child.notify_resource_avail();
 		}

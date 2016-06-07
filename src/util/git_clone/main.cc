@@ -16,6 +16,7 @@
 #include <os/path.h>
 #include <base/sleep.h>
 #include <timer_session/connection.h>
+#include <base/log.h>
 
 /* Git includes */
 #include <git2.h>
@@ -43,11 +44,11 @@ int fetch_progress(
  * - received_bytes: size of the packfile received up to now
  */
 
-	PLOG("fetch %u/%u/%u objects, %lu bytes recieved",
-	     stats->received_objects,
-	     stats->indexed_objects,
-	     stats->total_objects,
-	     stats->received_bytes);
+	Genode::log("fetch ",
+	     stats->received_objects,"/",
+	     stats->indexed_objects,"/",
+	     stats->total_objects," objects - ",
+	     stats->received_bytes," bytes recieved");
 	return 0;
 }
 
@@ -58,7 +59,7 @@ void checkout_progress(
             size_t tot,
             void *payload)
 {
-	PLOG("checkout %s %lu/%lu", path, cur, tot);
+	Genode::log("checkout ", path, " ", cur, "/", tot);
 }
 
 
@@ -95,12 +96,12 @@ int main(void)
 				clone_opts.fetch_opts.callbacks.transfer_progress = fetch_progress;
 			}
 
-			PLOG("Cloning `%s' into `%s'", url.string(), path.base());
+			Genode::log("Cloning `", url.string(), "' into `", path.base(), "'");
 
 			error = git_clone(&repo, url.string(), path.base(), &clone_opts);
 			if (error < 0) {
 				const git_error *e = giterr_last();
-				PERR("Error %d/%d: %s", error, e->klass, e->message);
+				Genode::error("Error ", error, "/", e->klass, ":", e->message);
 			}
 			git_repository_free(repo);
 

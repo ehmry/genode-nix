@@ -26,14 +26,12 @@ create_boot_directory
 append config {
 <config>
 	<parent-provides>
-		<service name="CAP"/>
 		<service name="CPU"/>
 		<service name="LOG"/>
 		<service name="PD"/>
 		<service name="RAM"/>
 		<service name="RM"/>
 		<service name="ROM"/>
-		<service name="SIGNAL"/>
 	</parent-provides>
 	<default-route>
 		<any-service> <parent/> </any-service>
@@ -62,46 +60,46 @@ append config {
 	</start>
 
 	<start name="nix_store">
-		<resource name="RAM" quantum="2M"/>
+		<resource name="RAM" quantum="4M"/>
 		<provides>
 			<service name="Nix_store"/>
 			<service name="File_system"/>
 		</provides>
 		<route>
-			<service name="ROM" label_suffix="store">
+			<service name="ROM" label_prefix="parent">
+				<parent/> </service>
+			<service name="ROM">
 				<child name="store_fs"/> </service>
 			<service name="File_system">
 				<child name="store_fs"/> </service>
-			<any-service> <parent/> </any-service>
+			<any-service> <parent/> <any-child/> </any-service>
 		</route>
 	</start>
 
 	<start name="nix">
-		<resource name="RAM" quantum="8M"/>
+		<resource name="RAM" quantum="16M"/>
 		<provides><service name="ROM"/></provides>
 		<route>
-			<service name="Nix_store" >
+			<service name="Nix_store">
 				<child name="nix_store"/> </service>
-			<service label_prefix="store" name="ROM" >
+			<service name="ROM" label_prefix="store">
 				<child name="store_fs"/> </service>
-			<service label_prefix="store" name="File_system">
+			<service name="File_system" label_prefix="store">
 				<child name="store_fs"/> </service>
 			<service label_prefix="ingest" name="File_system">
 				<child name="nix_store"/> </service>
-			<service name="Timer">
-				<child name="timer"/> </service>
-			<any-service> <parent/> </any-service>
+			<any-service> <parent/> <any-child/> </any-service>
 		</route>
 		<config>
 			<libc stdout="/dev/log" stderr="/dev/log"/>
-				<vfs>
-					<dir name="dev"> <log/> </dir>
-					<dir name="store"> <fs label="store"/> </dir>
-					<dir name="nix">
-						<dir name="corepkgs">
-							<tar name="nix_corepkgs.tar"/>
-						</dir>
+			<vfs>
+				<dir name="dev"> <log/> </dir>
+				<dir name="store"> <fs label="store"/> </dir>
+				<dir name="nix">
+					<dir name="corepkgs">
+						<tar name="nix_corepkgs.tar"/>
 					</dir>
+				</dir>
 <rom name="log-test.nix"/>
 <inline name="default.nix">
 let tests = rec {
@@ -124,8 +122,8 @@ let tests = rec {
   test5 = logTest (testArgs // { inherit test4; });
 }; in name: builtins.getAttr name tests
 </inline>
-				</vfs>
-				<nix verbosity="0"/>
+			</vfs>
+			<nix verbosity="0"/>
 		</config>
 	</start>
 
@@ -221,4 +219,4 @@ build_boot_image $boot_modules
 
 append qemu_args " -nographic"
 
-run_genode_until {no evaluation for 'test4'} 30
+run_genode_until {no evaluation for 'test4'} 120

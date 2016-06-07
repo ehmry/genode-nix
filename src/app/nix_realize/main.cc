@@ -41,7 +41,7 @@ void eval_path(nix::EvalState &state, char const *path, nix::PathSet &drv_paths)
 
 	DrvInfo drvInfo(state);
 	if (!getDerivation(state, v, drvInfo, false)) {
-		PERR("no derivation produced from %s", path);
+		Genode::error("no derivation produced from ", path);
 		return;
 	}
 
@@ -74,7 +74,7 @@ int main(void)
 		try {
 			file_node.attribute("path").value(path, sizeof(path));
 		} catch (Genode::Xml_node::Nonexistent_attribute) {
-			PERR("'path' attribute mising from file node");
+			Genode::error("'path' attribute mising from file node");
 			return;
 		}
 

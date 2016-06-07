@@ -65,7 +65,7 @@ int main(void)
 		try {
 			node.attribute("url").value(&url);
 			node.attribute("path").value(path.base(), path.capacity());
-		} catch (...) { PERR("error reading 'fetch' node"); return; }
+		} catch (...) { Genode::error("error reading 'fetch' node"); return; }
 
 		Vfs_handle *handle;
 		unsigned mode = Directory_service::OPEN_MODE_WRONLY |
@@ -77,23 +77,23 @@ int main(void)
 		case Result::OPEN_OK: break;
 
 		case Result::OPEN_ERR_UNACCESSIBLE:
-			PERR("%s: unavailable", path.base());
+			Genode::error(path , ": unavailable");
 			res = CURLE_WRITE_ERROR; return;
 
 		case Result::OPEN_ERR_NO_PERM:
-			PERR("%s: permission denied", path.base());
+			Genode::error(path , ": permission denied");
 			res = CURLE_WRITE_ERROR; return;
 
 		case Result::OPEN_ERR_EXISTS:
-			PERR("%s: path exists", path.base());
+			Genode::error(path , ": path exists");
 			res = CURLE_WRITE_ERROR; return;
 
 		case Result::OPEN_ERR_NAME_TOO_LONG:
-			PERR("%s: name too long", path.base());
+			Genode::error(path , ": name too long");
 			res = CURLE_WRITE_ERROR; return;
 
 		case Result::OPEN_ERR_NO_SPACE:
-			PERR("'%s': no space", path.base());
+			Genode::error(path , ": no space");
 			res = CURLE_WRITE_ERROR; return;
 		}
 
@@ -101,7 +101,7 @@ int main(void)
 
 		CURL *curl = curl_easy_init();
 		if (!curl) {
-			PERR("failed to initialize libcurl");
+			Genode::error("failed to initialize libcurl");
 			res = CURLE_FAILED_INIT;
 			return;
 		}
@@ -123,7 +123,7 @@ int main(void)
 
 		res = curl_easy_perform(curl);
 		if (res != CURLE_OK)
-			PERR("%s", curl_easy_strerror(res));
+			Genode::error(curl_easy_strerror(res));
 
 		curl_easy_cleanup(curl);
 	});

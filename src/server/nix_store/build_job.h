@@ -29,38 +29,9 @@ namespace Nix_store {
 
 	using namespace Genode;
 
-	class Listener;
 	class Job;
 	class Jobs;
 
-};
-
-/**
- * The Listener is used to notify a client or another
- * job when this job completes. Its validity of the
- * signal context capability it wraps is also used
- * as a form of reference count.
- *
- * From <file_system/listener.h>.
- */
-class Nix_store::Listener : public Genode::List<Listener>::Element
-{
-	private:
-
-		Signal_context_capability _sigh;
-
-	public:
-
-		Listener(Genode::Signal_context_capability sigh)
-		: _sigh(sigh) { }
-
-		~Listener()
-		{
-			if (_sigh.valid())
-				Signal_transmitter(_sigh).submit();
-		};
-
-		bool valid() const { return _sigh.valid(); }
 };
 
 
@@ -75,83 +46,30 @@ class Nix_store::Job : public Fifo<Job>::Element
 
 	private:
 
-		Nix_store::Name const _name;
-		List<Listener>        _listeners;
-		Child                *_child = nullptr;
+		Nix_store::Name const     _name;
+		Signal_context_capability _sigh;
 
-	protected:
-
-		bool match(char const *name) { return _name == name; }
-
-		void add_listener(Genode::Signal_context_capability sigh)
-		{
-			Listener *listener = new (Genode::env()->heap())
-				Listener(sigh);
-			_listeners.insert(listener);
-		}
-
-		bool abandoned()
-		{
-			for (Listener *l = _listeners.first(); l; l = l->next()) {
-				if (l->valid())
-					return false;
-				else
-					destroy(Genode::env()->heap(), l);
-			}
-			return true;
-		}
-
-		void start(Genode::Env                       &env,
-		           File_system::Session              &fs,
-		           Genode::Signal_context_capability  exit_sigh,
-		           Genode::Dataspace_capability       ldso_ds)
-		{
-			try {
-				_child = new (Genode::env()->heap())
-					Child(_name.string(), env, fs, exit_sigh, ldso_ds);
-			} catch (Missing_dependency) {
-				PERR("missing dependency for %s", _name.string());
-				Signal_transmitter(exit_sigh).submit();
-			} catch (...) {
-				PERR("failed to start job for %s", _name.string());
-			}
-		}
-
-		void kill()
-		{
-			if (_child) {
-				destroy(Genode::env()->heap(), _child);
-				_child = nullptr;
-				return;
-			}
-		}
 
 	public:
 
 		/**
 		 * Constructor
 		 */
-		Job(char const *name) : _name(name) { }
+		Job(char const *name, Genode::Signal_context_capability sigh)
+		: _name(name), _sigh(sigh) { }
 
 		/**
 		 * Destructor
 		 */
 		~Job()
 		{
-			if (_child)
-				destroy(Genode::env()->heap(), _child);
-
-			/* Listener destructor notifies */
-			for (Listener *l = _listeners.first(); l; l = l->next())
-				destroy(Genode::env()->heap(), l);
+			if (_sigh.valid())
+				Genode::Signal_transmitter(_sigh).submit();
 		}
 
 		char const *name() { return _name.string(); }
 
-		/**
-		 * Upgrade and notify the child
-		 */
-		void upgrade_ram() { _child->upgrade_ram(); }
+		bool abandoned() const { return !_sigh.valid(); }
 };
 
 
@@ -162,24 +80,23 @@ class Nix_store::Jobs : private Genode::Fifo<Job>
 		Genode::Env             &_env;
 		Genode::Allocator       &_alloc;
 
-		Genode::Attached_rom_dataspace _ldso_rom { "ld.lib.so" };
+		Genode::Rom_connection _ldso_rom { "parent -> ld.lib.so" };
+		Genode::Rom_dataspace_capability _ldso_ds = _ldso_rom.dataspace();
 
-		Signal_rpc_member<Jobs>  _resource_dispatcher;
-		Signal_rpc_member<Jobs>  _yield_dispatcher;
-		Signal_rpc_member<Jobs>  _exit_dispatcher;
 		Lock                     _lock;
 		File_system::Session    &_fs;
-		bool                     _pending;
+
+		Genode::Lazy_volatile_object<Nix_store::Child> _child;
 
 		/**
 		 * Handle resource announcement from parent
 		 */
-		void _resource_handler(unsigned)
+		void _handle_resource()
 		{
 			{
 				Lock::Guard guard(_lock);
-				if (_pending) {
-					head()->upgrade_ram();
+				if (_child.constructed()) {
+					_child->upgrade_ram();
 					return;
 				}
 			}
@@ -187,13 +104,15 @@ class Nix_store::Jobs : private Genode::Fifo<Job>
 			process();
 		}
 
+		Genode::Signal_handler<Jobs> _resource_handler
+			{ _env.ep(), *this, &Jobs::_handle_resource };
+
 		/**
 		 * Handle yield signal from parent
 		 */
-		void _yield_handler(unsigned)
+		void _handle_yield()
 		{
-			Genode::Parent::Resource_args args =
-				Genode::env()->parent()->yield_request();
+			Genode::Parent::Resource_args args = _env.parent().yield_request();
 
 			size_t quota_request =
 				Arg_string::find_arg(args.string(), "ram_quota").ulong_value(0);
@@ -205,53 +124,53 @@ class Nix_store::Jobs : private Genode::Fifo<Job>
 			 * Note that a yield signal is not sent to the child because that
 			 * would violate the purity of the child environment.
 			 */
-			if ((Genode::env()->ram_session()->avail() < QUOTA_STEP) &&
+			if ((_env.ram().avail() < QUOTA_STEP) &&
 			    (quota_request > QUOTA_STEP))
 			{
 				Lock::Guard guard(_lock);
 
+				if (_child.constructed())
+					_child.destruct();
+
 				/* get the job on top of the queue, but don't remove it */
-				Job *job = head();
-				if (job) {
-					job->kill();
-					PERR("%s killed to yield resources", job->name());
-					_pending = false;
-				}
+				if (Job *job = head())
+					Genode::log(job->name(), " killed to yield resources");
 			}
 
-			Genode::env()->parent()->yield_response();
+			_env.parent().yield_response();
 		}
+
+		Genode::Signal_handler<Jobs> _yield_handler
+			{ _env.ep(), *this, &Jobs::_handle_yield };
 
 		/**
 		 * Handle exit signal from the child
 		 */
-		void _exit_handler(unsigned)
+		void _handle_exit()
 		{
 			{
 				Lock::Guard guard(_lock);
+				_child.destruct();
 
 				/* Job destructor notifies listeners */
-				destroy(_alloc, dequeue());
-
-				_pending = false;
+				if (Job *job = dequeue())
+					destroy(_alloc, job);
 			}
 
 			process();
 		}
 
+		Genode::Signal_handler<Jobs> _exit_handler
+			{ _env.ep(), *this, &Jobs::_handle_exit };
+
 	public:
 
 		Jobs(Genode::Env &env, Genode::Allocator &alloc, File_system::Session &fs)
 		:
-			_env(env), _alloc(alloc),
-			_resource_dispatcher(env.ep(), *this, &Jobs::_resource_handler),
-			_yield_dispatcher(   env.ep(), *this, &Jobs::_yield_handler),
-			_exit_dispatcher(    env.ep(), *this, &Jobs::_exit_handler),
-			_fs(fs),
-			_pending(false)
+			_env(env), _alloc(alloc), _fs(fs)
 		{
-			env.parent().resource_avail_sigh(_resource_dispatcher);
-			env.parent().yield_sigh(_yield_dispatcher);
+			env.parent().resource_avail_sigh(_resource_handler);
+			env.parent().yield_sigh(_yield_handler);
 		}
 
 		/**
@@ -261,7 +180,7 @@ class Nix_store::Jobs : private Genode::Fifo<Job>
 		{
 			Lock::Guard guard(_lock);
 
-			if (_pending || empty()) return;
+			if (_child.constructed() || empty()) return;
 
 			Job *job = head();
 			while (job->abandoned()) {
@@ -275,20 +194,17 @@ class Nix_store::Jobs : private Genode::Fifo<Job>
 			 * If RAM quota is sufficient then start a job,
 			 * otherwise make a non-blocking upgrade request.
 			 */
-			if (Genode::env()->ram_session()->avail() >
-			    QUOTA_STEP+QUOTA_RESERVE)
-			{
-				job->start(_env, _fs, _exit_dispatcher, _ldso_rom.cap());
-				_pending = true;
+			if (_env.ram().avail() > QUOTA_STEP+QUOTA_RESERVE) {
+				_child.construct(job->name(), _env, _fs, _exit_handler, _ldso_ds);
 				return;
 			}
 
-			PLOG("requesting more RAM before starting job...");
+			Genode::log("requesting more RAM before starting job...");
 
 			char arg_buf[32];
 			Genode::snprintf(arg_buf, sizeof(arg_buf),
 			                 "ram_quota=%ld", QUOTA_STEP);
-			Genode::env()->parent()->resource_request(arg_buf);
+			_env.parent().resource_request(arg_buf);
 		}
 
 		void queue(char const                       *drv_name,
@@ -297,25 +213,16 @@ class Nix_store::Jobs : private Genode::Fifo<Job>
 			{
 				Lock::Guard guard(_lock);
 
-				Job *job = nullptr;
-				for (Job *j = head(); job; job = job->next())
-					if (j->match(drv_name)) {
-						job = j;
-						break;
-					}
-
-				if (!job) try {
-					job = new (_alloc) Job(drv_name);
+				try {
+					Job *job = new (_alloc) Job(drv_name, sigh);
 					enqueue(job);
 				} catch (Aterm::Parser::Malformed_element) {
-					PERR("canceling job with malformed derivation file at %s", drv_name);
+					Genode::error("canceling job with malformed derivation at ", drv_name);
 					throw Invalid_derivation();
 				} catch (...) {
-					PERR("error queueing %s", drv_name);
+					Genode::error("error queueing %s", drv_name);
 					throw;
 				}
-
-				job->add_listener(sigh);
 			}
 
 			process();
