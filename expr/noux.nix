@@ -29,7 +29,7 @@ let
   romSet = roms // (listToAttrs (map
     (name: { inherit name; value = getRom name; })
     ( parentRoms ++
-      [ "ld.lib.so" "libc.lib.so" "libm.lib.so" "libc_noux.lib.so" "vfs_any-rom.lib.so" ]
+      [ "ld.lib.so" "libc.lib.so" "libm.lib.so" "libc_noux.lib.so" ]
     )
   ));
 in
@@ -42,9 +42,8 @@ in
     ''
     <config verbose="${if verbose then "yes" else "no"}" stdin="/dev/null" stdout="/dev/log" stderr="/dev/log">
       <fstab>
-        ${fstab}
-        <dir name="rom"> <any-rom/> </dir>
         <dir name="dev"> <log/> <null/> </dir>
+        ${fstab}
       </fstab>
       <start name="${attrs.builder}">
         ${env'}

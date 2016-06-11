@@ -30,8 +30,8 @@ nouxEnv (attrs // {
   parentRoms = parentRoms ++ [ "make.tar" "bash.tar" ]; 
   fstab =
     ''
-      ${fstab}
       <tar name="bash.tar"/>
       <tar name="make.tar"/>
+      ${fstab}
     '';
 })

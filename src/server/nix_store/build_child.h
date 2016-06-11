@@ -80,7 +80,6 @@ class Nix_store::Child : public Genode::Child_policy
 			: pd(env, label), ram(env, label), cpu(env, label)
 			{
 				ram.ref_account(env.ram_session_cap());
-
 				env.ram().transfer_quota(ram.cap(), QUOTA_STEP);
 			}
 		} _resources { _env, _name.string() };
@@ -88,9 +87,9 @@ class Nix_store::Child : public Genode::Child_policy
 		Genode::Child::Initial_thread _initial_thread { _resources.cpu, _resources.pd,
 		                                                _name.string() };
 
-
 		Genode::Label _binary_label { _drv.builder(), "store" };
-		Genode::Attached_rom_dataspace _elf_rom { _env, _binary_label.string() };
+		Genode::Rom_connection _elf_rom { _env, _binary_label.string() };
+		Genode::Rom_dataspace_capability _elf_rom_ds = _elf_rom.dataspace();
 
 		Genode::Region_map_client _address_space { _resources.pd.address_space() };
 
@@ -116,7 +115,7 @@ class Nix_store::Child : public Genode::Child_policy
 		      Genode::Dataspace_capability  ldso_ds)
 		:
 			_name(name), _env(env), _fs(fs),
-			_child(_elf_rom.cap(), ldso_ds,
+			_child(_elf_rom_ds, ldso_ds,
 			       _resources.pd.cap(),  _resources.pd,
 			       _resources.ram.cap(), _resources.ram,
 			       _resources.cpu.cap(), _initial_thread,
@@ -125,6 +124,7 @@ class Nix_store::Child : public Genode::Child_policy
 			       *this),
 			_exit_sigh(exit_sigh)
 		{
+			/* ROM is not forwarded verbatim, labels are modified */
 			static char const *service_names[] = {
 				"CPU", "LOG", "PD", "RAM", "ROM", "RM", "Timer", 0
 			};
@@ -244,7 +244,7 @@ class Nix_store::Child : public Genode::Child_policy
 		Service *resolve_session_request(const char *service_name,
 		                                 const char *args)
 		{
-			Service *service = 0;
+			Service *service = nullptr;
 			if (!(*args)) /* invalidated by filter_session_args */
 				return 0;
 
@@ -259,8 +259,8 @@ class Nix_store::Child : public Genode::Child_policy
 				Genode::Arg_string::find_arg(args, "root").string(
 					root, sizeof(root), "/");
 
-				if (strcmp(root, "", sizeof(root))
-				 && strcmp(root, "/", sizeof(root)))
+				if (!(strcmp(root, "", sizeof(root))
+				 && strcmp(root, "/", sizeof(root))))
 					return &_fs_filter_service;
 
 				/*
@@ -281,13 +281,10 @@ class Nix_store::Child : public Genode::Child_policy
 
 		void exit(int exit_value)
 		{
-#define ESC_INF  "\033[32m"
-#define ESC_ERR  "\033[31m"
-#define ESC_END  "\033[0m"
 			if (exit_value == 0 && _fs_ingest_service.finalize(_fs, _drv))
-				Genode::log(ESC_INF "success: ", _name.string(), ESC_END);
+				Genode::log("\033[32m" "success: ", _name.string(), "\033[0m");
 			else
-				Genode::log(ESC_ERR "failure: ", _name.string(), ESC_END);
+				Genode::log("\033[31m" "failure: ", _name.string(), "\033[0m");
 
 			/* TODO: write a store placeholder that marks a failure */
 
@@ -303,31 +300,28 @@ class Nix_store::Child : public Genode::Child_policy
 
 			ram_request = max(size_t(QUOTA_STEP), size_t(ram_request));
 
-			size_t ram_avail =
-				_resources.ram.avail() - QUOTA_RESERVE;
-
-			if (ram_avail > ram_request) {
-
+			size_t ram_avail = _env.ram().avail();
+			if (ram_avail > (ram_request+QUOTA_RESERVE)) {
 				_env.ram().transfer_quota(
 					_resources.ram.cap(), ram_avail);
-
 				_child.notify_resource_avail();
-				return;
+			} else {
+				char arg_buf[32];
+				snprintf(arg_buf, sizeof(arg_buf),
+				         "ram_quota=%ld", ram_request);
+				_env.parent().resource_request(arg_buf);
 			}
-
-			char arg_buf[32];
-			snprintf(arg_buf, sizeof(arg_buf),
-			         "ram_quota=%ld", ram_request);
-
-			_env.parent().resource_request(arg_buf);
 		}
 
 		void upgrade_ram()
 		{
-			size_t quota_avail = _env.ram().avail() - QUOTA_RESERVE;
+			size_t quota_avail = _env.ram().avail();
+
+			if (quota_avail <= QUOTA_RESERVE)
+				return;
 
 			_env.ram().transfer_quota(
-				_resources.ram.cap(), quota_avail);
+				_resources.ram.cap(), quota_avail - QUOTA_RESERVE);
 
 			_child.notify_resource_avail();
 		}

@@ -8,16 +8,11 @@ set build_components {
 	core init
 	app/rom_logger
 	drivers/timer
-	lib/vfs/any-rom
 	noux/minimal
-	server/fs_rom
-	server/fs_log
 	server/nix
 	server/nix_store
 	server/vfs
 	test/libports/nixexpr
-	test/false
-	test/printf
 }
 
 set noux_pkgs { "make" "bash" }
@@ -118,21 +113,25 @@ append config {
 				<inline name="default.nix">
 request:
 let
+
   makeEnv = import /expr/make.nix;
+
+  makefile = builtins.toFile "test.mk"
+    ''
+      /ingest/out:
+      	@echo "Hello from Make, Noux, and Nix" > $@
+    '';
+
   result = makeEnv {
     name = "makeOutput";
-    makefile = "test.mk";
-    verbose= true;
+    makefile = makefile;
 
     fstab =
       ''
         <dir name="ingest">
           <fs label="ingest"/>
         </dir>
-        <inline name="test.mk">
-        /ingest/out:
-        	echo "Hello from Make, Noux, and Nix" > $@
-        </inline>
+        <fs/>
       '';
   };
 in builtins.trace request result
@@ -197,4 +196,4 @@ build_boot_image $boot_modules
 
 append qemu_args " -nographic"
 
-run_genode_until {no evaluation for 'test4'} 120
+run_genode_until {Hello from Make, Noux, and Nix} 120

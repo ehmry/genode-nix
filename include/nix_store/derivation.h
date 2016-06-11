@@ -39,6 +39,7 @@ namespace Nix_store {
 
 			char const *_outputs;
 			char const *_inputs;
+			char const *_sources;
 			char const *_environment;
 
 			inline Genode::size_t remain(char const *base) {
@@ -85,8 +86,9 @@ namespace Nix_store {
 					/*************
 					 ** Sources **
 					 *************/
-					parser.list([] (Aterm::Parser &parser) {
-						 parser.string(); });
+					_sources = parser.list([] (Aterm::Parser &parser) {
+						 parser.string();
+					});
 
 					/**************
 					 ** Platform **
@@ -143,6 +145,13 @@ namespace Nix_store {
 			{
 				Aterm::Parser inputs(_inputs, remain(_inputs));
 				inputs.list([&func] (Aterm::Parser &parser) { parser.tuple(func); });
+			}
+
+			template<typename FUNC>
+			void sources(FUNC const &func)
+			{
+				Aterm::Parser sources(_sources, remain(_sources));
+				sources.list(func);
 			}
 
 			template<typename FUNC>

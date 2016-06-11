@@ -139,9 +139,26 @@ struct Nix_store::Inputs : Genode::Avl_tree<Input>
 				});
 			});
 		});
+
+		/* read the source inputs */
+		drv.sources([&] (Aterm::Parser &parser) {
+			Nix_store::Name source;
+			parser.string(&source);
+
+			// XXX: slash hack
+			char const *p = source.string();
+			while (*p == '/') ++p;
+			insert(new (alloc) Input(p, p));
+		});
 	}
 
-	~Inputs() { while (first()) destroy(alloc, first()); }
+	~Inputs()
+	{
+		while (Input *input = first()) {
+			remove(input);
+			destroy(alloc, input);
+		}
+	}
 
 	Input const *lookup(char const *name) const
 	{

@@ -43,96 +43,6 @@ class Nix_store::Filter_component : public Genode::Rpc_object<File_system::Sessi
 {
 	private:
 
-		/*
-		struct Inputs : Genode::Avl_tree<Genode::Avl_string_base>
-		{
-			typedef Genode::Avl_string<Nix_store::MAX_NAME_LEN> Input;
-
-			Genode::Allocator &alloc;
-
-			Inputs(Genode::Env &env, Genode::Allocator &alloc, Derivation &drv)
-			: alloc(alloc)
-			{
-				Genode::Allocator_avl fs_tx_alloc(&alloc);
-				Nix::File_system_connection fs(env, fs_tx_alloc, "/", false, 4096);
-				Dir_handle root_handle = fs.dir("/", false);
-
-				drv.inputs([&] (Aterm::Parser &parser) {
-
-					Name input;
-					parser.string(&input);
-
-					Derivation dependency(input.string());
-
-					parser.list([&] (Aterm::Parser &parser) {
-
-						Name want_id;
-						parser.string(&want_id);
-
-						dependency.outputs([&] (Aterm::Parser &parser) {
-
-							Name id;
-							parser.string(&id);
-
-							if (id == want_id) {
-								Nix_store::Path input_path;
-								char *input_name = input_path.base()+1;
-
-								{
-									Name path;
-									parser.string(&path);
-									input_path.import(path.string(), "/");
-								}
-
-								for (;;) try {
-									if (input_path == "/" || input_path == "") {
-										Genode::error("invalid derivation ", input.string());
-										throw Genode::Root::Unavailable();
-									}
-									Symlink_handle link = fs.symlink(root_handle, input_name, false);
-									insert(new (alloc) Input(input_name));
-									size_t n = read(fs, link, input_name, input_path.capacity()-1, 0);
-									input_name[n] = '\0';
-									fs.close(link);
-									while (!input_path.has_single_element())
-										input_path.strip_last_element();
-								} catch (Lookup_failed) {
-									try { fs.close(fs.node(input_path.base())); break; }
-									catch (Lookup_failed) {
-										Genode::error("found dangling symlink to ", input_path);
-										throw Genode::Root::Unavailable();
-									}
-								} catch (...) {
-									Genode::error("failed to access input ", input_path);
-									throw Genode::Root::Unavailable();
-								}
-
-								insert(new (alloc) Input(input_name));
-
-							} else {
-								parser.string();
-							}
-
-							parser.string();
-							parser.string();
-						});
-
-					});
-
-				});
-			}
-
-			~Inputs() { while (first()) destroy(alloc, first()); }
-
-			void verify(char const *name) const
-			{
-				if (!(first() && first()->find_by_name(name)))
-					throw Lookup_failed();
-			}
-
-		} const _inputs;
-		*/
-
 		Inputs const &_inputs;
 
 		/**
@@ -217,10 +127,8 @@ class Nix_store::Filter_component : public Genode::Rpc_object<File_system::Sessi
 		Input const &_lookup_input(char const *name)
 		{
 			Input const *input = _inputs.lookup(name);
-			if (!input) {
-				Genode::error("lookup of ", name, " at filter failed");
+			if (!input)
 				throw Lookup_failed();
-			}
 			return *input;
 		}
 
@@ -232,11 +140,12 @@ class Nix_store::Filter_component : public Genode::Rpc_object<File_system::Sessi
 
 			Input const &input = _lookup_input(old_path.base()+1);
 
-			while (*orig && *orig != '/')
-				++orig;
+			char const *subpath = orig+1;
+			while (*subpath && *subpath != '/')
+				++subpath;
 
 			new_path.import(input.final.string(), "/");
-			new_path.append(orig);
+			new_path.append(subpath);
 		}
 
 		/***************************
@@ -281,9 +190,12 @@ class Nix_store::Filter_component : public Genode::Rpc_object<File_system::Sessi
 		Node_handle node(File_system::Path const &path) override
 		{
 			char const *path_str = path.string();
-			if (!*path_str) throw Lookup_failed();
+
+			if (!*path_str)
+				throw Lookup_failed();
 			if (!strcmp("/", path_str))
 				return _root_handle;
+
 			{
 				Nix_store::Path new_path;
 				_resolve(new_path, path.string());
