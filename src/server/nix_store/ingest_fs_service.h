@@ -220,7 +220,8 @@ class Nix_store::Ingest_service : public Genode::Service
 		/**
 		 * Constructor
 		 */
-		Ingest_service(Nix_store::Derivation &drv, Genode::Env &env, Genode::Allocator &alloc)
+		Ingest_service(Nix_store::Derivation &drv,
+		               Genode::Env &env, Genode::Allocator &alloc)
 		: Genode::Service("File_system"), _env(env), _component(env, alloc) { }
 
 		~Ingest_service() { revoke_cap(); }
@@ -244,8 +245,8 @@ class Nix_store::Ingest_service : public Genode::Service
 
 		void upgrade(Genode::Session_capability, const char *args)
 		{
-			Genode::error("client is upgrading session, but don't know where to send it, ", args);
-			//_env().parent().upgrade(_component.cap(), args);
+			Genode::warning("ingest service upgraded with ", args);
+			_component.upgrade(args);
 		}
 
 };

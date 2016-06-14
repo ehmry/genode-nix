@@ -22,6 +22,33 @@
 
 using namespace nix;
 
+template<typename FUNC>
+void try_file_system(FUNC const &func)
+{
+	using namespace File_system;
+
+	try { func(); }
+
+	catch (Invalid_handle) {
+		Genode::error("unhandled Invalid_handle exception"); throw; }
+	catch (Invalid_name) {
+		Genode::error("unhandled Invalid_name exception"); throw; }
+	catch (Lookup_failed) {
+		Genode::error("unhandled Lookup_failed exception"); throw; }
+	catch (Name_too_long) {
+		Genode::error("unhandled Name_too_long exception"); throw; }
+	catch (Node_already_exists) {
+		Genode::error("unhandled Node_already_exists exception"); throw; }
+	catch (No_space) {
+		Genode::error("unhandled No_space exception"); throw; }
+	catch (Not_empty) {
+		Genode::error("unhandled Not_empty exception"); throw; }
+	catch (Out_of_metadata) {
+		Genode::error("unhandled Out_of_metadata exception"); throw; }
+	catch (Permission_denied) {
+		Genode::error("unhandled Permission_denied exception"); throw; }
+}
+
 
 Path nix::readStorePath(Source & from)
 {
@@ -99,18 +126,25 @@ void Store::copy_dir(File_system::Session   &fs,
 
 	Directory_service::Dirent dirent;
 
+	/* Use a map so that entries are sorted. */
+	std::map<string, unsigned char> entries;
+
 	for (file_offset i = 0;; ++i) {
-		memset(&dirent, 0x00, sizeof(dirent));
 		_vfs->dirent(src_path.c_str(), i, dirent);
 		if (dirent.type == Directory_service::DIRENT_TYPE_END) break;
 
-		nix::Path sub_src_path = src_path + "/";
-		sub_src_path.append(dirent.name);
+		entries.insert(
+			std::pair<string, Directory_service::Dirent_type>
+			(dirent.name, dirent.type));
+	}
 
-		nix::Path sub_dst_path = dst_path + "/";
-		sub_dst_path.append(dirent.name);
+	for (auto i = entries.cbegin(); i != entries.cend(); ++i) {
+		nix::Path subpath = src_path + "/" + i->first;
 
-		switch (dirent.type) {
+		nix::Path sub_src_path = src_path + "/" + i->first;
+		nix::Path sub_dst_path = dst_path + "/" + i->first;
+
+		switch (i->second) {
 		case Directory_service::DIRENT_TYPE_DIRECTORY: {
 			File_system::Dir_handle sub_handle;
 			try {
@@ -128,7 +162,7 @@ void Store::copy_dir(File_system::Session   &fs,
 		case Directory_service::DIRENT_TYPE_FILE: {
 			File_system::File_handle file_handle;
 			try {
-				file_handle = fs.file(ingest_dir, dirent.name,
+				file_handle = fs.file(ingest_dir, i->first.c_str(),
 				                      File_system::WRITE_ONLY, true);
 			} catch (...) {
 				Genode::error("error opening ingest file handle for ", sub_dst_path.c_str());
@@ -143,7 +177,7 @@ void Store::copy_dir(File_system::Session   &fs,
 		case Directory_service::DIRENT_TYPE_SYMLINK: {
 			File_system::Symlink_handle link_handle;
 			try {
-				link_handle = fs.symlink(ingest_dir, dirent.name, true);
+				link_handle = fs.symlink(ingest_dir, i->first.c_str(), true);
 			} catch (...) {
 				Genode::error("error opening ingest symlink handle for ", sub_dst_path.c_str());
 				throw;
@@ -249,13 +283,13 @@ void Store::copy_symlink(File_system::Session       &fs,
 	source.submit_packet(packet);
 
 	packet = source.get_acked_packet();
-	if (!packet.length())
-		throw Error(format("copying symlink ‘%1%’ to `%2%'") % src_path % dst_path);
+	//if (!packet.length())
+	//	throw Error(format("copying symlink ‘%1%’ to `%2%'") % src_path % dst_path);
 }
 
 
 void
-Store::hash_file(uint8_t *buf, nix::Path const &src_path)
+Store::hash_file(uint8_t *buf, const string &name, nix::Path const &src_path)
 {
 	using namespace Vfs;
 
@@ -285,8 +319,6 @@ Store::hash_file(uint8_t *buf, nix::Path const &src_path)
 		vfs_handle->seek(pos);
 	}
 
-	string name = src_path.substr(src_path.rfind("/")+1, src_path.size()-1);
-
 	hash.update((uint8_t*)"\0f\0", 3);
 	hash.update((uint8_t*)name.data(), name.size());
 
@@ -294,7 +326,7 @@ Store::hash_file(uint8_t *buf, nix::Path const &src_path)
 }
 
 void
-Store::hash_symlink(uint8_t *buf, nix::Path const &src_path)
+Store::hash_symlink(uint8_t *buf, const string &name, nix::Path const &src_path)
 {
 	using namespace Vfs;
 
@@ -308,8 +340,6 @@ Store::hash_symlink(uint8_t *buf, nix::Path const &src_path)
 
 	hash.update(data, vfs_count);
 
-	string name = src_path.substr(src_path.rfind("/")+1, src_path.size()-1);
-
 	hash.update((uint8_t*)"\0s\0", 3);
 	hash.update((uint8_t*)name.data(), name.size());
 
@@ -317,7 +347,7 @@ Store::hash_symlink(uint8_t *buf, nix::Path const &src_path)
 }
 
 string
-Store::add_file(nix::Path const &src_path)
+Store::add_file(const string &name, nix::Path const &src_path)
 {
 	using namespace Vfs;
 
@@ -334,18 +364,19 @@ Store::add_file(nix::Path const &src_path)
 
 	File_system::Connection fs(_env, _fs_tx_alloc, "ingest");
 
-	nix::Path name = src_path.substr(src_path.rfind("/")+1, src_path.size()-1);
 	File_system::File_handle ingest_handle;
-	try {
-		File_system::Dir_handle root_handle = fs.dir("/", false);
-		File_system::Handle_guard root_guard(fs, root_handle);
+	try_file_system([&] {
+		try {
+			File_system::Dir_handle root_handle = fs.dir("/", false);
+			File_system::Handle_guard root_guard(fs, root_handle);
 
-		ingest_handle = fs.file(root_handle, name.c_str(),
-		                        File_system::WRITE_ONLY, true);
-	} catch (...) {
-		Genode::error("error opening file handle at ingest session for ", name.c_str());
-		throw;
-	}
+			ingest_handle = fs.file(root_handle, name.c_str(),
+			                        File_system::WRITE_ONLY, true);
+		} catch (...) {
+			Genode::error("error opening file handle at ingest session for ", name.c_str());
+			throw;
+		}
+	});
 	File_system::Handle_guard fs_guard(fs, ingest_handle);
 
 	File_system::Session::Tx::Source &source = *fs.tx();
@@ -381,7 +412,7 @@ Store::add_file(nix::Path const &src_path)
 
 
 void
-Store::hash_dir(uint8_t *buf, nix::Path const &src_path)
+Store::hash_dir(uint8_t *buf, const string &name, nix::Path const &src_path)
 {
 	using namespace Vfs;
 
@@ -404,23 +435,21 @@ Store::hash_dir(uint8_t *buf, nix::Path const &src_path)
 		nix::Path subpath = src_path + "/" + i->first;
 
 		if (i->second == Directory_service::DIRENT_TYPE_DIRECTORY) {
-			hash_dir(buf, subpath);
+			hash_dir(buf, i->first, subpath);
 			hash.update(buf, hash.size());
 
 		} else if (i->second == Directory_service::DIRENT_TYPE_FILE) {
-			hash_file(buf, subpath);
+			hash_file(buf, i->first, subpath);
 			hash.update(buf, hash.size());
 
 		} else if (i->second == Directory_service::DIRENT_TYPE_SYMLINK) {
-			hash_symlink(buf, subpath);
+			hash_symlink(buf, i->first, subpath);
 			hash.update(buf, hash.size());
 
 		} else {
 			Genode::error("unhandled file type for ", subpath.c_str());
 		}
 	}
-
-	string name = src_path.substr(src_path.rfind("/")+1, src_path.size()-1);
 
 	hash.update((uint8_t*)"\0d\0", 3);
 	hash.update((uint8_t*)name.data(), name.size());
@@ -430,26 +459,26 @@ Store::hash_dir(uint8_t *buf, nix::Path const &src_path)
 
 
 string
-Store::add_dir(nix::Path const &src_path)
+Store::add_dir(const string &name, nix::Path const &src_path)
 {
+	using namespace File_system;
+
 	File_system::Connection fs(_env, _fs_tx_alloc, "ingest");
+	nix::Path const dst_path = "/" + name;
 
-	/* The index of the begining of the last path element. */
-	int path_offset = src_path.rfind("/");
-	Path dst_path = src_path.substr(path_offset, src_path.size());
+	try_file_system([&] {
+		File_system::Dir_handle ingest_dir;
+		try { ingest_dir = fs.dir(dst_path.c_str(), true); }
+		catch (...) {
+			Genode::error("opening ingest directory handle for ", name.c_str());
+			throw;
+		}
+		File_system::Handle_guard dir_guard(fs, ingest_dir);
 
-	File_system::Dir_handle ingest_dir;
-	try {
-		ingest_dir = fs.dir(dst_path.c_str(), true);
-	} catch (...) {
-		Genode::error("opening ingest directory handle for ", dst_path.c_str());
-		throw;
-	}
-	File_system::Handle_guard dir_guard(fs, ingest_dir);
+		copy_dir(fs, ingest_dir, src_path, dst_path);
+	});
 
-	copy_dir(fs, ingest_dir, src_path, dst_path);
-
-	return finalize_ingest(fs, dst_path.c_str()+1);
+	return finalize_ingest(fs, name.c_str());
 }
 
 
@@ -545,7 +574,7 @@ void nix::Store::querySubstitutablePathInfos(const PathSet & paths,
  * libutil/archive.hh).
  */
 nix::Path
-Store::addToStore(const string & name, const nix::Path & srcPath,
+Store::addToStore(const string &name, const nix::Path &path,
                   bool recursive, HashType hashAlgo,
                   PathFilter & filter, bool repair)
 {
@@ -553,6 +582,7 @@ Store::addToStore(const string & name, const nix::Path & srcPath,
 
 	using namespace Vfs;
 
+	nix::Path const srcPath = canonPath(path, true);
 	char const *path_str = srcPath.c_str();
 
 	Directory_service::Stat stat = status(srcPath);
@@ -561,27 +591,29 @@ Store::addToStore(const string & name, const nix::Path & srcPath,
 
 	string final_name;
 
-	if (stat.mode & Directory_service::STAT_MODE_DIRECTORY) {
-		hash_dir(buf, srcPath);
+	if (stat.directory()) {
+		hash_dir(buf, name, srcPath);
 		Store_hash::encode(buf, name.c_str(), sizeof(buf));
 		if (_store_session.valid((char *) buf)) {
 			return "/" + string((char *) buf);
 		}
-		final_name = add_dir(srcPath);
+		final_name = add_dir(name, srcPath);
 
-	} else if (stat.mode & Directory_service::STAT_MODE_FILE) {
-		hash_file(buf, srcPath);
+	} else if (stat.regular()) {
+		hash_file(buf, name, srcPath);
 		Store_hash::encode(buf, name.c_str(), sizeof(buf));
 		if (_store_session.valid((char *) buf)) {
 			return "/" + string((char *) buf);
 		}
 
-		final_name = add_file(srcPath);
+		final_name = add_file(name, srcPath);
 	} else
-		throw nix::Error(format("addToStore: `%1%' has an inappropriate file type") % name);
+		throw nix::Error(format("addToStore: `%1%' has an inappropriate file type") % srcPath);
 
+	/* XXX: don't skip this
 	if (final_name.compare((char *)buf))
 		throw nix::Error(format("addToStore: %1% hashed locally to '%2%' but ingest reports `%3%' ") % name % buf % final_name);
+	 */
 
 	return "/" + final_name;
 }

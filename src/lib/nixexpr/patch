@@ -259,7 +259,7 @@ index 2d7b7bc..654c24f 100644
      /* Look up a file in the search path. */
      Path findFile(const string & path);
 diff --git a/src/libexpr/parser.y b/src/libexpr/parser.y
-index d34882f..ceebf6e 100644
+index d34882f..e339f56 100644
 --- a/src/libexpr/parser.y
 +++ b/src/libexpr/parser.y
 @@ -282,6 +282,7 @@ void yyerror(YYLTYPE * loc, yyscan_t scanner, ParseData * data, const char * err
@@ -308,14 +308,14 @@ index d34882f..ceebf6e 100644
 -        path = absPath(readLink(path), dirOf(path));
 +    for (;;) {
 +        stat = status(path);
-+        if (S_ISLNK(stat.mode))
++        if (stat.symlink())
 +            path = absPath(readLink(path), dirOf(path));
 +        else break;
      }
  
      /* If `path' refers to a directory, append `/default.nix'. */
 -    if (S_ISDIR(st.st_mode))
-+    if (S_ISDIR(stat.mode))
++    if (stat.directory())
          path = canonPath(path + "/default.nix");
  
      return path;
@@ -380,7 +380,7 @@ index d34882f..ceebf6e 100644
 -
  }
 diff --git a/src/libexpr/primops.cc b/src/libexpr/primops.cc
-index 87ee4f6..8a1c384 100644
+index 87ee4f6..9c4c133 100644
 --- a/src/libexpr/primops.cc
 +++ b/src/libexpr/primops.cc
 @@ -19,6 +19,9 @@
@@ -598,7 +598,31 @@ index 87ee4f6..8a1c384 100644
  
      /* Note: we don't need to add `context' to the context of the
         result, since `storePath' itself has references to the paths
-@@ -950,8 +971,8 @@ static void prim_filterSource(EvalState & state, const Pos & pos, Value * * args
+@@ -907,9 +928,7 @@ struct FilterFromExpr : PathFilter
+ 
+     bool operator () (const Path & path)
+     {
+-        struct stat st;
+-        if (lstat(path.c_str(), &st))
+-            throw SysError(format("getting attributes of path ‘%1%’") % path);
++		Vfs::Directory_service::Stat stat = status(path);
+ 
+         /* Call the filter function.  The first argument is the path,
+            the second is a string indicating the type of the file. */
+@@ -921,9 +940,9 @@ struct FilterFromExpr : PathFilter
+ 
+         Value arg2;
+         mkString(arg2,
+-            S_ISREG(st.st_mode) ? "regular" :
+-            S_ISDIR(st.st_mode) ? "directory" :
+-            S_ISLNK(st.st_mode) ? "symlink" :
++            stat.regular()   ? "regular" :
++            stat.directory() ? "directory" :
++            stat.symlink()   ? "symlink" :
+             "unknown" /* not supported, will fail! */);
+ 
+         Value res;
+@@ -950,8 +969,8 @@ static void prim_filterSource(EvalState & state, const Pos & pos, Value * * args
      path = state.checkSourcePath(path);
  
      Path dstPath = settings.readOnlyMode
@@ -609,7 +633,7 @@ index 87ee4f6..8a1c384 100644
  
      mkString(v, dstPath, singleton<PathSet>(dstPath));
  }
-@@ -1759,7 +1780,7 @@ void EvalState::createBaseEnv()
+@@ -1759,7 +1778,7 @@ void EvalState::createBaseEnv()
      addPrimOp("throw", 1, prim_throw);
      addPrimOp("__addErrorContext", 2, prim_addErrorContext);
      addPrimOp("__tryEval", 1, prim_tryEval);

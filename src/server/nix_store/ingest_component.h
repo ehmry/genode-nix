@@ -27,6 +27,7 @@
 #include <base/signal.h>
 #include <util/label.h>
 #include <base/log.h>
+#include <base/snprintf.h>
 
 /* Local includes */
 #include "ingest_node.h"
@@ -44,23 +45,21 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 		Genode::Env             &_env;
 		Genode::Allocator_guard  _alloc;
 
-		/* top level hash nodes */
-		Hash_root_registry _root_registry { _alloc };
-
-		/**
-		 * This registry maps node handles from the backend
-		 * store to the local tree of hashing nodes.
-		 */
-		Hash_node_registry _node_registry;
-
 		/* a queue of packets from the client awaiting backend processing */
 		File_system::Packet_descriptor _packet_queue[TX_QUEUE_SIZE];
 
 		Genode::Allocator_avl          _fs_tx_alloc { &_alloc };
 		File_system::Connection_base   _fs;
 		Dir_handle                     _root_handle;
-		bool                           _strict = false;
 
+		/* top level hash nodes */
+		Hash_root_registry _root_registry { _alloc, _fs, _root_handle };
+
+		/**
+		 * This registry maps node handles from the backend
+		 * store to the local tree of hashing nodes.
+		 */
+		Hash_node_registry _node_registry;
 
 		/******************************
 		 ** Packet-stream processing **
@@ -252,7 +251,7 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 		{
 			/* create the local node */
 			if (dir_handle == _root_handle) {
-				Hash_root &root = _root_registry.alloc_file(name, _strict);
+				Hash_root &root = _root_registry.alloc_file(name);
 				return *dynamic_cast<File *>(root.node);
 			}
 
@@ -293,8 +292,7 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 		 * The tx buffer size is split between the local
 		 * stream buffer and the backend buffer.
 		 */
-		Ingest_component(Genode::Env        &env,
-		                 Genode::Allocator  &alloc,
+		Ingest_component(Genode::Env &env, Genode::Allocator &alloc,
 		                 size_t ram_quota = 16*4096,
 		                 size_t tx_buf_size = File_system::DEFAULT_TX_BUF_SIZE*2)
 		:
@@ -322,20 +320,29 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 		{
 			Dataspace_capability ds = tx_sink()->dataspace();
 			_env.ram().free(static_cap_cast<Ram_dataspace>(ds));
-
-			_root_registry.unlink(_fs, _root_handle);
 		}
 
-		void upgrade_ram_quota(size_t ram_quota) { _alloc.upgrade(ram_quota); }
+		void upgrade(char const *args)
+		{
+			size_t ram_quota = Arg_string::find_arg(args, "ram_quota").ulong_value(0);
+
+			if ((_alloc.quota() - _alloc.consumed()) < (ram_quota/2)) {
+				_alloc.upgrade(ram_quota);
+				Genode::warning("ingest session upgraded with ", args);
+			} else {
+				char arg_buf[32];
+				snprintf(arg_buf, sizeof(arg_buf), "ram=%zd", ram_quota);
+				Genode::warning("upgrading ingest backend session with ",
+				                (char const *)arg_buf);
+				_env.parent().upgrade(_fs.cap(), arg_buf);
+			}
+		}
 
 		/**
 		 * Used by the ingest component to restrict the root nodes
 		 */
-		void expect(char const *id)
-		{
-			_root_registry.alloc_root(id);
-			_strict = true;
-		}
+		void expect(char const *id) {
+			_root_registry.prealloc_root(id); }
 
 		void finish(Hash_root &root)
 		{
@@ -345,21 +352,21 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 			_node_registry.close_all(_fs);
 
 			/* Flush the root. */
-			File *file_node = dynamic_cast<File *>(root.node);
-			if (file_node) {
+			if (File *file_node = dynamic_cast<File *>(root.node)) {
 				File_handle final_handle = _fs.file(_root_handle, root.filename, READ_ONLY, false);
 				Handle_guard guard(_fs, final_handle);
 				file_node->flush(_fs, final_handle);
-			} else {
-				Directory *dir_node = dynamic_cast<Directory *>(root.node);
-				if (!dir_node)
-					throw Invalid_handle();
 
+			} else if (Directory *dir_node = dynamic_cast<Directory *>(root.node)) {
 				char path[MAX_NAME_LEN+1];
 				*path = '/';
 				strncpy(path+1, root.filename, sizeof(path)-1);
 
 				dir_node->flush(_fs, path);
+
+			} else {
+				Genode::error("root node was not a directory or file");
+				throw Invalid_handle();
 			}
 
 			uint8_t final_name[MAX_NAME_LEN];
@@ -372,11 +379,13 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 				_fs.move(_root_handle, root.filename,
 				         _root_handle, (char *)final_name+1);
 			} catch (Permission_denied) {
+				Genode::error("permission denied");
 				/* if the final path already exists, delete this ingest */
 				_fs.close(_fs.node((char *)final_name));
 				try {
 					_fs.unlink(_root_handle, root.filename);
 				} catch (Not_empty) {
+					Genode::error("not empty, trying a recursive unlink");
 					Genode::Path<MAX_PATH_LEN> path(root.filename);
 					empty_dir(_fs, path.base());
 					_fs.unlink(_root_handle, root.filename);
@@ -398,7 +407,19 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 				Hash_root &root = _root_registry.lookup(name);
 				finish(root);
 				return root.filename;
-			} catch (...) { }
+			}
+			/* flushing the root to get the hash doesn't always work */
+			catch (Invalid_handle)      { Genode::error("Invalid_handle"); }
+			catch (Invalid_name)        { Genode::error("Invalid_name"); }
+			catch (Lookup_failed)       { Genode::error("Lookup_failed"); }
+			catch (Name_too_long)       { Genode::error("Name_too_long"); }
+			catch (Node_already_exists) { Genode::error("Node_already_exists"); }
+			catch (No_space)            { Genode::error("No_space"); }
+			catch (Not_empty)           { Genode::error("Not_empty"); }
+			catch (Out_of_metadata)     { Genode::error("Out_of_metadata"); }
+			catch (Permission_denied)   { Genode::error("Permission_denied"); }
+			catch (...)                 { Genode::error("unhandled error"); }
+			Genode::error("finalize of root ", name, " failed");
 			return 0;
 		}
 
@@ -418,7 +439,7 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 					Genode::error(name,":",algo,":",hash,"!=",(char const*)&buf);
 					return false;
 				}
-				Genode::log("verified ",name,":",algo,":",(char const*)&buf);
+				Genode::.log("verified ",name,":",algo,":",(char const*)&buf);
 			}
 			Genode::error("unhandled hash algorithm ", algo);
 			throw File_system::Exception();
@@ -433,7 +454,10 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 		Dir_handle dir(File_system::Path const &path, bool create) override
 		{
 			if (is_root(path)) {
-				if (create) throw Node_already_exists();
+				if (create) {
+					Genode::error("cannot create directory '/'");
+					throw Node_already_exists();
+				}
 				else return _root_handle;
 			}
 
@@ -443,12 +467,12 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 
 			/* get a local node */
 			Hash_root &root = (create && !*sub_path)
-				? _root_registry.alloc_dir(root_name, _strict)
+				? _root_registry.alloc_dir(root_name)
 				: _root_registry.lookup(root_name);
 
 			Directory *parent_dir = dynamic_cast<Directory *>(root.node);
 			if (!parent_dir) {
-				Genode::log(root_name, " is not a directory");
+				Genode::error(root_name, " is not a directory");
 				throw Lookup_failed();
 			}
 
@@ -466,20 +490,11 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 			}
 
 			Dir_handle handle;
-			try {
-				handle = _fs.dir(new_path, create);
-			} catch (Permission_denied) {
-				Genode::error("permission denied at backend"); throw;
-			} catch (Out_of_metadata) {
-				if ((_alloc.quota() - _alloc.consumed()) > 8192) {
-					_alloc.withdraw(8192);
-					_env.parent().upgrade(_fs.cap(), "ram_quota=8K");
-					handle = _fs.dir(new_path, create);
-				} else
-					throw;
-			} /* TODO: destroy the node if creating */
+			try { handle = _fs.dir(new_path, create); }
+			catch (Permission_denied) {
+				Genode::error("permission denied at backend"); throw; }
 
-			_node_registry.insert(handle, &dir_node);
+			_node_registry.insert(handle, dir_node);
 			return handle;
 		}
 
@@ -493,7 +508,7 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 
 			if (dir_handle == _root_handle) {
 				if (create) {
-					root = &_root_registry.alloc_file(name.string(), _strict);
+					root = &_root_registry.alloc_file(name.string());
 				} else {
 					root = &_root_registry.lookup(name.string());
 				}
@@ -502,9 +517,10 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 
 				file_node = dynamic_cast<File *>(root->node);
 				if (!file_node) {
-					if (create)
+					if (create) {
+						Genode::error("root node ", name.string(), " already exists");
 						throw Node_already_exists();
-					else
+					} else
 						throw Lookup_failed();
 				}
 
@@ -519,24 +535,14 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 					? _fs.file(dir_handle, root->filename, mode, create)
 					: _fs.file(dir_handle, name, mode, create);
 			} catch (Permission_denied) {
-				Genode::error("permission denied at backend"); throw;
-			} catch (Out_of_metadata) {
-				if ((_alloc.quota() - _alloc.consumed()) > 8192) {
-					_alloc.withdraw(8192);
-					_env.parent().upgrade(_fs.cap(), "ram_quota=8K");
-					handle = root
-						? _fs.file(dir_handle, root->filename, mode, create)
-						: _fs.file(dir_handle, name, mode, create);
-					} else
-						throw;
-			} /* TODO: destroy the node if creating */
+				Genode::error("permission denied at backend"); throw; }
 
 			/*
 			 * If this node can't be used to modify data,
 			 * then it is not a node we are concerned with.
 			 */
 			if (mode >= WRITE_ONLY)
-				_node_registry.insert(handle, file_node);
+				_node_registry.insert(handle, *file_node);
 			return handle;
 		}
 
@@ -546,26 +552,16 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 
 			if (dir_handle != _root_handle) {
 
-				if (create &&
-				    (_alloc.quota()-_alloc.consumed() < sizeof(File)))
-					throw No_space();
+				Directory &dir_node = _node_registry.lookup_dir(dir_handle);
+				Symlink &link_node = dir_node.symlink(name.string(), create);
 
 				Symlink_handle handle;
 				try {
 					handle = _fs.symlink(dir_handle, name, create);
 				} catch (Permission_denied) {
-					Genode::error("permission denied at backend"); throw;
-				} catch (Out_of_metadata) {
-					if ((_alloc.quota() - _alloc.consumed()) > 8192) {
-						_alloc.withdraw(8192);
-						_env.parent().upgrade(_fs.cap(), "ram_quota=8K");
-						handle = _fs.symlink(dir_handle, name, create);
-					} else
-						throw;
-				} /* TODO: dangling hash node*/
+					Genode::error("permission denied at backend"); throw; }
 
-				Directory &dir_node = _node_registry.lookup_dir(dir_handle);
-				_node_registry.insert(handle, dir_node.symlink(name_str, create));
+				_node_registry.insert(handle, link_node);
 
 				return handle;
 			}
@@ -671,7 +667,7 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 			if (dir_handle == _root_handle) {
 				Hash_root &root = _root_registry.lookup(name_str);
 
-				_root_registry.remove(&root);
+				_root_registry.remove(root);
 				return;
 			}
 
@@ -770,8 +766,7 @@ class Nix_store::Ingest_root :
 
 		void _upgrade_session(Ingest_component *session, const char *args) override
 		{
-			size_t ram_quota = Arg_string::find_arg(args, "ram_quota").ulong_value(0);
-			session->upgrade_ram_quota(ram_quota);		
+			session->upgrade(args);
 		}
 
 	public:

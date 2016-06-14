@@ -47,9 +47,9 @@ class nix::Store : public nix::StoreAPI
 		Nix_store::Connection  _store_session { _env };
 		Genode::Lock           _packet_lock;
 
-		void hash_dir(uint8_t *buf, nix::Path const &src_path);
-		void hash_file(uint8_t *buf, nix::Path const &src_path);
-		void hash_symlink(uint8_t *buf, nix::Path const &src_path);
+		void hash_dir(uint8_t *buf, const string &name, nix::Path const &src_path);
+		void hash_file(uint8_t *buf, const string &name, nix::Path const &src_path);
+		void hash_symlink(uint8_t *buf, const string &name, nix::Path const &src_path);
 
 		void copy_dir(File_system::Session   &fs,
 		              File_system::Dir_handle handle,
@@ -66,8 +66,8 @@ class nix::Store : public nix::StoreAPI
 		                  nix::Path const            &src_path,
 		                  nix::Path const            &dst_path);
 
-		string add_file(const nix::Path &path);
-		string add_dir(const nix::Path &path);
+		string add_file(const string &name, const nix::Path &path);
+		string add_dir(const string &name, const nix::Path &path);
 
 	public:
 

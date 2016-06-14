@@ -20,15 +20,6 @@
 #include <util/list.h>
 #include <trace/timestamp.h>
 
-/* Jitterentropy */
-/* DOESN'T WORK
-namespace Jitter { extern "C" {
-#include <jitterentropy.h>
-} }
-*/
-
-
-
 namespace Nix_store {
 
 	using namespace Genode;
@@ -400,13 +391,13 @@ class Nix_store::Directory : public Hash_node
 			throw Lookup_failed();
 		}
 
-		Symlink *symlink(char const *name, bool create)
+		Symlink &symlink(char const *name, bool create)
 		{
 			Symlink *link;
 			if (create) try {
 				link = new (_alloc) Symlink(name);
 				insert(link);
-				return link;
+				return *link;
 			} catch (Genode::Allocator::Out_of_memory) {
 				 throw Out_of_metadata();
 			}
@@ -416,7 +407,7 @@ class Nix_store::Directory : public Hash_node
 				Symlink *link = dynamic_cast<Symlink *>(node);
 				if (link)
 					if (strcmp(link->name(), name, MAX_NAME_LEN) == 0)
-						return link;
+						return *link;
 			}
 			throw Lookup_failed();
 		}
@@ -448,19 +439,19 @@ struct Nix_store::Hash_node_registry
 						fs.close(Node_handle(i));
 			}
 
-			void insert(Node_handle handle, Hash_node *node)
+			void insert(Node_handle handle, Hash_node &node)
 			{
 				if (handle.value >= 0 && handle.value > MAX_NODE_HANDLES)
 					throw Out_of_metadata();
 
-				_nodes[handle.value] = node;
+				_nodes[handle.value] = &node;
 			}
 
 			Hash_node *lookup(Node_handle handle)
 			{
 				int i = handle.value;
 				return (i >= 0 && i < MAX_NODE_HANDLES) ?
-					_nodes[i] : 0;
+					_nodes[i] : nullptr;
 			}
 
 			File &lookup_file(Node_handle handle)
@@ -529,70 +520,25 @@ class Nix_store::Hash_root_registry
 
 		Hash_root         *_roots[MAX_ROOT_NODES];
 		Genode::Allocator &_alloc;
-		Genode::uint64_t   _nonce;
 
-	public:
+		File_system::Session &_fs;
+		File_system::Dir_handle  _root_handle;
 
-		Hash_root_registry(Genode::Allocator &alloc)
-		: _alloc(alloc)
+		/* use a random initial nonce */
+		Genode::uint64_t _nonce = Genode::Trace::timestamp();
+		bool             _strict = false;
+
+		Hash_root *_lookup(char const *name)
 		{
-			for (unsigned i = 0; i < MAX_ROOT_NODES; ++i)
-				_roots[i] = nullptr;
-
-
-			/* use a random initial nonce */
-			_nonce = Genode::Trace::timestamp();
-
-			/* the Jitterentropy library is initialized in Nix_store::Main */
-			/*
-			using namespace Jitter;
-			struct rand_data *ec = jent_entropy_collector_alloc(0, 0);
-			if (!ec) {
-				Genode::error("failed to initalize ingest nonce RNG");
-				throw ~0;
-			}
-			jent_read_entropy(ec, (char*)&_nonce, sizeof(_nonce));
-			jent_entropy_collector_free(ec);
-			*/
+			/* check if the root exists*/
+			for (size_t i = 0; i < MAX_ROOT_NODES; ++i)
+				if (_roots[i] && (strcmp(_roots[i]->name, name, MAX_NAME_LEN) == 0))
+					return _roots[i];
+			return nullptr;
 		}
 
-		~Hash_root_registry()
+		Hash_root &_alloc_root(char const *name)
 		{
-			for (unsigned i = 0; i < MAX_ROOT_NODES; ++i)
-				if (_roots[i]) {
-					if (_roots[i]->node)
-						destroy(_alloc, _roots[i]->node);
-					destroy(_alloc, _roots[i]);
-				}
-		}
-
-		void unlink(File_system::Session &fs, Dir_handle root)
-		{
-			for (unsigned i = 0; i < MAX_ROOT_NODES; ++i)
-				if (_roots[i] && (!_roots[i]->done)) {
-					try { (fs.unlink(root, _roots[i]->filename)); }
-					catch (...) { }
-				}
-		}
-
-		Hash_root &alloc_root(char const *name, bool strict = false)
-		{
-			for (size_t i = 0; i < MAX_ROOT_NODES; ++i) {
-				if (!_roots[i])
-					continue;
-
-				if (strcmp(_roots[i]->name, name, MAX_NAME_LEN))
-					continue;
-				if (_roots[i]->node)
-					throw Node_already_exists();
-				return *(_roots[i]);
-			}
-
-			if (strict) {
-				Genode::error(name, " is not a declared ingest root");
-				throw Permission_denied();
-			}
-
 			for (int i = 0; i < MAX_ROOT_NODES; ++i) {
 				if (_roots[i])
 					continue;
@@ -607,21 +553,62 @@ class Nix_store::Hash_root_registry
 			throw Out_of_metadata();
 		}
 
-		Hash_root &alloc_dir(char const *name, bool strict)
+	public:
+
+		Hash_root_registry(Genode::Allocator &alloc,
+		                   File_system::Session &fs,
+		                   File_system::Dir_handle root)
+		: _alloc(alloc), _fs(fs), _root_handle(root)
 		{
-			Hash_root &root = alloc_root(name, strict);
-			try { root.node = new (_alloc) Directory(name, _alloc); }
-			catch (Genode::Allocator::Out_of_memory) {
+			for (unsigned i = 0; i < MAX_ROOT_NODES; ++i)
+				_roots[i] = nullptr;
+		}
+
+		~Hash_root_registry()
+		{
+			for (unsigned i = 0; i < MAX_ROOT_NODES; ++i)
+				if (_roots[i])
+					remove(*_roots[i]);
+		}
+
+		void prealloc_root(char const *name)
+		{
+			/* when any root is declared, go to strict mode */
+			_strict = true;
+
+			if (!_lookup(name))
+				_alloc_root(name);
+		}
+
+		Hash_root &alloc_root(char const *name)
+		{
+			if (Hash_root *root = _lookup(name)) {
+				if (_strict) {
+					Genode::error(name, " is not a declared ingest root");
+					throw Permission_denied();
+				}
+				return *root;
+			}
+			return _alloc_root(name);
+		}
+
+		Hash_root &alloc_dir(char const *name)
+		{
+			Hash_root &root = alloc_root(name);
+			if (!root.node) try {
+				root.node = new (_alloc) Directory(name, _alloc);
+			} catch (Genode::Allocator::Out_of_memory) {
 				throw Out_of_metadata();
 			}
 			return root;
 		}
 
-		Hash_root &alloc_file(char const *name, bool strict)
+		Hash_root &alloc_file(char const *name)
 		{
-			Hash_root &root = alloc_root(name, strict);
-			try { root.node = new (_alloc) File(name); }
-			catch (Genode::Allocator::Out_of_memory) {
+			Hash_root &root = alloc_root(name);
+			if (!root.node) try {
+				root.node = new (_alloc) File(name);
+			} catch (Genode::Allocator::Out_of_memory) {
 				throw Out_of_metadata();
 			}
 			return root;
@@ -634,13 +621,8 @@ class Nix_store::Hash_root_registry
 		 */
 		Hash_root &lookup(char const *name)
 		{
-			for (size_t i = 0; i < MAX_ROOT_NODES; ++i) {
-				Hash_root *root = _roots[i];
-				if (root && root->node
-				 && (Genode::strcmp(root->name, name, MAX_NAME_LEN) == 0)) {
-					return *root;
-				}
-			}
+			if (Hash_root *root = _lookup(name))
+				return *root;
 			throw Lookup_failed();
 		}
 
@@ -651,17 +633,22 @@ class Nix_store::Hash_root_registry
 		 */
 		Hash_root &lookup(Node_handle handle)
 		{
-			Hash_root *root = _roots[handle.value&ROOT_HANDLE_MASK];
-			if (root) return *root;
+			if (Hash_root *root = _roots[handle.value&ROOT_HANDLE_MASK])
+				return *root;
 			throw Lookup_failed();
 		}
 
-		void remove(Hash_root *root)
+		void remove(Hash_root &root)
 		{
-			_roots[root->index] = nullptr;
-			if (root->node)
-				destroy(_alloc, root->node);
-			destroy(_alloc, root);
+			_roots[root.index] = nullptr;
+			if (root.node)
+				destroy(_alloc, root.node);
+
+			if (!root.done) try {
+				_fs.unlink(_root_handle, root.filename);
+			} catch (...) { }
+
+			destroy(_alloc, &root);
 		}
 };
 
