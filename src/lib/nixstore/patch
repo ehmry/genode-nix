@@ -1,8 +1,16 @@
 diff --git a/src/libstore/builtins.cc b/src/libstore/builtins.cc
-index a1c4b48..4d58850 100644
+index a1c4b48..c623f30 100644
 --- a/src/libstore/builtins.cc
 +++ b/src/libstore/builtins.cc
-@@ -35,12 +35,6 @@ void builtinFetchurl(const BasicDerivation & drv)
+@@ -25,7 +25,6 @@ void builtinFetchurl(const BasicDerivation & drv)
+     if (out == drv.env.end()) throw Error("attribute ‘url’ missing");
+ 
+     Path storePath = out->second;
+-    assertStorePath(storePath);
+ 
+     auto unpack = drv.env.find("unpack");
+     if (unpack != drv.env.end() && unpack->second == "1") {
+@@ -35,12 +34,6 @@ void builtinFetchurl(const BasicDerivation & drv)
          restorePath(storePath, source);
      } else
          writeFile(storePath, data.data);
@@ -16,7 +24,7 @@ index a1c4b48..4d58850 100644
  
  }
 diff --git a/src/libstore/derivations.cc b/src/libstore/derivations.cc
-index 7959d5b..0b2f210 100644
+index 7959d5b..3026e56 100644
 --- a/src/libstore/derivations.cc
 +++ b/src/libstore/derivations.cc
 @@ -5,6 +5,12 @@
@@ -41,7 +49,20 @@ index 7959d5b..0b2f210 100644
          throw FormatError(format("bad path ‘%1%’ in derivation") % s);
      return s;
  }
-@@ -113,10 +119,35 @@ static Derivation parseDerivation(const string & s)
+@@ -93,11 +99,7 @@ static Derivation parseDerivation(const string & s)
+     expect(str, ",["); drv.inputSrcs = parseStrings(str, true);
+     expect(str, ","); drv.platform = parseString(str);
+     expect(str, ","); drv.builder = parseString(str);
+-
+-    /* Parse the builder arguments. */
+-    expect(str, ",[");
+-    while (!endOfList(str))
+-        drv.args.push_back(parseString(str));
++    expect(str, ","); drv.config = parseString(str);
+ 
+     /* Parse the environment variables. */
+     expect(str, ",[");
+@@ -113,10 +115,35 @@ static Derivation parseDerivation(const string & s)
  }
  
  
@@ -79,7 +100,16 @@ index 7959d5b..0b2f210 100644
      } catch (FormatError & e) {
          throw Error(format("error parsing derivation ‘%1%’: %2%") % drvPath % e.msg());
      }
-@@ -251,7 +282,7 @@ Hash hashDerivationModulo(StoreAPI & store, Derivation drv)
+@@ -179,7 +206,7 @@ string unparseDerivation(const Derivation & drv)
+ 
+     s += ','; printString(s, drv.platform);
+     s += ','; printString(s, drv.builder);
+-    s += ','; printStrings(s, drv.args.begin(), drv.args.end());
++    s += ','; printString(s, drv.config);
+ 
+     s += ",[";
+     first = true;
+@@ -251,7 +278,7 @@ Hash hashDerivationModulo(StoreAPI & store, Derivation drv)
          Hash h = drvHashes[i.first];
          if (h.type == htUnknown) {
              assert(store.isValidPath(i.first));
@@ -88,10 +118,43 @@ index 7959d5b..0b2f210 100644
              h = hashDerivationModulo(store, drv2);
              drvHashes[i.first] = h;
          }
+@@ -303,13 +330,11 @@ Source & operator >> (Source & in, BasicDerivation & drv)
+         auto name = readString(in);
+         DerivationOutput o;
+         in >> o.path >> o.hashAlgo >> o.hash;
+-        assertStorePath(o.path);
+         drv.outputs[name] = o;
+     }
+ 
+     drv.inputSrcs = readStorePaths<PathSet>(in);
+-    in >> drv.platform >> drv.builder;
+-    drv.args = readStrings<Strings>(in);
++    in >> drv.platform >> drv.builder >> drv.config;
+ 
+     nr = readInt(in);
+     for (unsigned int n = 0; n < nr; n++) {
+@@ -327,7 +352,7 @@ Sink & operator << (Sink & out, const BasicDerivation & drv)
+     out << drv.outputs.size();
+     for (auto & i : drv.outputs)
+         out << i.first << i.second.path << i.second.hashAlgo << i.second.hash;
+-    out << drv.inputSrcs << drv.platform << drv.builder << drv.args;
++    out << drv.inputSrcs << drv.platform << drv.builder << drv.config;
+     out << drv.env.size();
+     for (auto & i : drv.env)
+         out << i.first << i.second;
 diff --git a/src/libstore/derivations.hh b/src/libstore/derivations.hh
-index f084204..e5775fa 100644
+index f084204..3469eb7 100644
 --- a/src/libstore/derivations.hh
 +++ b/src/libstore/derivations.hh
+@@ -46,7 +46,7 @@ struct BasicDerivation
+     PathSet inputSrcs; /* inputs that are sources */
+     string platform;
+     Path builder;
+-    Strings args;
++    string config;
+     StringPairs env;
+ 
+     virtual ~BasicDerivation() { };
 @@ -66,7 +66,7 @@ Path writeDerivation(StoreAPI & store,
      const Derivation & drv, const string & name, bool repair = false);
  
@@ -524,7 +587,7 @@ index 60b11af..5f752e3 100644
      SettingsMap settings, overrides;
  
 diff --git a/src/libstore/misc.cc b/src/libstore/misc.cc
-index 61a976c..33d22a8 100644
+index 61a976c..8740e6b 100644
 --- a/src/libstore/misc.cc
 +++ b/src/libstore/misc.cc
 @@ -1,6 +1,5 @@
@@ -534,9 +597,11 @@ index 61a976c..33d22a8 100644
  #include "globals.hh"
  
  
-@@ -11,7 +10,7 @@ Derivation derivationFromPath(StoreAPI & store, const Path & drvPath)
+@@ -9,9 +8,8 @@ namespace nix {
+ 
+ Derivation derivationFromPath(StoreAPI & store, const Path & drvPath)
  {
-     assertStorePath(drvPath);
+-    assertStorePath(drvPath);
      store.ensurePath(drvPath);
 -    return readDerivation(drvPath);
 +    return readDerivation(store.env(), drvPath);
@@ -754,10 +819,73 @@ index 33eab5a..9d1ef1a 100644
  }
  
 diff --git a/src/libstore/store-api.cc b/src/libstore/store-api.cc
-index a73ebd8..d18662f 100644
+index a73ebd8..c424ed0 100644
 --- a/src/libstore/store-api.cc
 +++ b/src/libstore/store-api.cc
-@@ -296,26 +296,3 @@ void exportPaths(StoreAPI & store, const Paths & paths,
+@@ -6,31 +6,9 @@
+ namespace nix {
+ 
+ 
+-bool isInStore(const Path & path)
+-{
+-    return isInDir(path, settings.nixStore);
+-}
+-
+-
+-bool isStorePath(const Path & path)
+-{
+-    return isInStore(path)
+-        && path.find('/', settings.nixStore.size() + 1) == Path::npos;
+-}
+-
+-
+-void assertStorePath(const Path & path)
+-{
+-    if (!isStorePath(path))
+-        throw Error(format("path ‘%1%’ is not in the Nix store") % path);
+-}
+-
+-
+ Path toStorePath(const Path & path)
+ {
+-    if (!isInStore(path))
+-        throw Error(format("path ‘%1%’ is not in the Nix store") % path);
+-    Path::size_type slash = path.find('/', settings.nixStore.size() + 1);
++    Path::size_type slash = path.find('/', 1);
+     if (slash == Path::npos)
+         return path;
+     else
+@@ -38,29 +16,8 @@ Path toStorePath(const Path & path)
+ }
+ 
+ 
+-Path followLinksToStore(const Path & _path)
+-{
+-    Path path = absPath(_path);
+-    while (!isInStore(path)) {
+-        if (!isLink(path)) break;
+-        string target = readLink(path);
+-        path = absPath(target, dirOf(path));
+-    }
+-    if (!isInStore(path))
+-        throw Error(format("path ‘%1%’ is not in the Nix store") % path);
+-    return path;
+-}
+-
+-
+-Path followLinksToStorePath(const Path & path)
+-{
+-    return toStorePath(followLinksToStore(path));
+-}
+-
+-
+ string storePathToName(const Path & path)
+ {
+-    assertStorePath(path);
+     return string(path, settings.nixStore.size() + 34);
+ }
+ 
+@@ -296,26 +253,3 @@ void exportPaths(StoreAPI & store, const Paths & paths,
  
  
  }
@@ -785,19 +913,50 @@ index a73ebd8..d18662f 100644
 -
 -}
 diff --git a/src/libstore/store-api.hh b/src/libstore/store-api.hh
-index 9cc5fd4..76b43a3 100644
+index 9cc5fd4..9ff0a66 100644
 --- a/src/libstore/store-api.hh
 +++ b/src/libstore/store-api.hh
-@@ -298,6 +298,8 @@ public:
+@@ -298,37 +298,18 @@ public:
      /* Check the integrity of the Nix store.  Returns true if errors
         remain. */
      virtual bool verifyStore(bool checkContents, bool repair) = 0;
-+
+-};
+-
+-
+-/* !!! These should be part of the store API, I guess. */
+-
+-/* Throw an exception if `path' is not directly in the Nix store. */
+-void assertStorePath(const Path & path);
+ 
+-bool isInStore(const Path & path);
+-bool isStorePath(const Path & path);
 +    virtual Genode::Env &env() = 0;
- };
++};
+ 
+ /* Extract the name part of the given store path. */
+ string storePathToName(const Path & path);
+ 
+-void checkStoreName(const string & name);
+-
+-
+ /* Chop off the parts after the top-level store name, e.g.,
+    /nix/store/abcd-foo/bar => /nix/store/abcd-foo. */
+ Path toStorePath(const Path & path);
  
  
-@@ -382,10 +384,6 @@ Path addPermRoot(StoreAPI & store, const Path & storePath,
+-/* Follow symlinks until we end up with a path in the Nix store. */
+-Path followLinksToStore(const Path & path);
+-
+-
+-/* Same as followLinksToStore(), but apply toStorePath() to the
+-   result. */
+-Path followLinksToStorePath(const Path & path);
+-
+-
+ /* Constructs a unique store path name. */
+ Path makeStorePath(const string & type,
+     const Hash & hash, const string & name);
+@@ -382,10 +363,6 @@ Path addPermRoot(StoreAPI & store, const Path & storePath,
  Paths topoSortPaths(StoreAPI & store, const PathSet & paths);
  
  
@@ -808,7 +967,7 @@ index 9cc5fd4..76b43a3 100644
  
  /* Factory method: open the Nix database, either through the local or
     remote implementation. */
-@@ -410,5 +408,4 @@ void exportPaths(StoreAPI & store, const Paths & paths,
+@@ -410,5 +387,4 @@ void exportPaths(StoreAPI & store, const Paths & paths,
  MakeError(SubstError, Error)
  MakeError(BuildError, Error) /* denotes a permanent build failure */
  

@@ -40,12 +40,15 @@ namespace Nix_store {
 			char const *_outputs;
 			char const *_inputs;
 			char const *_sources;
+			char const *_config;
 			char const *_environment;
 
-			inline Genode::size_t remain(char const *base) {
+			inline Genode::size_t remain(char const *base) const {
 				return _len - (base - local_addr<char>()); }
 
 		public:
+
+			using Nix::Attached_rom_dataspace::size;
 
 			Derivation(Genode::Env &env, char const *name)
 			:
@@ -100,14 +103,11 @@ namespace Nix_store {
 					 ********************/
 					parser.string(&_builder);
 
-					/**********
-					 ** Args **
-					 **********/
+					/************
+					 ** Config **
+					 ************/
 
-					parser.list([name] (Aterm::Parser &parser) {
-						Genode::log(name, " contains a command line argument", name);
-						throw Invalid_derivation();
-					});
+					_config = parser.string();
 
 					/*****************
 					 ** Environment **
@@ -132,6 +132,14 @@ namespace Nix_store {
 			 * Return the builder executable filename.
 			 */
 			char const *builder() const { return _builder.string(); }
+
+			/**
+			 * Return the builder config.
+			 */
+			void config(char *buf, Genode::size_t len)
+			{
+				Aterm::Parser(_config, len).string(buf, remain(_config));
+			}
 
 			template<typename FUNC>
 			void outputs(FUNC const &func)

@@ -53,7 +53,6 @@ void try_file_system(FUNC const &func)
 Path nix::readStorePath(Source & from)
 {
     Path path = readString(from);
-    assertStorePath(path);
     return path;
 }
 
@@ -61,7 +60,6 @@ Path nix::readStorePath(Source & from)
 template<class T> T nix::readStorePaths(Source & from)
 {
     T paths = readStrings<T>(from);
-    for (auto & i : paths) assertStorePath(i);
     return paths;
 }
 
@@ -277,14 +275,17 @@ void Store::copy_symlink(File_system::Session       &fs,
 	if (_vfs->readlink(src_path.c_str(), source.packet_content(packet),
 	                            packet.size(), vfs_count) != Directory_service::READLINK_OK)
 		throw Error(format("reading symlink ‘%1%’") % src_path);
-	packet.length(vfs_count);
+	PDBG("%s readlink count %llu", src_path.c_str(), vfs_count);
+	if (vfs_count) {
+		packet.length(vfs_count);
 
-	/* pass packet to server side */
-	source.submit_packet(packet);
+		/* pass packet to server side */
+		source.submit_packet(packet);
 
-	packet = source.get_acked_packet();
-	//if (!packet.length())
-	//	throw Error(format("copying symlink ‘%1%’ to `%2%'") % src_path % dst_path);
+		packet = source.get_acked_packet();
+		if (!packet.length())
+			throw Error(format("copying symlink ‘%1%’ to `%2%'") % src_path % dst_path);
+	}
 }
 
 
@@ -338,6 +339,7 @@ Store::hash_symlink(uint8_t *buf, const string &name, nix::Path const &src_path)
 	                            sizeof(data), vfs_count) != Directory_service::READLINK_OK)
 		throw Error(format("reading symlink ‘%1%’") % src_path);
 
+	PDBG("%s readlink count %llu", src_path.c_str(), vfs_count);
 	hash.update(data, vfs_count);
 
 	hash.update((uint8_t*)"\0s\0", 3);
@@ -496,7 +498,7 @@ nix::Store::isValidPath(const nix::Path & path)
 	char const *_path = path.c_str();
 	while (*_path == '/') ++_path;
 
-	return _store_session.valid(_path);
+	return _store_session.dereference(_path) != "";
 }
 
 
@@ -594,7 +596,7 @@ Store::addToStore(const string &name, const nix::Path &path,
 	if (stat.directory()) {
 		hash_dir(buf, name, srcPath);
 		Store_hash::encode(buf, name.c_str(), sizeof(buf));
-		if (_store_session.valid((char *) buf)) {
+		if (_store_session.dereference((char *) buf) != "") {
 			return "/" + string((char *) buf);
 		}
 		final_name = add_dir(name, srcPath);
@@ -602,7 +604,7 @@ Store::addToStore(const string &name, const nix::Path &path,
 	} else if (stat.regular()) {
 		hash_file(buf, name, srcPath);
 		Store_hash::encode(buf, name.c_str(), sizeof(buf));
-		if (_store_session.valid((char *) buf)) {
+		if (_store_session.dereference((char *) buf) != "") {
 			return "/" + string((char *) buf);
 		}
 
@@ -610,10 +612,8 @@ Store::addToStore(const string &name, const nix::Path &path,
 	} else
 		throw nix::Error(format("addToStore: `%1%' has an inappropriate file type") % srcPath);
 
-	/* XXX: don't skip this
 	if (final_name.compare((char *)buf))
 		throw nix::Error(format("addToStore: %1% hashed locally to '%2%' but ingest reports `%3%' ") % name % buf % final_name);
-	 */
 
 	return "/" + final_name;
 }
@@ -628,7 +628,7 @@ nix::Path nix::Store::addTextToStore(const string & name, const string & text,
 	using namespace File_system;
 
 	string hashed_name = hash_text(name, text);
-	if (_store_session.valid(hashed_name.c_str()))
+	if (_store_session.dereference(hashed_name.c_str()) != "")
 		return hashed_name;
 
 	{
@@ -704,7 +704,7 @@ nix::Path nix::Store::addDataToStore(const string & name,
 
 	hash.digest(path_buf, sizeof(path_buf));
 	Store_hash::encode(path_buf, name.c_str(), sizeof(path_buf));
-	if (_store_session.valid((char *)path_buf))
+	if (_store_session.dereference((char *)path_buf) != "")
 		return nix::Path((char *)path_buf);
 	{
 		debug(format("adding dataspace ‘%1%’ to the store") % name);

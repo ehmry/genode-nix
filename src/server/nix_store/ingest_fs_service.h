@@ -98,10 +98,10 @@ class Nix_store::Ingest_service : public Genode::Service
 				buf[j--] = base16[buf[i] >> 4];
 			}
 
-			if (strcmp(hex, (char*)buf) == 0)
+			if (strcmp(hex, (char*)buf, strlen(hex)) == 0)
 				return true;
 
-			Genode::error("fixed output ", filename, " is invalid, wanted ", hex, ", got ", (char*)buf);
+			Genode::error("fixed output ", filename, " is invalid, wanted ", hex, ", got ", (char const*)buf);
 			return false;
 		}
 

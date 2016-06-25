@@ -74,7 +74,10 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 		bool _process_incoming_packet(File_system::Packet_descriptor &theirs)
 		{
 			void *content = tx_sink()->packet_content(theirs);
-			size_t const length = theirs.length();
+			size_t length = theirs.length();
+			if (length == 0) {
+				PDBG("zero length from their packet");
+			}
 
 			if (!content || (length > theirs.size()) || (length == 0)
 			    /* Reading the entries of the root is not allowed. */
@@ -159,6 +162,9 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 			File_system::Packet_descriptor &theirs = _packet_queue[i];
 
 			size_t length = ours.length();
+			if (length == 0)
+				PDBG("ours was zero length");
+
 			uint8_t const *content = (uint8_t const *)source.packet_content(ours);
 			if (!content) {
 				tx_sink()->acknowledge_packet(theirs);
@@ -379,7 +385,7 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 				_fs.move(_root_handle, root.filename,
 				         _root_handle, (char *)final_name+1);
 			} catch (Permission_denied) {
-				Genode::error("permission denied");
+				Genode::error("permission denied moving ", (char const *)final_name, " into place");
 				/* if the final path already exists, delete this ingest */
 				_fs.close(_fs.node((char *)final_name));
 				try {
@@ -398,6 +404,8 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 
 		/**
 		 * Used by the ingest component to get the final name
+		 *
+		 * TODO: check if the was empty
 		 *
 		 * \throw Lookup_failed
 		 */

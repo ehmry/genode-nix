@@ -18,6 +18,7 @@
 #include <store_hash/encode.h>
 #include <file_system_session/file_system_session.h>
 #include <base/attached_rom_dataspace.h>
+#include <base/attached_ram_dataspace.h>
 #include <base/env.h>
 #include <base/child.h>
 #include <base/printf.h>
@@ -96,12 +97,19 @@ class Nix_store::Child : public Genode::Child_policy
 		Genode::Child _child;
 
 		Signal_context_capability  _exit_sigh;
-		Inputs           const _inputs      { _env, *_child.heap(), _fs, _drv };
-		Environment      const _environment { _env, *_child.heap(), _fs, _drv, _inputs };
-		Ingest_service             _fs_ingest_service { _drv, _env, *_child.heap() };
-		Filter_service             _fs_filter_service { _env, _inputs };
-		Parent_service             _fs_parent_service { "File_system" };
-		Service_registry           _parent_services;
+		Inputs      const _inputs      { _env, *_child.heap(), _fs, _drv };
+		Environment const _environment { _env, *_child.heap(), _fs, _drv, _inputs };
+
+		Genode::Attached_ram_dataspace _config_dataspace
+			{ _env.ram(), _env.rm(), _drv.size() };
+
+		Init::Child_policy_provide_rom_file _config_policy
+			{ "config", _config_dataspace.cap(), &_env.ep().rpc_ep() };
+
+		Ingest_service   _fs_ingest_service { _drv, _env, *_child.heap() };
+		Filter_service   _fs_filter_service { _env, _inputs };
+		Parent_service   _fs_parent_service { "File_system" };
+		Service_registry _parent_services;
 
 	public:
 
@@ -149,7 +157,8 @@ class Nix_store::Child : public Genode::Child_policy
 					if (impure[end] == ' ' || impure[end] == '\0') {
 						++end;
 						Genode::strncpy(service_name, impure+start, end-start);
-						Genode::log(_name.string(), ": forwarding impure service ", service_name, " to parent");
+						Genode::log(_name.string(), ": forwarding impure service ",
+						            (char const *)service_name, " to parent");
 						_parent_services.insert(new (_child.heap())
 							Parent_service(service_name));
 						start = end;
@@ -157,6 +166,9 @@ class Nix_store::Child : public Genode::Child_policy
 						++end;
 				}
 			}
+
+			char *config_addr = _config_dataspace.local_addr<char>();
+			_drv.config(config_addr, _config_dataspace.size());
 		}
 
 
@@ -184,6 +196,10 @@ class Nix_store::Child : public Genode::Child_policy
 				 */
 				if (strcmp("binary", request) == 0) {
 					Arg_string::set_arg_string(args, args_len, "label", _binary_label.string());
+
+				} else if (strcmp("config", request) == 0) {
+					return;
+
 				} else if (char const *dest = _environment.lookup(request)) {
 					Genode::Label const new_label(dest, "store");
 					Arg_string::set_arg_string(args, args_len, "label", new_label.string());
@@ -247,6 +263,10 @@ class Nix_store::Child : public Genode::Child_policy
 			Service *service = nullptr;
 			if (!(*args)) /* invalidated by filter_session_args */
 				return 0;
+
+			/* check for config file request */
+			if ((service = _config_policy.resolve_session_request(service_name, args)))
+				return service;
 
 			if (strcmp("File_system", service_name) == 0)
 			{

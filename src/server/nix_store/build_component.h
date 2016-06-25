@@ -44,24 +44,6 @@ class Nix_store::Build_component : public Genode::Rpc_object<Nix_store::Session>
 		File_system::Dir_handle  _store_dir;
 		Jobs                    &_jobs;
 
-	public:
-
-		/**
-		 * Constructor
-		 */
-		Build_component(Genode::Env          &env,
-		                Allocator            *session_alloc,
-		                size_t                ram_quota,
-		                File_system::Session &fs,
-		                Jobs                 &jobs)
-		:
-			_env(env),
-			_session_alloc(session_alloc, ram_quota),
-			_store_fs(fs),
-			_store_dir(_store_fs.dir("/", false)),
-			_jobs(jobs)
-		{ }
-
 		/**
 		 * Read a derivation and check that its inputs are valid.
 		 */
@@ -92,7 +74,7 @@ class Nix_store::Build_component : public Genode::Rpc_object<Nix_store::Session>
 							/* XXX : slash hack */
 							while (*output== '/') ++output;
 
-							if (!valid(output)) {
+							if (!(*(dereference(output).string()))) {
 								Genode::error("missing dependency ", output);
 								throw Missing_dependency();
 							}
@@ -107,53 +89,56 @@ class Nix_store::Build_component : public Genode::Rpc_object<Nix_store::Session>
 			});
 		}
 
+	public:
+
+		/**
+		 * Constructor
+		 */
+		Build_component(Genode::Env          &env,
+		                Allocator            *session_alloc,
+		                size_t                ram_quota,
+		                File_system::Session &fs,
+		                Jobs                 &jobs)
+		:
+			_env(env),
+			_session_alloc(session_alloc, ram_quota),
+			_store_fs(fs),
+			_store_dir(_store_fs.dir("/", false)),
+			_jobs(jobs)
+		{ }
+
 
 		/*************************
 		 ** Nix_store interface **
 		 *************************/
 
-		/**
-		 * Return true if a store object at 'name' exists in the
-		 * store file system and is a regular file, a directory,
-		 * or a symlink to another valid object.
-		 */
-		bool valid(Name const &name)
+		Name dereference(Name const &name) override
 		{
 			using namespace File_system;
 
-			char path[Nix_store::MAX_NAME_LEN+1];
-
-			/* XXX: slash hack */
 			char const *name_str = name.string();
-			while (*name_str == '/') ++name_str;
 
-			path[0] = '/';
-			strncpy(path+1, name_str, Nix_store::MAX_NAME_LEN);
+			Genode::Path<Nix_store::MAX_NAME_LEN+1> path = name_str;
 
 			try {
-				Node_handle node = _store_fs.node(path);
+				Node_handle node = _store_fs.node(path.base());
 				Handle_guard node_guard(_store_fs, node);
 
 				switch (_store_fs.status(node).mode) {
 				case Status::MODE_FILE:
-					return true;
 				case Status::MODE_DIRECTORY:
-					return true;
+					return name_str;
 				case Status::MODE_SYMLINK: {
-					Symlink_handle link = _store_fs.symlink(_store_dir, path+1, false);
+					Symlink_handle link = _store_fs.symlink(
+						_store_dir, path.base()+1, false);
 					Handle_guard link_guard(_store_fs, link);
-					path[read(_store_fs, link, path, sizeof(path))] = '\0';
+					size_t n = read(_store_fs, link, path.base(), path.capacity());
+					path.base()[(n < path.capacity() ? n : path.capacity()-1)] = '\0';
 
-					for (char *p = path+1; *p; ++p)
-						if (*p == '/')
-							return false;
-
-					/* It would be embarassing to run in loop. */
-					if (strcmp(name.string(), path, Nix_store::MAX_NAME_LEN))
-						return valid(path);
+					return path.base();
 				}}
 			} catch (Lookup_failed) { }
-			return false;
+			return "";
 		}
 
 		void realize(Name const &drv_name, Genode::Signal_context_capability sigh)
@@ -186,36 +171,6 @@ class Nix_store::Build_component : public Genode::Rpc_object<Nix_store::Session>
 
 			_jobs.queue(name, sigh);
 		}
-
-		Name dereference(Name const &name) override
-		{
-			using namespace File_system;
-
-			char const *name_str = name.string();
-
-			Genode::Path<Nix_store::MAX_NAME_LEN+1> path(name.string());
-
-			try {
-				Node_handle node = _store_fs.node(path.base());
-				Handle_guard node_guard(_store_fs, node);
-
-				switch (_store_fs.status(node).mode) {
-				case Status::MODE_FILE:
-				case Status::MODE_DIRECTORY:
-					return name_str;
-				case Status::MODE_SYMLINK: {
-					Symlink_handle link = _store_fs.symlink(
-						_store_dir, path.base()+1, false);
-					Handle_guard link_guard(_store_fs, link);
-					size_t n = read(_store_fs, link, path.base(), path.capacity());
-					path.base()[(n < path.capacity() ? n : path.capacity()-1)] = '\0';
-
-					return path.base();
-				}}
-			} catch (Lookup_failed) { }
-			return "";
-		}
-
 };
 
 

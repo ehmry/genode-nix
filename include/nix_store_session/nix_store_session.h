@@ -43,14 +43,8 @@ struct Nix_store::Session : public Genode::Session
 	 ****************************/
 
 	/**
-	 * Convience method for clients to test
-	 * the validity of store objects.
-	 */
-	virtual bool valid(Name const &name) = 0;
-
-	/**
-	 * Convience method to dereference a derivation
-	 * output to a content addressed store path
+	 * Convience method to dereference input-addressed
+	 * paths to output-addressed paths.
 	 *
 	 * Returns an empty string on failure
 	 */
@@ -74,14 +68,13 @@ struct Nix_store::Session : public Genode::Session
 	 ** RPC declaration **
 	 *********************/
 
-	GENODE_RPC(Rpc_valid, bool, valid, Name const&);
 	GENODE_RPC(Rpc_dereference, Name, dereference, Name const&);
 
 	GENODE_RPC_THROW(Rpc_realize, void, realize,
 	                 GENODE_TYPE_LIST(Invalid_derivation, Missing_dependency),
 	                 Name const&, Genode::Signal_context_capability);
 
-	GENODE_RPC_INTERFACE(Rpc_valid, Rpc_dereference, Rpc_realize);
+	GENODE_RPC_INTERFACE(Rpc_dereference, Rpc_realize);
 
 };
 

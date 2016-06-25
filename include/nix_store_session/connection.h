@@ -28,8 +28,6 @@ struct Nix_store::Connection : public Genode::Connection<Session>, public Genode
 		Genode::Rpc_client<Session>(cap())
 	{}
 
-	bool valid(Name const &name) { return call<Rpc_valid>(name); }
-
 	Name dereference(Name const &name) { return call<Rpc_dereference>(name); }
 
 	void realize(Name const  &drv, Genode::Signal_context_capability sigh) {

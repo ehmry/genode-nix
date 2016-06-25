@@ -656,7 +656,7 @@ void Goal::buildDone()
     debug(format("builder process for ‘%1%’ finished") % drvPath);
 
     for (auto & i : drv->outputs) {
-        if (worker.store.store_session().valid(i.second.path.c_str()))
+        if (worker.store.store_session().dereference(i.second.path.c_str()) != "")
             continue;
         printMsg(lvlError, format("@ build-failed %1%") % drvPath);
         done(BuildResult::PermanentFailure);
@@ -702,12 +702,10 @@ PathSet parseReferenceSpecifiers(const BasicDerivation & drv, string attr)
     PathSet result;
     Paths paths = tokenizeString<Paths>(attr);
     for (auto & i : paths) {
-        if (isStorePath(i))
-            result.insert(i);
-        else if (drv.outputs.find(i) != drv.outputs.end())
+        if (drv.outputs.find(i) != drv.outputs.end())
             result.insert(drv.outputs.find(i)->second.path);
-        else throw BuildError(
-            format("derivation contains an illegal reference specifier ‘%1%’") % i);
+        else
+            result.insert(i);
     }
     return result;
 }

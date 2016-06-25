@@ -23,6 +23,9 @@
 #include <nix_store_session/nix_store_session.h>
 #include <nix_store/derivation.h>
 
+/* local includes */
+#include "util.h"
+
 
 namespace Nix_store {
 
@@ -42,8 +45,7 @@ struct Nix_store::Input : Genode::Avl_node<Input>
 
 	Input (char const *name, char const *target)
 	:
-		link(name),
-		final(target),
+		link(name), final(target),
 		len(Genode::strlen(link.string()))
 	{ };
 
@@ -73,7 +75,6 @@ struct Nix_store::Inputs : Genode::Avl_tree<Input>
 	: alloc(alloc)
 	{
 		using namespace File_system;
-		Dir_handle root_handle = fs.dir("/", false);
 
 		/* read the derivation inputs */
 		drv.inputs([&] (Aterm::Parser &parser) {
@@ -97,8 +98,6 @@ struct Nix_store::Inputs : Genode::Avl_tree<Input>
 					parser.string(&id);
 
 					if (id == want_id) {
-						char target_path[Nix_store::MAX_PATH_LEN] = {'/', '\0'};
-						char *target_name = &target_path[1];
 
 						Name input_path;
 						parser.string(&input_path);
@@ -108,27 +107,17 @@ struct Nix_store::Inputs : Genode::Avl_tree<Input>
 						while (*input_name == '/')
 							++input_name;
 
+						Object_path final_path;
+
 						/* dereference the symlink */
-						try {
-							Symlink_handle link = fs.symlink(root_handle, input_name, false);
-							size_t n = read(fs, link, target_name, Nix_store::MAX_PATH_LEN-1, 0);
-							target_name[n] = '\0';
-							fs.close(link);
-						} catch (Lookup_failed) {
+						try { final_path = dereference(fs, input_name); }
+						catch (File_system::Lookup_failed) {
 							Genode::error("missing input symlink ", input_name);
 							throw Nix_store::Missing_dependency();
 						}
 
-						try {
-							/* check that the final path exists */
-							fs.close(fs.node(target_path));
-						} catch (Lookup_failed) {
-							Genode::error("missing final input path ", input_name, " -> ", target_path);
-							throw Missing_dependency();
-						}
-
 						/* the symlink is resolved */
-						insert(new (alloc) Input(input_name, target_name));
+						insert(new (alloc) Input(input_name, final_path.base()));
 
 					} else {
 						parser.string(); /* Path */
@@ -235,8 +224,15 @@ struct Nix_store::Environment : Genode::Avl_tree<Mapping>
 			Mapping *map;
 
 			if (!input) {
-				map = new (alloc)
-					Mapping(key.string(), value.string());
+				Genode::warning("no input found for ", key.string(), "=", value.string());
+
+				/*
+				 * XXX:	this is heavy, remove anything not a path?
+				 */
+				try { map = new (alloc)
+					Mapping(key.string(), dereference(fs, value.string()).base()); }
+				catch (File_system::Lookup_failed) { map = new (alloc)
+					Mapping(key.string(), value.string()); }
 
 			} else if (top_level) {
 				map = new (alloc)
@@ -264,7 +260,7 @@ struct Nix_store::Environment : Genode::Avl_tree<Mapping>
 	{
 		Mapping const *m = first();
 		m = m ? m->lookup(key) : 0;
-		return m ? m->value.string() : 0;
+		return m ? m->value.string() : nullptr;
 	}
 
 };
