@@ -132,15 +132,18 @@ class Aterm::Parser
 			return base;
 		}
 
-		void string()
+		char const *string()
 		{
 			if (*_pos != '"') throw Wrong_element();
+			char const *start = _pos;
 
 			++_pos;
 			++_len;
 
 			while (*_pos != '"') {
-				if (*_pos == '\\') { ++_pos; ++_len; }
+				if (*_pos == '\\') {
+					++_pos;++_len;
+				}
 				++_pos;
 				++_len;
 			}
@@ -148,12 +151,44 @@ class Aterm::Parser
 			++_len;
 
 			check_end();
+			return start;
+		}
+
+		char const *string(char *buf, Genode::size_t buf_len)
+		{
+			if (*_pos != '"') throw Wrong_element();
+			char const *start = _pos;
+
+			size_t len = 0, out_len = 0;
+			char const *pos = _pos + 1;
+
+			while (pos[len] != '"') {
+				if (pos[len] == '\\') {
+					switch (pos[++len]) {
+					case '"':
+						buf[out_len++] = '"'; break;
+					case 'n':
+						buf[out_len++] = '\n'; break;
+					case 't':
+						buf[out_len++] = '\t'; break;
+					}
+				} else
+					buf[out_len++] = pos[len];
+				++len;
+				if (_len - len <= 0) throw Malformed_element();
+			}
+			_len -= 2 + len;
+			_pos += 2 + len;
+
+			check_end();
+			return start;
 		}
 
 		template <size_t N>
-		void string(Genode::String<N> *out)
+		char const *string(Genode::String<N> *out)
 		{
 			if (*_pos != '"') throw Wrong_element();
+			char const *start = _pos;
 
 			size_t len = 0;
 			char const *pos = _pos + 1;
@@ -168,6 +203,8 @@ class Aterm::Parser
 
 			check_end();
 			*out = Genode::String<N>(pos, len);
+
+			return start;
 		}
 
 		long integer()
