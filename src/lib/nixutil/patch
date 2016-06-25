@@ -295,7 +295,7 @@ index f136a13..93618eb 100644
  {
      if (pos == s.size()) throw EndOfFile("end of string reached");
 diff --git a/src/libutil/util.cc b/src/libutil/util.cc
-index 16d3296..32efc30 100644
+index 16d3296..c900b8f 100644
 --- a/src/libutil/util.cc
 +++ b/src/libutil/util.cc
 @@ -10,18 +10,8 @@
@@ -377,13 +377,17 @@ index 16d3296..32efc30 100644
      return canonPath(path);
  }
  
-@@ -174,171 +162,179 @@ bool isInDir(const Path & path, const Path & dir)
+@@ -174,171 +162,189 @@ bool isInDir(const Path & path, const Path & dir)
  }
  
  
 -struct stat lstat(const Path & path)
 +Vfs::Directory_service::Stat status(const Path & path)
-+{
+ {
+-    struct stat st;
+-    if (lstat(path.c_str(), &st))
+-        throw SysError(format("getting status of ‘%1%’") % path);
+-    return st;
 +    using namespace Vfs;
 +
 +    Directory_service::Stat stat;
@@ -396,11 +400,7 @@ index 16d3296..32efc30 100644
 +
 +
 +void mkdir(const Path & path)
- {
--    struct stat st;
--    if (lstat(path.c_str(), &st))
--        throw SysError(format("getting status of ‘%1%’") % path);
--    return st;
++{
 +    if (_vfs->mkdir(path.c_str(), 0) != Vfs::Directory_service::MKDIR_OK)
 +        throw Error(format("creating directory ‘%1%’") % path);
  }
@@ -528,9 +528,12 @@ index 16d3296..32efc30 100644
 -    return drain ? drainFD(fd) : readFile(fd);
 +    using namespace Vfs;
 +
++    char buf[1024];
++    string out;
 +    Directory_service::Stat stat = status(path);
 +
-+    char buf[stat.size];
++    out.reserve(stat.size);
++
 +    Vfs_handle *handle = nullptr;
 +    if (_vfs->open(path.c_str(), Vfs::Directory_service::OPEN_MODE_RDONLY, &handle, *Genode::env()->heap())
 +        != Vfs::Directory_service::OPEN_OK)
@@ -539,11 +542,18 @@ index 16d3296..32efc30 100644
 +    Vfs_handle::Guard guard(handle);
 +
 +    file_size n = 0;
-+    if (handle->fs().read(handle, buf, sizeof(buf), n)
-+        != Vfs::File_io_service::READ_OK)
-+        throw Error(format("open ‘%1%’") % path);
++	file_size count = 0;
++	while (count < stat.size) {
++	    if (handle->fs().read(handle, buf, sizeof(buf), n)
++	        != Vfs::File_io_service::READ_OK)
++	        throw Error(format("open ‘%1%’") % path);
 +
-+    return string(buf, n);
++		out.append(buf, n);
++        count += n;
++		handle->seek(count);
++	}
++
++    return out;
  }
  
  
@@ -653,7 +663,7 @@ index 16d3296..32efc30 100644
  }
  
  
-@@ -362,60 +358,62 @@ static Path tempName(Path tmpRoot, const Path & prefix, bool includePid,
+@@ -362,60 +368,62 @@ static Path tempName(Path tmpRoot, const Path & prefix, bool includePid,
      int & counter)
  {
      tmpRoot = canonPath(tmpRoot.empty() ? getEnv("TMPDIR", "/tmp") : tmpRoot, true);
@@ -740,7 +750,7 @@ index 16d3296..32efc30 100644
  
      return created;
  }
-@@ -423,8 +421,9 @@ Paths createDirs(const Path & path)
+@@ -423,8 +431,9 @@ Paths createDirs(const Path & path)
  
  void createSymlink(const Path & target, const Path & link)
  {
@@ -752,7 +762,7 @@ index 16d3296..32efc30 100644
  }
  
  
-@@ -511,7 +510,6 @@ void printMsg_(Verbosity level, const FormatOrString & fs)
+@@ -511,7 +520,6 @@ void printMsg_(Verbosity level, const FormatOrString & fs)
      }
  
      string s = (format("%1%%2%\n") % prefix % fs.s).str();
@@ -760,7 +770,7 @@ index 16d3296..32efc30 100644
      writeToStderr(s);
  }
  
-@@ -531,7 +529,7 @@ void writeToStderr(const string & s)
+@@ -531,7 +539,7 @@ void writeToStderr(const string & s)
          if (_writeToStderr)
              _writeToStderr((const unsigned char *) s.data(), s.size());
          else
@@ -769,7 +779,7 @@ index 16d3296..32efc30 100644
      } catch (SysError & e) {
          /* Ignore failing writes to stderr if we're in an exception
             handler, otherwise throw an exception.  We need to ignore
-@@ -546,58 +544,48 @@ void writeToStderr(const string & s)
+@@ -546,58 +554,48 @@ void writeToStderr(const string & s)
  void (*_writeToStderr) (const unsigned char * buf, size_t count) = 0;
  
  
@@ -852,7 +862,7 @@ index 16d3296..32efc30 100644
  }
  
  
-@@ -644,20 +632,20 @@ void AutoDelete::reset(const Path & p, bool recursive) {
+@@ -644,20 +642,20 @@ void AutoDelete::reset(const Path & p, bool recursive) {
  
  //////////////////////////////////////////////////////////////////////
  
@@ -879,7 +889,7 @@ index 16d3296..32efc30 100644
  {
      /* Copying an AutoCloseFD isn't allowed (who should get to close
         it?).  But as an edge case, allow copying of closed
-@@ -665,302 +653,62 @@ AutoCloseFD::AutoCloseFD(const AutoCloseFD & fd)
+@@ -665,302 +663,62 @@ AutoCloseFD::AutoCloseFD(const AutoCloseFD & fd)
         involving copy constructor use on default object values in STL
         containers (like when you do `map[value]' where value isn't in
         the map yet). */
@@ -1207,7 +1217,7 @@ index 16d3296..32efc30 100644
  
  std::vector<char *> stringsToCharPtrs(const Strings & ss)
  {
-@@ -971,101 +719,13 @@ std::vector<char *> stringsToCharPtrs(const Strings & ss)
+@@ -971,101 +729,13 @@ std::vector<char *> stringsToCharPtrs(const Strings & ss)
  }
  
  
@@ -1310,7 +1320,7 @@ index 16d3296..32efc30 100644
  }
  
  
-@@ -1144,32 +804,6 @@ string replaceStrings(const std::string & s,
+@@ -1144,32 +814,6 @@ string replaceStrings(const std::string & s,
  }
  
  
