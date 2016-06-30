@@ -1,5 +1,5 @@
 diff --git a/src/libexpr/eval.cc b/src/libexpr/eval.cc
-index 3b21c07..47105fb 100644
+index 3b21c07..298f223 100644
 --- a/src/libexpr/eval.cc
 +++ b/src/libexpr/eval.cc
 @@ -5,12 +5,11 @@
@@ -48,7 +48,7 @@ index 3b21c07..47105fb 100644
      , sOutPath(symbols.create("outPath"))
      , sDrvPath(symbols.create("drvPath"))
      , sType(symbols.create("type"))
-@@ -265,17 +266,27 @@ EvalState::EvalState(const Strings & _searchPath)
+@@ -265,17 +266,25 @@ EvalState::EvalState(const Strings & _searchPath)
      , baseEnv(allocEnv(128))
      , staticBaseEnv(false, 0)
  {
@@ -67,7 +67,6 @@ index 3b21c07..47105fb 100644
 -    for (auto & i : _searchPath) addToSearchPath(i, true);
 -    for (auto & i : paths) addToSearchPath(i);
 -    addToSearchPath("nix=" + settings.nixDataDir + "/nix/corepkgs");
-+	/* XXX: addToSearchPath faults
 +    config_node.for_each_sub_node("search-path", [this] (Genode::Xml_node node) {
 +        Genode::String<256> search_name;
 +        Genode::String<1024> search_path;
@@ -77,11 +76,10 @@ index 3b21c07..47105fb 100644
 +        } catch (...) { return; }
 +        this->addToSearchPath(search_name.string(), search_path.string(), true);
 +    });
-+	 */
  
      clearValue(vEmptySet);
      vEmptySet.type = tAttrs;
-@@ -288,6 +299,72 @@ EvalState::EvalState(const Strings & _searchPath)
+@@ -288,6 +297,72 @@ EvalState::EvalState(const Strings & _searchPath)
  EvalState::~EvalState()
  {
      fileEvalCache.clear();
@@ -154,7 +152,7 @@ index 3b21c07..47105fb 100644
  }
  
  
-@@ -302,18 +379,6 @@ Path EvalState::checkSourcePath(const Path & path_)
+@@ -302,18 +377,6 @@ Path EvalState::checkSourcePath(const Path & path_)
          if (path == i.second || isInDir(path, i.second))
              return path;
  
@@ -173,7 +171,7 @@ index 3b21c07..47105fb 100644
      throw RestrictedPathError(format("access to path ‘%1%’ is forbidden in restricted mode") % path_);
  }
  
-@@ -619,6 +684,12 @@ void EvalState::resetFileCache()
+@@ -619,6 +682,12 @@ void EvalState::resetFileCache()
  }
  
  
@@ -186,7 +184,7 @@ index 3b21c07..47105fb 100644
  void EvalState::eval(Expr * e, Value & v)
  {
      e->eval(*this, baseEnv, v);
-@@ -1443,7 +1514,7 @@ string EvalState::copyPathToStore(PathSet & context, const Path & path)
+@@ -1443,7 +1512,7 @@ string EvalState::copyPathToStore(PathSet & context, const Path & path)
      else {
          dstPath = settings.readOnlyMode
              ? computeStorePathForPath(checkSourcePath(path)).first
@@ -195,7 +193,7 @@ index 3b21c07..47105fb 100644
          srcToStore[path] = dstPath;
          printMsg(lvlChatty, format("copied source ‘%1%’ -> ‘%2%’")
              % path % dstPath);
-@@ -1457,8 +1528,8 @@ string EvalState::copyPathToStore(PathSet & context, const Path & path)
+@@ -1457,8 +1526,8 @@ string EvalState::copyPathToStore(PathSet & context, const Path & path)
  Path EvalState::coerceToPath(const Pos & pos, Value & v, PathSet & context)
  {
      string path = coerceToString(pos, v, context, false, false);
@@ -206,7 +204,7 @@ index 3b21c07..47105fb 100644
      return path;
  }
  
-@@ -1542,9 +1613,7 @@ void EvalState::printStats()
+@@ -1542,9 +1611,7 @@ void EvalState::printStats()
      Verbosity v = showStats ? lvlInfo : lvlDebug;
      printMsg(v, "evaluation statistics:");
  
@@ -399,7 +397,7 @@ index d34882f..e339f56 100644
 -
  }
 diff --git a/src/libexpr/primops.cc b/src/libexpr/primops.cc
-index 87ee4f6..9347166 100644
+index 87ee4f6..8abc7e1 100644
 --- a/src/libexpr/primops.cc
 +++ b/src/libexpr/primops.cc
 @@ -19,6 +19,9 @@
@@ -462,6 +460,15 @@ index 87ee4f6..9347166 100644
          Value & w = *state.allocValue();
          state.mkAttrs(w, 3 + drv.outputs.size());
          Value * v2 = state.allocAttr(w, state.sDrvPath);
+@@ -105,7 +107,7 @@ static void prim_scopedImport(EvalState & state, const Pos & pos, Value * * args
+         }
+         w.attrs->sort();
+         Value fun;
+-        state.evalFile(settings.nixDataDir + "/nix/corepkgs/imported-drv-to-derivation.nix", fun);
++        state.evalFile(state.findFile("/corepkgs/imported-drv-to-derivation.nix"), fun);
+         state.forceFunction(fun, pos);
+         mkApp(v, fun, w);
+         state.forceAttrs(v, pos);
 @@ -145,7 +147,7 @@ static void prim_importNative(EvalState & state, const Pos & pos, Value * * args
      Path path = state.coerceToPath(pos, *args[0], context);
  
@@ -693,7 +700,17 @@ index 87ee4f6..9347166 100644
  
      mkString(v, dstPath, singleton<PathSet>(dstPath));
  }
-@@ -1759,7 +1767,7 @@ void EvalState::createBaseEnv()
+@@ -1720,9 +1728,6 @@ void EvalState::createBaseEnv()
+     mkNull(v);
+     addConstant("null", v);
+ 
+-    mkInt(v, time(0));
+-    addConstant("__currentTime", v);
+-
+     mkString(v, settings.thisSystem);
+     addConstant("__currentSystem", v);
+ 
+@@ -1759,7 +1764,7 @@ void EvalState::createBaseEnv()
      addPrimOp("throw", 1, prim_throw);
      addPrimOp("__addErrorContext", 2, prim_addErrorContext);
      addPrimOp("__tryEval", 1, prim_tryEval);
@@ -702,3 +719,12 @@ index 87ee4f6..9347166 100644
  
      // Strictness
      addPrimOp("__seq", 2, prim_seq);
+@@ -1846,7 +1851,7 @@ void EvalState::createBaseEnv()
+ 
+     /* Add a wrapper around the derivation primop that computes the
+        `drvPath' and `outPath' attributes lazily. */
+-    string path = settings.nixDataDir + "/nix/corepkgs/derivation.nix";
++    Path path = findFile("/corepkgs/derivation.nix");
+     sDerivationNix = symbols.create(path);
+     evalFile(path, v);
+     addConstant("derivation", v);
