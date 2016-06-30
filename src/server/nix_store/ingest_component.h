@@ -718,8 +718,8 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 			to_dir_node.insert(node);
 		}
 
-		bool sigh(Node_handle node_handle, Signal_context_capability sigh) override {
-			return _fs.sigh(node_handle, sigh); }
+		void sigh(Node_handle node_handle, Signal_context_capability sigh) override {
+			_fs.sigh(node_handle, sigh); }
 };
 
 

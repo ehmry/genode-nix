@@ -107,8 +107,7 @@ class Nix_store::Filter_component : public Genode::Rpc_object<File_system::Sessi
 			void move(Dir_handle from_dir, File_system::Name const &from_name,
 			          Dir_handle to_dir,   File_system::Name const &to_name) override { }
 
-			bool sigh(Node_handle node, Genode::Signal_context_capability sigh) override {
-				return false; }
+			void sigh(Node_handle node, Genode::Signal_context_capability sigh) override { }
 
 			void sync(Node_handle node) override
 			{
@@ -220,8 +219,7 @@ class Nix_store::Filter_component : public Genode::Rpc_object<File_system::Sessi
 		          Dir_handle to_dir_handle,   File_system::Name const &to_name) {
 			throw Permission_denied(); }
 
-		bool sigh(Node_handle handle, Genode::Signal_context_capability sigh) override {
-			return false; }
+		void sigh(Node_handle handle, Genode::Signal_context_capability sigh) override { }
 
 		void sync(Node_handle handle) { _backend.sync(handle); }
 
