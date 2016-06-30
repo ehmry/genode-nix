@@ -41,7 +41,6 @@
 namespace Nix {
 	using namespace Genode;
 
-	struct State_handle;
 	struct State;
 
 	template <typename SESSION_TYPE> class Service_proxy;
@@ -57,61 +56,86 @@ namespace Nix {
 struct Nix::State
 {
 	Genode::Env &env;
+
+	Genode::Attached_rom_dataspace config_rom { env, "config" };
+
 	Genode::Heap heap { env.ram(), env.rm() };
-	Genode::Attached_rom_dataspace config { env, "config" };
 
 	/*
 	 * TODO: Move the VFS to Internal_state, need to
 	 * make sure that the VFS is destructable first.
 	 */
 	Vfs::Dir_file_system vfs
-		{ env, heap, config.xml().sub_node("vfs"),
+		{ env, heap, config_rom.xml().sub_node("vfs"),
 		  Vfs::global_file_system_factory()
 		};
 
 	struct Internal_state
 	{
 		nix::Store      store;
+
 		nix::EvalState  eval_state;
 
 		Internal_state(Genode::Env &env,
-		               Genode::Allocator &alloc,
+		               Genode::Allocator &allocator,
 		               Genode::Xml_node config)
 		:
-			store(env, alloc),
+			store(env, allocator),
 			eval_state(env, store, config.sub_node("nix"))
 		{ }
 	};
 
-	Internal_state *_state = nullptr;
+	Genode::Lazy_volatile_object<Internal_state> _state;
 
 	Internal_state &alloc()
 	{
-		if (_state == nullptr)
-			_state = new (heap)
-				Internal_state(env, heap, config.xml());
+		if (!_state.constructed()) nix::handleExceptions("nix server", [&] {
+			_state.construct(env, heap, config_rom.xml());
+		});
+
+		if (!_state.constructed())
+			throw Root::Unavailable();
+
 		return *_state;
 	}
 
-	void free()
+	void free() { _state.destruct(); }
+
+	void update_config()
 	{
-		if (_state != nullptr) {
-			destroy(heap, _state);
-			_state = nullptr;
-		}
+		Genode::log("reloading config and evaluator state");
+		free(); config_rom.update();
 	}
 
-	void reload() { free(); config.update(); }
-
 	Genode::Signal_handler<State> config_handler
-		{ env.ep(), *this, &State::reload };
+		{ env.ep(), *this, &State::update_config };
 
-	State(Genode::Env &env) : env(env) { nix::initNix(vfs); }
-
-	~State()
+	/**
+	 * This lazy kind of work can get expensive
+	 * so destroy the state when the parent asks
+	 * for resources.
+	 */
+	void yield()
 	{
-		if (_state != nullptr)
-			destroy (heap, _state);
+		Genode::size_t const before = env.ram().avail();
+		free();
+		Genode::size_t const after = env.ram().avail();
+		env.parent().yield_response();
+		Genode::log("yielded ", (before - after) >> 10, "KB");
+	}
+
+	Genode::Signal_handler<State> yield_handler
+		{ env.ep(), *this, &State::yield };
+
+	State(Genode::Env &env)
+	: env(env)
+	{
+		/* initialize the Nix libraries */
+		nix::handleExceptions("nix server", [&] { nix::initNix(vfs); });
+
+		/* register signal handlers */
+		config_rom.sigh(config_handler);
+		env.parent().yield_sigh(yield_handler);
 	}
 };
 
@@ -359,43 +383,22 @@ class Nix::File_system_root : public Service_proxy<File_system::Session>
 };
 
 
-struct Main {
-
-	Nix::State state;
-
-	Nix::Rom_root        rom_root { state };
-	Nix::File_system_root fs_root { state };
-
-	/**
-	 * This lazy kind of work can get expensive
-	 * so destroy the state when the parent asks
-	 * for resources.
-	 */
-	void yield()
-	{
-		Genode::size_t const before = state.env.ram().avail();
-		state.free();
-		Genode::size_t const after = state.env.ram().avail();
-		state.env.parent().yield_response();
-		Genode::log("yielded ", (before - after) >> 10, "KB");
-	}
-
-	Genode::Signal_handler<Main> yield_handler
-		{ state.env.ep(), *this, &Main::yield };
-
-	Main(Genode::Env &env) : state(env)
-	{
-		env.parent().yield_sigh(yield_handler);
-	}
-};
-
-
 namespace Component {
+
 	/*
 	 * XXX: Nix uses this stack for the evaluation,
-	 * so the threat of a blown stack is entirely
-	 * dependent on the complexity of the evaulation.
+	 * so the threat of a blown stack depends on
+	 * the complexity of the evaulation.
 	 */
 	size_t              stack_size() { return 32*1024*sizeof(long); }
-	void construct(Genode::Env &env) { static Main main { env };    }
+
+	void construct(Genode::Env &env)
+	{
+		using namespace Nix;
+
+		static            State    state { env };
+		static         Rom_root rom_root { state };
+		static File_system_root  fs_root { state };
+	}
+
 }
