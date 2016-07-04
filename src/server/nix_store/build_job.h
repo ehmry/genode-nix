@@ -80,7 +80,7 @@ class Nix_store::Jobs : private Genode::Fifo<Job>
 		Genode::Env             &_env;
 		Genode::Allocator       &_alloc;
 
-		Genode::Rom_connection _ldso_rom { "parent -> ld.lib.so" };
+		Genode::Rom_connection _ldso_rom { "ld.lib.so" };
 		Genode::Rom_dataspace_capability _ldso_ds = _ldso_rom.dataspace();
 
 		Lock                     _lock;

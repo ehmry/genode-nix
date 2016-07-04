@@ -127,7 +127,8 @@ class Nix_store::Ingest_service : public Genode::Service
 			Handle_guard root_guard(fs, root);
 
 			Symlink_handle link = fs.symlink(root, path, true);
-			File_system::write(fs, link, final_str, Genode::strlen(final_str));
+			/* add a terminating byte for rump_fs */
+			File_system::write(fs, link, final_str, Genode::strlen(final_str)+1);
 			fs.close(link);
 		}
 

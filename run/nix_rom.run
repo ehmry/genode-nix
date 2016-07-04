@@ -42,16 +42,23 @@ append config {
 		<resource name="RAM" quantum="8M"/>
 		<provides>
 			<service name="File_system"/>
-			<service name="ROM"/>
 		</provides>
 		<config>
 			<vfs> <ram/> </vfs>
-			<rom/>
-			<file_system>
-				<policy label_prefix="nix_store" writeable="yes"/>
-				<default-policy/>
-			</file_system>
+			<policy label_prefix="nix_store" writeable="yes"/>
+			<default-policy/>
 		</config>
+	</start>
+
+	<start name="store_rom">
+		<binary name="fs_rom"/>
+		<resource name="RAM" quantum="8M"/>
+		<provides>
+			<service name="ROM"/>
+		</provides>
+		<route>
+			<any-service> <child name="store_fs"/> <parent/> </any-service>
+		</route>
 	</start>
 
 	<start name="nix_store">
@@ -62,7 +69,7 @@ append config {
 		</provides>
 		<route>
 			<service name="ROM" label_suffix="store">
-				<child name="store_fs"/> </service>
+				<child name="store_rom"/> </service>
 			<service name="File_system">
 				<child name="store_fs"/> </service>
 			<any-service> <parent/> </any-service>
@@ -76,11 +83,10 @@ append config {
 		</provides>
 		<config verbosity="9">
 			<vfs>
-				<dir name="nix"> <dir name="corepkgs"> <tar name="nix_corepkgs.tar"/> </dir> </dir>
+				<dir name="corepkgs"> <tar name="nix_corepkgs.tar"/> </dir>
 				<inline name="default.nix">builtins.getRom</inline>
 			</vfs>
 			<nix verbosity="9">
-				<search-path name="nix" path="/corepkgs"/>
 				<search-path name="store" path="/store"/>
 			</nix>
 			<default-policy/>
@@ -89,7 +95,7 @@ append config {
 			<service name="Nix_store" >
 				<child name="nix_store"/> </service>
 			<service label_prefix="store" name="ROM" >
-				<child name="store_fs"/> </service>
+				<child name="store_rom"/> </service>
 			<service label_prefix="store" name="File_system">
 				<child name="store_fs"/> </service>
 			<service label_prefix="ingest" name="File_system">

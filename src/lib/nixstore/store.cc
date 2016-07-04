@@ -593,7 +593,7 @@ Store::addToStore(const string &name, const nix::Path &path,
 
 	string final_name;
 
-	if (stat.directory()) {
+	if ((stat.mode&STAT_TYPE_MASK)==Vfs::Directory_service::STAT_MODE_DIRECTORY) {
 		hash_dir(buf, name, srcPath);
 		Store_hash::encode(buf, name.c_str(), sizeof(buf));
 		if (_store_session.dereference((char *) buf) != "") {
@@ -601,7 +601,7 @@ Store::addToStore(const string &name, const nix::Path &path,
 		}
 		final_name = add_dir(name, srcPath);
 
-	} else if (stat.regular()) {
+	} else if ((stat.mode&STAT_TYPE_MASK)==Vfs::Directory_service::STAT_MODE_FILE) {
 		hash_file(buf, name, srcPath);
 		Store_hash::encode(buf, name.c_str(), sizeof(buf));
 		if (_store_session.dereference((char *) buf) != "") {

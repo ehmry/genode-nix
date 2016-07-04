@@ -88,8 +88,11 @@ class Nix_store::Child : public Genode::Child_policy
 		Genode::Child::Initial_thread _initial_thread { _resources.cpu, _resources.pd,
 		                                                _name.string() };
 
-		Genode::Label _binary_label { _drv.builder(), "store" };
-		Genode::Rom_connection _elf_rom { _env, _binary_label.string() };
+		Genode::Session_label const _binary_label =
+			Genode::prefixed_label(Genode::Session_label("store"),
+			                       Genode::Session_label(_drv.builder()));
+
+		Nix::Rom_connection _elf_rom { _env, _drv.builder() };
 		Genode::Rom_dataspace_capability _elf_rom_ds = _elf_rom.dataspace();
 
 		Genode::Region_map_client _address_space { _resources.pd.address_space() };
@@ -182,29 +185,28 @@ class Nix_store::Child : public Genode::Child_policy
 
 		void filter_session_args(const char *service, char *args, size_t args_len)
 		{
+			using namespace Genode;
+
 			/*
 			 * Rewrite ROM requests to enforce purity
 			 */
 			if (strcmp(service, "ROM") == 0) {
 
-				Genode::Label label = Genode::Arg_string::label(args);
-				char const *request = label.last_element();
+				Session_label const label = label_from_args(args);
+				Session_label const request = label.last_element();
 
-				/*
-				 * XXX: make a set_string method on Arg_string::
-				 * that inserts the proper punctuation.
-				 */
-				if (strcmp("binary", request) == 0) {
+				if (request == "binary") {
 					Arg_string::set_arg_string(args, args_len, "label", _binary_label.string());
 
-				} else if (strcmp("config", request) == 0) {
+				} else if (request == "config") {
 					return;
 
-				} else if (char const *dest = _environment.lookup(request)) {
-					Genode::Label const new_label(dest, "store");
+				} else if (char const *dest = _environment.lookup(request.string())) {
+					Session_label const new_label = prefixed_label(
+						Session_label("store"), Session_label(dest));
 					Arg_string::set_arg_string(args, args_len, "label", new_label.string());
 				} else {
-					Genode::error("impure ROM request for '", request, "'");
+					Genode::error("impure ROM request for '", request.string(), "'");
 					*args = '\0';
 				}
 
@@ -244,7 +246,8 @@ class Nix_store::Child : public Genode::Child_policy
 				/* shorten the log label */
 				Genode::String<18> short_name(_name.string());
 				if (label_buf[0]) {
-					Genode::Label label(label_buf, short_name.string());
+					Genode::Session_label const label = prefixed_label(
+						short_name, Genode::Session_label(label_buf));
 					Arg_string::set_arg_string(args, args_len, "label", label.string());
 				} else
 					Arg_string::set_arg_string(args, args_len, "label", short_name.string());
@@ -270,10 +273,10 @@ class Nix_store::Child : public Genode::Child_policy
 
 			if (strcmp("File_system", service_name) == 0)
 			{
-				Genode::Label label = Genode::Arg_string::label(args);
+				Genode::Session_label label = label_from_args(args);
 				char root[3] = { '\0' };
 
-				if (!strcmp("ingest", label.last_element()))
+				if (!strcmp("ingest", label.last_element().string()))
 					return &_fs_ingest_service;
 
 				Genode::Arg_string::find_arg(args, "root").string(

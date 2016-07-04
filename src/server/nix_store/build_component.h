@@ -118,7 +118,7 @@ class Nix_store::Build_component : public Genode::Rpc_object<Nix_store::Session>
 
 			char const *name_str = name.string();
 
-			Genode::Path<Nix_store::MAX_NAME_LEN+1> path = name_str;
+			Genode::Path<Nix_store::MAX_NAME_LEN+1> path(name_str);
 
 			try {
 				Node_handle node = _store_fs.node(path.base());
@@ -185,9 +185,9 @@ class Nix_store::Build_root : public Genode::Root_component<Build_component>
 
 	protected:
 
-		Build_component *_create_session(const char *args, Affinity const &affinity) override
+		Build_component *_create_session(const char *args) override
 		{
-			Genode::Session_label label(args);
+			Session_label const label = label_from_args(args);
 			size_t ram_quota =
 				Arg_string::find_arg(args, "ram_quota"  ).ulong_value(0);
 

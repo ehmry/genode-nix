@@ -1,5 +1,5 @@
 diff --git a/src/libutil/archive.cc b/src/libutil/archive.cc
-index 6ee7981..52e32cb 100644
+index 6ee7981..202cde3 100644
 --- a/src/libutil/archive.cc
 +++ b/src/libutil/archive.cc
 @@ -9,12 +9,6 @@
@@ -62,7 +62,7 @@ index 6ee7981..52e32cb 100644
      sink << "(";
  
 -    if (S_ISREG(st.st_mode)) {
-+    if (st.regular()) {
++    if ((st.mode&STAT_TYPE_MASK)==Vfs::Directory_service::STAT_MODE_FILE) {
          sink << "type" << "regular";
 -        if (st.st_mode & S_IXUSR)
 -            sink << "executable" << "";
@@ -71,7 +71,7 @@ index 6ee7981..52e32cb 100644
      }
  
 -    else if (S_ISDIR(st.st_mode)) {
-+    else if (st.directory()) {
++    else if ((st.mode&STAT_TYPE_MASK)==Vfs::Directory_service::STAT_MODE_DIRECTORY) {
          sink << "type" << "directory";
  
          /* If we're on a case-insensitive system like Mac OS X, undo
@@ -89,7 +89,7 @@ index 6ee7981..52e32cb 100644
      }
  
 -    else if (S_ISLNK(st.st_mode))
-+    else if (st.symlink())
++    else if ((st.mode&STAT_TYPE_MASK)==Vfs::Directory_service::STAT_MODE_SYMLINK)
          sink << "type" << "symlink" << "target" << readLink(path);
  
      else throw Error(format("file ‘%1%’ has an unsupported type") % path);
@@ -295,7 +295,7 @@ index f136a13..93618eb 100644
  {
      if (pos == s.size()) throw EndOfFile("end of string reached");
 diff --git a/src/libutil/util.cc b/src/libutil/util.cc
-index 16d3296..c900b8f 100644
+index 16d3296..85542b9 100644
 --- a/src/libutil/util.cc
 +++ b/src/libutil/util.cc
 @@ -10,18 +10,8 @@
@@ -448,7 +448,7 @@ index 16d3296..c900b8f 100644
  {
 -    struct stat st = lstat(path);
 -    return S_ISLNK(st.st_mode);
-+    return status(path).symlink();
++	return (status(path).mode&STAT_TYPE_MASK)==Vfs::Directory_service::STAT_MODE_SYMLINK;
  }
  
  
@@ -497,9 +497,9 @@ index 16d3296..c900b8f 100644
 +    if (st.mode & Vfs::Directory_service::STAT_MODE_SYMLINK)
 +        st = status(readLink(path));
 +
-+    if (  st.regular()) return Dirent_type::DIRENT_TYPE_FILE;
-+    if (st.directory()) return Dirent_type::DIRENT_TYPE_DIRECTORY;
-+    if (  st.symlink()) return Dirent_type::DIRENT_TYPE_SYMLINK;
++    if ((st.mode&STAT_TYPE_MASK)==Vfs::Directory_service::STAT_MODE_FILE) return Dirent_type::DIRENT_TYPE_FILE;
++    if ((st.mode&STAT_TYPE_MASK)==Vfs::Directory_service::STAT_MODE_DIRECTORY) return Dirent_type::DIRENT_TYPE_DIRECTORY;
++    if ((st.mode&STAT_TYPE_MASK)==Vfs::Directory_service::STAT_MODE_SYMLINK) return Dirent_type::DIRENT_TYPE_SYMLINK;
 +    return Dirent_type::DIRENT_TYPE_CHARDEV;
  }
  
@@ -649,7 +649,7 @@ index 16d3296..c900b8f 100644
 -        }
 +    Vfs::Directory_service::Stat stat = status(path);
 +
-+    if (!stat.directory())
++    if (!((stat.mode&STAT_TYPE_MASK)==Vfs::Directory_service::STAT_MODE_DIRECTORY))
 +        bytesFreed += stat.size;
  
 +    else {
@@ -741,12 +741,12 @@ index 16d3296..c900b8f 100644
 +    };
  
 -    if (S_ISLNK(st.st_mode) && stat(path.c_str(), &st) == -1)
-+    if (stat.symlink()
++    if (((stat.mode&STAT_TYPE_MASK)==Vfs::Directory_service::STAT_MODE_DIRECTORY)
 +     && _vfs->stat(readLink(path).c_str(), stat) == Stat_result::STAT_ERR_NO_ENTRY)
          throw SysError(format("statting symlink ‘%1%’") % path);
  
 -    if (!S_ISDIR(st.st_mode)) throw Error(format("‘%1%’ is not a directory") % path);
-+    if (!stat.directory()) throw Error(format("‘%1%’ is not a directory") % path);
++    if (!(stat.mode&STAT_TYPE_MASK)==Vfs::Directory_service::STAT_MODE_DIRECTORY) throw Error(format("‘%1%’ is not a directory") % path);
  
      return created;
  }
@@ -1354,7 +1354,7 @@ index 16d3296..c900b8f 100644
  {
      return s.size() >= suffix.size() && string(s, s.size() - suffix.size()) == suffix;
 diff --git a/src/libutil/util.hh b/src/libutil/util.hh
-index cf93c63..9d65689 100644
+index cf93c63..44feb90 100644
 --- a/src/libutil/util.hh
 +++ b/src/libutil/util.hh
 @@ -2,14 +2,14 @@
@@ -1377,7 +1377,7 @@ index cf93c63..9d65689 100644
  
  #ifndef HAVE_STRUCT_DIRENT_D_TYPE
  #define DT_UNKNOWN 0
-@@ -18,8 +18,16 @@
+@@ -18,8 +18,23 @@
  #define DT_DIR 3
  #endif
  
@@ -1391,10 +1391,17 @@ index cf93c63..9d65689 100644
  
 +extern Vfs::File_system *_vfs;
 +
++enum { STAT_TYPE_MASK
++	= Vfs::Directory_service::STAT_MODE_SYMLINK
++	| Vfs::Directory_service::STAT_MODE_FILE
++	| Vfs::Directory_service::STAT_MODE_DIRECTORY
++	| Vfs::Directory_service::STAT_MODE_CHARDEV
++	| Vfs::Directory_service::STAT_MODE_BLOCKDEV
++};
  
  /* Return an environment variable. */
  string getEnv(const string & key, const string & def = "");
-@@ -50,7 +58,7 @@ string baseNameOf(const Path & path);
+@@ -50,7 +65,7 @@ string baseNameOf(const Path & path);
  bool isInDir(const Path & path, const Path & dir);
  
  /* Get status of `path'. */
@@ -1403,7 +1410,7 @@ index cf93c63..9d65689 100644
  
  /* Return true iff the given path exists. */
  bool pathExists(const Path & path);
-@@ -63,33 +71,25 @@ bool isLink(const Path & path);
+@@ -63,33 +78,25 @@ bool isLink(const Path & path);
  
  /* Read the contents of a directory.  The entries `.' and `..' are
     removed. */
@@ -1443,7 +1450,7 @@ index cf93c63..9d65689 100644
  
  /* Delete a path; i.e., in the case of a directory, it is deleted
     recursively.  Don't use this at home, kids.  The second variant
-@@ -100,7 +100,7 @@ void deletePath(const Path & path, unsigned long long & bytesFreed);
+@@ -100,7 +107,7 @@ void deletePath(const Path & path, unsigned long long & bytesFreed);
  
  /* Create a temporary directory. */
  Path createTempDir(const Path & tmpRoot = "", const Path & prefix = "nix",
@@ -1452,7 +1459,7 @@ index cf93c63..9d65689 100644
  
  /* Create a directory and all its parents, if necessary.  Returns the
     list of created directories, in order of creation. */
-@@ -172,9 +172,10 @@ extern void (*_writeToStderr) (const unsigned char * buf, size_t count);
+@@ -172,9 +179,10 @@ extern void (*_writeToStderr) (const unsigned char * buf, size_t count);
  
  /* Wrappers arount read()/write() that read/write exactly the
     requested number of bytes. */
@@ -1466,7 +1473,7 @@ index cf93c63..9d65689 100644
  
  MakeError(EndOfFile, Error)
  
-@@ -183,7 +184,6 @@ MakeError(EndOfFile, Error)
+@@ -183,7 +191,6 @@ MakeError(EndOfFile, Error)
  string drainFD(int fd);
  
  
@@ -1474,7 +1481,7 @@ index cf93c63..9d65689 100644
  /* Automatic cleanup of resources. */
  
  
-@@ -214,85 +214,23 @@ public:
+@@ -214,85 +221,23 @@ public:
  };
  
  
@@ -1499,9 +1506,11 @@ index cf93c63..9d65689 100644
      void close();
      bool isOpen();
 -    int borrow();
--};
--
--
++    Vfs::Vfs_handle *borrow();
++    Vfs::file_size read(unsigned char *dst, Vfs::file_size count);
+ };
+ 
+ 
 -class Pipe
 -{
 -public:
@@ -1538,11 +1547,9 @@ index cf93c63..9d65689 100644
 -    int wait(bool block);
 -    void setSeparatePG(bool separatePG);
 -    void setKillSignal(int signal);
-+    Vfs::Vfs_handle *borrow();
-+    Vfs::file_size read(unsigned char *dst, Vfs::file_size count);
- };
- 
- 
+-};
+-
+-
 -/* Kill all processes running under the specified uid by sending them
 -   a SIGKILL. */
 -void killUser(uid_t uid);
@@ -1570,7 +1577,7 @@ index cf93c63..9d65689 100644
  MakeError(ExecError, Error)
  
  /* Convert a list of strings to a null-terminated vector of char
-@@ -314,7 +252,7 @@ void restoreSIGPIPE();
+@@ -314,7 +259,7 @@ void restoreSIGPIPE();
  
  /* User interruption. */
  

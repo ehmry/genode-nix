@@ -9,6 +9,7 @@ set build_components {
 	app/rom_logger
 	drivers/timer
 	noux/minimal
+	server/fs_rom
 	server/nix
 	server/nix_store
 	server/vfs
@@ -55,16 +56,23 @@ append config {
 		<resource name="RAM" quantum="8M"/>
 		<provides>
 			<service name="File_system"/>
-			<service name="ROM"/>
 		</provides>
 		<config>
 			<vfs> <ram/> </vfs>
-			<rom/>
-			<file_system>
-				<policy label_prefix="nix_store" writeable="yes"/>
-				<default-policy/>
-			</file_system>
+			<policy label_prefix="nix_store" writeable="yes"/>
+			<default-policy/>
 		</config>
+	</start>
+
+	<start name="store_rom">
+		<binary name="fs_rom"/>
+		<resource name="RAM" quantum="8M"/>
+		<provides>
+			<service name="ROM"/>
+		</provides>
+		<route>
+			<any-service> <child name="store_fs"/> <parent/> </any-service>
+		</route>
 	</start>
 
 	<start name="nix_store">
@@ -74,10 +82,10 @@ append config {
 			<service name="File_system"/>
 		</provides>
 		<route>
-			<service name="ROM" label_prefix="parent">
+			<service name="ROM" label="ld.lib.so">
 				<parent/> </service>
 			<service name="ROM">
-				<child name="store_fs"/> </service>
+				<child name="store_rom"/> </service>
 			<service name="File_system">
 				<child name="store_fs"/> </service>
 			<any-service> <parent/> <any-child/> </any-service>
@@ -91,7 +99,7 @@ append config {
 			<service name="Nix_store">
 				<child name="nix_store"/> </service>
 			<service name="ROM" label_prefix="store">
-				<child name="store_fs"/> </service>
+				<child name="store_rom"/> </service>
 			<service name="File_system" label_prefix="store">
 				<child name="store_fs"/> </service>
 			<service label_prefix="ingest" name="File_system">
@@ -104,10 +112,8 @@ append config {
 			<vfs>
 				<dir name="dev"> <log/> </dir>
 				<dir name="store"> <fs label="store"/> </dir>
-				<dir name="nix">
-					<dir name="corepkgs">
-						<tar name="nix_corepkgs.tar"/>
-					</dir>
+				<dir name="corepkgs">
+					<tar name="nix_corepkgs.tar"/>
 				</dir>
 				<dir name="expr"> <tar name="expr.tar"/> </dir>
 				<inline name="default.nix">
@@ -162,6 +168,7 @@ install_config $config
 set boot_modules {
 	core init ld.lib.so
 	curl.lib.so
+	fs_rom
 	libc.lib.so
 	libc_noux.lib.so
 	libcrypto.lib.so
@@ -183,7 +190,6 @@ set boot_modules {
 	test-printf
 	timer
 	vfs
-	vfs_any-rom.lib.so
 	zlib.lib.so
 
 	expr.tar

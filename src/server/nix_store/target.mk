@@ -1,3 +1,3 @@
 TARGET  = nix_store
-LIBS   += base sha256 blake2s jitterentropy
+LIBS   += base sha256 blake2s
 SRC_CC := component.cc

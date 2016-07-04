@@ -25,7 +25,6 @@
 #include <base/allocator_avl.h>
 #include <base/allocator_guard.h>
 #include <base/signal.h>
-#include <util/label.h>
 #include <base/log.h>
 #include <base/snprintf.h>
 
@@ -754,7 +753,7 @@ class Nix_store::Ingest_root :
 
 			size_t session_size = sizeof(Ingest_component) + tx_buf_size;
 
-			Genode::Session_label const label(args);
+			Session_label const label = label_from_args(args);
 
 			if (max((size_t)4096, session_size) > ram_quota) {
 				Genode::error("insufficient 'ram_quota' from ",label.string(),

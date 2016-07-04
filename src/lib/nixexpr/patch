@@ -1,5 +1,5 @@
 diff --git a/src/libexpr/eval.cc b/src/libexpr/eval.cc
-index 3b21c07..298f223 100644
+index 3b21c07..b8362b6 100644
 --- a/src/libexpr/eval.cc
 +++ b/src/libexpr/eval.cc
 @@ -5,12 +5,11 @@
@@ -79,7 +79,7 @@ index 3b21c07..298f223 100644
  
      clearValue(vEmptySet);
      vEmptySet.type = tAttrs;
-@@ -288,6 +297,72 @@ EvalState::EvalState(const Strings & _searchPath)
+@@ -288,6 +297,56 @@ EvalState::EvalState(const Strings & _searchPath)
  EvalState::~EvalState()
  {
      fileEvalCache.clear();
@@ -87,25 +87,9 @@ index 3b21c07..298f223 100644
 +}
 +
 +
-+void EvalState::addToSearchPath(const string & s, bool warn)
-+{
-+    size_t pos = s.find('=');
-+    string prefix;
-+    Path path;
-+    if (pos == string::npos) {
-+        path = s;
-+    } else {
-+        prefix = string(s, 0, pos);
-+        path = string(s, pos + 1);
-+    }
-+
-+    addToSearchPath(prefix, path, warn);
-+}
-+
-+
 +void EvalState::addToSearchPath(const string & name, const string & value, bool warn)
 +{
-+   Path path = isUri(path) ? downloadFileCached(path, true) : path;
++   Path path = isUri(value) ? downloadFileCached(value, true) : value;
 +
 +    path = absPath(path);
 +    if (pathExists(path)) {
@@ -113,7 +97,7 @@ index 3b21c07..298f223 100644
 +        /* Resolve symlinks in the path to support restricted mode. */
 +        searchPath.push_back(std::pair<string, Path>(name, canonPath(path, true)));
 +    } else if (warn)
-+        printMsg(lvlError, format("warning: Nix search path entry ‘%1%’ does not exist, ignoring") % path);
++        printMsg(lvlError, format("warning: Nix search path entry ‘%1%’ does not exist, ignoring") % value);
 +}
 +
 +
@@ -152,7 +136,7 @@ index 3b21c07..298f223 100644
  }
  
  
-@@ -302,18 +377,6 @@ Path EvalState::checkSourcePath(const Path & path_)
+@@ -302,18 +361,6 @@ Path EvalState::checkSourcePath(const Path & path_)
          if (path == i.second || isInDir(path, i.second))
              return path;
  
@@ -171,7 +155,7 @@ index 3b21c07..298f223 100644
      throw RestrictedPathError(format("access to path ‘%1%’ is forbidden in restricted mode") % path_);
  }
  
-@@ -619,6 +682,12 @@ void EvalState::resetFileCache()
+@@ -619,6 +666,12 @@ void EvalState::resetFileCache()
  }
  
  
@@ -184,7 +168,7 @@ index 3b21c07..298f223 100644
  void EvalState::eval(Expr * e, Value & v)
  {
      e->eval(*this, baseEnv, v);
-@@ -1443,7 +1512,7 @@ string EvalState::copyPathToStore(PathSet & context, const Path & path)
+@@ -1443,7 +1496,7 @@ string EvalState::copyPathToStore(PathSet & context, const Path & path)
      else {
          dstPath = settings.readOnlyMode
              ? computeStorePathForPath(checkSourcePath(path)).first
@@ -193,7 +177,7 @@ index 3b21c07..298f223 100644
          srcToStore[path] = dstPath;
          printMsg(lvlChatty, format("copied source ‘%1%’ -> ‘%2%’")
              % path % dstPath);
-@@ -1457,8 +1526,8 @@ string EvalState::copyPathToStore(PathSet & context, const Path & path)
+@@ -1457,8 +1510,8 @@ string EvalState::copyPathToStore(PathSet & context, const Path & path)
  Path EvalState::coerceToPath(const Pos & pos, Value & v, PathSet & context)
  {
      string path = coerceToString(pos, v, context, false, false);
@@ -204,7 +188,7 @@ index 3b21c07..298f223 100644
      return path;
  }
  
-@@ -1542,9 +1611,7 @@ void EvalState::printStats()
+@@ -1542,9 +1595,7 @@ void EvalState::printStats()
      Verbosity v = showStats ? lvlInfo : lvlDebug;
      printMsg(v, "evaluation statistics:");
  
@@ -276,7 +260,7 @@ index 2d7b7bc..654c24f 100644
      /* Look up a file in the search path. */
      Path findFile(const string & path);
 diff --git a/src/libexpr/parser.y b/src/libexpr/parser.y
-index d34882f..e339f56 100644
+index d34882f..34eac20 100644
 --- a/src/libexpr/parser.y
 +++ b/src/libexpr/parser.y
 @@ -282,6 +282,7 @@ void yyerror(YYLTYPE * loc, yyscan_t scanner, ParseData * data, const char * err
@@ -325,14 +309,14 @@ index d34882f..e339f56 100644
 -        path = absPath(readLink(path), dirOf(path));
 +    for (;;) {
 +        stat = status(path);
-+        if (stat.symlink())
++        if ((stat.mode&STAT_TYPE_MASK)==Vfs::Directory_service::STAT_MODE_SYMLINK)
 +            path = absPath(readLink(path), dirOf(path));
 +        else break;
      }
  
      /* If `path' refers to a directory, append `/default.nix'. */
 -    if (S_ISDIR(st.st_mode))
-+    if (stat.directory())
++    if ((stat.mode&STAT_TYPE_MASK)==Vfs::Directory_service::STAT_MODE_DIRECTORY)
          path = canonPath(path + "/default.nix");
  
      return path;
@@ -397,7 +381,7 @@ index d34882f..e339f56 100644
 -
  }
 diff --git a/src/libexpr/primops.cc b/src/libexpr/primops.cc
-index 87ee4f6..8abc7e1 100644
+index 87ee4f6..1654ec8 100644
 --- a/src/libexpr/primops.cc
 +++ b/src/libexpr/primops.cc
 @@ -19,6 +19,9 @@
@@ -683,9 +667,9 @@ index 87ee4f6..8abc7e1 100644
 -            S_ISREG(st.st_mode) ? "regular" :
 -            S_ISDIR(st.st_mode) ? "directory" :
 -            S_ISLNK(st.st_mode) ? "symlink" :
-+            stat.regular()   ? "regular" :
-+            stat.directory() ? "directory" :
-+            stat.symlink()   ? "symlink" :
++            ((stat.mode&STAT_TYPE_MASK)==Vfs::Directory_service::STAT_MODE_FILE)   ? "regular" :
++            ((stat.mode&STAT_TYPE_MASK)==Vfs::Directory_service::STAT_MODE_DIRECTORY) ? "directory" :
++            ((stat.mode&STAT_TYPE_MASK)==Vfs::Directory_service::STAT_MODE_SYMLINK)   ? "symlink" :
              "unknown" /* not supported, will fail! */);
  
          Value res;

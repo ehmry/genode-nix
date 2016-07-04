@@ -24,10 +24,10 @@ index a1c4b48..c623f30 100644
  
  }
 diff --git a/src/libstore/derivations.cc b/src/libstore/derivations.cc
-index 7959d5b..3026e56 100644
+index 7959d5b..4fa3225 100644
 --- a/src/libstore/derivations.cc
 +++ b/src/libstore/derivations.cc
-@@ -5,6 +5,12 @@
+@@ -5,6 +5,10 @@
  #include "misc.hh"
  #include "worker-protocol.hh"
  
@@ -35,12 +35,10 @@ index 7959d5b..3026e56 100644
 +#include <nix/attached_rom_dataspace.h>
 +#include <rom_session/connection.h>
 +#include <dataspace/client.h>
-+#include <util/label.h>
-+
  
  namespace nix {
  
-@@ -48,7 +54,7 @@ Path writeDerivation(StoreAPI & store,
+@@ -48,7 +52,7 @@ Path writeDerivation(StoreAPI & store,
  static Path parsePath(std::istream & str)
  {
      string s = parseString(str);
@@ -49,7 +47,7 @@ index 7959d5b..3026e56 100644
          throw FormatError(format("bad path ‘%1%’ in derivation") % s);
      return s;
  }
-@@ -93,11 +99,7 @@ static Derivation parseDerivation(const string & s)
+@@ -93,11 +97,7 @@ static Derivation parseDerivation(const string & s)
      expect(str, ",["); drv.inputSrcs = parseStrings(str, true);
      expect(str, ","); drv.platform = parseString(str);
      expect(str, ","); drv.builder = parseString(str);
@@ -62,7 +60,7 @@ index 7959d5b..3026e56 100644
  
      /* Parse the environment variables. */
      expect(str, ",[");
-@@ -113,10 +115,35 @@ static Derivation parseDerivation(const string & s)
+@@ -113,10 +113,35 @@ static Derivation parseDerivation(const string & s)
  }
  
  
@@ -100,7 +98,7 @@ index 7959d5b..3026e56 100644
      } catch (FormatError & e) {
          throw Error(format("error parsing derivation ‘%1%’: %2%") % drvPath % e.msg());
      }
-@@ -179,7 +206,7 @@ string unparseDerivation(const Derivation & drv)
+@@ -179,7 +204,7 @@ string unparseDerivation(const Derivation & drv)
  
      s += ','; printString(s, drv.platform);
      s += ','; printString(s, drv.builder);
@@ -109,7 +107,7 @@ index 7959d5b..3026e56 100644
  
      s += ",[";
      first = true;
-@@ -251,7 +278,7 @@ Hash hashDerivationModulo(StoreAPI & store, Derivation drv)
+@@ -251,7 +276,7 @@ Hash hashDerivationModulo(StoreAPI & store, Derivation drv)
          Hash h = drvHashes[i.first];
          if (h.type == htUnknown) {
              assert(store.isValidPath(i.first));
@@ -118,7 +116,7 @@ index 7959d5b..3026e56 100644
              h = hashDerivationModulo(store, drv2);
              drvHashes[i.first] = h;
          }
-@@ -303,13 +330,11 @@ Source & operator >> (Source & in, BasicDerivation & drv)
+@@ -303,13 +328,11 @@ Source & operator >> (Source & in, BasicDerivation & drv)
          auto name = readString(in);
          DerivationOutput o;
          in >> o.path >> o.hashAlgo >> o.hash;
@@ -133,7 +131,7 @@ index 7959d5b..3026e56 100644
  
      nr = readInt(in);
      for (unsigned int n = 0; n < nr; n++) {
-@@ -327,7 +352,7 @@ Sink & operator << (Sink & out, const BasicDerivation & drv)
+@@ -327,7 +350,7 @@ Sink & operator << (Sink & out, const BasicDerivation & drv)
      out << drv.outputs.size();
      for (auto & i : drv.outputs)
          out << i.first << i.second.path << i.second.hashAlgo << i.second.hash;

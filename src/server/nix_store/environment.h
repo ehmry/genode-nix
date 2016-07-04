@@ -110,14 +110,14 @@ struct Nix_store::Inputs : Genode::Avl_tree<Input>
 						Object_path final_path;
 
 						/* dereference the symlink */
-						try { final_path = dereference(fs, input_name); }
+						try { final_path = dereference(fs, input_name).string(); }
 						catch (File_system::Lookup_failed) {
 							Genode::error("missing input symlink ", input_name);
 							throw Nix_store::Missing_dependency();
 						}
 
 						/* the symlink is resolved */
-						insert(new (alloc) Input(input_name, final_path.base()));
+						insert(new (alloc) Input(input_name, final_path.string()));
 
 					} else {
 						parser.string(); /* Path */
@@ -224,13 +224,11 @@ struct Nix_store::Environment : Genode::Avl_tree<Mapping>
 			Mapping *map;
 
 			if (!input) {
-				Genode::warning("no input found for ", key.string(), "=", value.string());
-
 				/*
 				 * XXX:	this is heavy, remove anything not a path?
 				 */
 				try { map = new (alloc)
-					Mapping(key.string(), dereference(fs, value.string()).base()); }
+					Mapping(key.string(), dereference(fs, value.string()).string()); }
 				catch (File_system::Lookup_failed) { map = new (alloc)
 					Mapping(key.string(), value.string()); }
 

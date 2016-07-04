@@ -15,11 +15,6 @@
 #include "ingest_component.h"
 #include "build_component.h"
 
-/* Jitterentropy */
-namespace Jitter { extern "C" {
-#include <jitterentropy.h>
-} }
-
 
 /***************
  ** Component **
@@ -35,9 +30,6 @@ namespace Component {
 		using namespace File_system;
 
 		static Genode::Heap heap { &env.ram(), &env.rm() };
-
-		/* used by the ingest component */
-		Jitter::jent_entropy_init();
 
 		/* create an empty file to be sure we have write access */
 		Genode::Allocator_avl   fs_alloc { &heap };

@@ -37,8 +37,7 @@ in
   inherit name;
   builder = getRom "noux";
   system = currentSystem;
-  config = toFile
-    "config"
+  config =
     ''
     <config verbose="${if verbose then "yes" else "no"}" stdin="/dev/null" stdout="/dev/log" stderr="/dev/log">
       <fstab>

@@ -21,16 +21,20 @@
 
 namespace Nix_store {
 
-	typedef Genode::Path<Nix_store::MAX_PATH_LEN> Object_path;
+	/* make this a path, not a string */
+	typedef Genode::String<Nix_store::MAX_PATH_LEN> Object_path;
 
 	/**
 	 * \throw lookup failed
 	 */
 	Object_path dereference(File_system::Session &fs, char const *name)
 	{
+		enum { ROOT_HANDLE = 0 };
+
 		using namespace File_system;
 
-		Object_path path(name);
+		//Object_path path(name);
+		Genode::Path<Nix_store::MAX_PATH_LEN> path(name);;
 
 		for (;;) {
 			Node_handle node = fs.node(path.base());
@@ -39,7 +43,7 @@ namespace Nix_store {
 			switch (fs.status(node).mode) {
 			case Status::MODE_FILE:
 			case Status::MODE_DIRECTORY:
-				return path;
+				return path.base();
 			case Status::MODE_SYMLINK: {
 				Symlink_handle link = fs.symlink(
 					ROOT_HANDLE, path.base()+1, false);
@@ -64,7 +68,7 @@ namespace Nix_store {
 				source.release_packet(packet);
 			}}
 		}
-		return path;
+		return path.base();
 	}
 
 }

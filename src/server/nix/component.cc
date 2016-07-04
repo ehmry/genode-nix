@@ -32,7 +32,6 @@
 #include <base/service.h>
 #include <base/rpc_server.h>
 #include <root/root.h>
-#include <util/label.h>
 #include <base/attached_rom_dataspace.h>
 #include <base/heap.h>
 #include <base/component.h>
@@ -66,7 +65,7 @@ struct Nix::State
 	 * make sure that the VFS is destructable first.
 	 */
 	Vfs::Dir_file_system vfs
-		{ env, heap, config_rom.xml().sub_node("vfs"),
+		{ config_rom.xml().sub_node("vfs"),
 		  Vfs::global_file_system_factory()
 		};
 
@@ -127,8 +126,7 @@ struct Nix::State
 	Genode::Signal_handler<State> yield_handler
 		{ env.ep(), *this, &State::yield };
 
-	State(Genode::Env &env)
-	: env(env)
+	State(Genode::Env &env) : env(env)
 	{
 		/* initialize the Nix libraries */
 		nix::handleExceptions("nix server", [&] { nix::initNix(vfs); });
@@ -279,27 +277,32 @@ class Nix::Service_proxy : public Genode::Rpc_object<Typed_root<SESSION_TYPE>>
 			nix::Path out;
 
 			read_nix_arg(nix_arg, NIX_ARG_MAX_LEN, args);
+			char const *arg = nix_arg;
 
-			Session_label label(args.string());
+			Session_label const label = label_from_args(args.string());
 			try {
 				try {
-					Session_policy policy(label);
+					Session_policy policy(label, _state.config_rom.xml());
 					nix::handleExceptions("nix", [&] {
-						out = _realise(policy, nix_arg);
+						out = _realise(policy, arg);
 					});
 				} catch (Session_policy::No_policy_defined) {
 					nix::handleExceptions("nix", [&] {
-						out = _realise(Xml_node("<default-policy/>"), nix_arg);
+						out = _realise(Xml_node("<default-policy/>"), arg);
 					});
 				}
 			} catch (...) {
-				Genode::error("caught unhandled exception while evaluating '",
-				              (char const*)nix_arg, "'");
+				Genode::error("caught unhandled exception while evaluating '", arg, "'");
 				throw Root::Unavailable();
 			}
 
 			if (out == "") {
-				Genode::error("no evaluation for '", (char const*)nix_arg, "'");
+				Genode::error("no evaluation for '", arg, "'");
+				throw Root::Unavailable();
+			}
+
+			if (out.length() >= Vfs::MAX_PATH_LEN) {
+				Genode::error("'", arg, "' did not resolve to a store object");
 				throw Root::Unavailable();
 			}
 
@@ -333,18 +336,23 @@ class Nix::Rom_root : public Service_proxy<Rom_session>
 		void read_nix_arg(char *arg, size_t arg_len,
 		                  Root::Session_args const &args) override
 		{
-			Genode::Label label = Genode::Arg_string::label(args.string());
-			Genode::strncpy(arg, label.last_element(), arg_len);
+			Genode::Session_label const label = label_from_args(args.string());
+			Genode::strncpy(arg, label.last_element().string(), arg_len);
 		}
 
 		void rewrite_args(char *args, size_t args_len, nix::Path &out) override
 		{
+			using namespace Genode;
+
 			// XXX: slash hack
 			while (out.front() == '/')
 				out.erase(0,1);
 
+			Session_label const new_label = prefixed_label(
+				Session_label("store"), Session_label(out.c_str()));
+
 			Arg_string::set_arg_string(
-				args, args_len, "label", Label(out.c_str(), "store").string());
+				args, args_len, "label", new_label.string());
 		}
 
 	public:
@@ -383,22 +391,18 @@ class Nix::File_system_root : public Service_proxy<File_system::Session>
 };
 
 
-namespace Component {
-
 	/*
 	 * XXX: Nix uses this stack for the evaluation,
 	 * so the threat of a blown stack depends on
 	 * the complexity of the evaulation.
 	 */
-	size_t              stack_size() { return 32*1024*sizeof(long); }
+Genode::size_t Component::stack_size() { return 32*1024*sizeof(long); }
 
-	void construct(Genode::Env &env)
-	{
-		using namespace Nix;
+void Component::construct(Genode::Env &env)
+{
+	using namespace Nix;
 
-		static            State    state { env };
-		static         Rom_root rom_root { state };
-		static File_system_root  fs_root { state };
-	}
-
+	static            State    state { env };
+	static         Rom_root rom_root { state };
+	static File_system_root  fs_root { state };
 }
