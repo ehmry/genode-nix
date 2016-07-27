@@ -1,16 +1,15 @@
 LICENSE   := GPLV2
 VERSION   := 1.11
-DOWNLOADS := nix.git
+DOWNLOADS := nix.archive
 
 #
 # Check for tools
 #
-$(call check_tool,lex)
+$(call check_tool,flex)
 $(call check_tool,bison)
 
-#URL(nix) := https://github.com/NixOS/nix.git
-URL(nix) := /home/emery/repo/nix
-REV(nix) := 8b4577ac9da810862235bd8452a6ba47de35fd86
+URL(nix) := https://nixos.org/releases/nix/nix-$(VERSION)/nix-$(VERSION).tar.xz
+SHA(nix) := 16f1546e042c49d74b3891516ad25d5610bf0bdd
 DIR(nix) := src/lib/nix
 
 PATCHES := \
