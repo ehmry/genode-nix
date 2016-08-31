@@ -135,7 +135,7 @@ class Nix_store::Build_component : public Genode::Rpc_object<Nix_store::Session>
 					size_t n = read(_store_fs, link, path.base(), path.capacity());
 					path.base()[(n < path.capacity() ? n : path.capacity()-1)] = '\0';
 
-					return path.base();
+					return Genode::Cstring(path.base());
 				}}
 			} catch (Lookup_failed) { }
 			return "";

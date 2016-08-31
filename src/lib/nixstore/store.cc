@@ -498,7 +498,7 @@ nix::Store::isValidPath(const nix::Path & path)
 	char const *_path = path.c_str();
 	while (*_path == '/') ++_path;
 
-	return _store_session.dereference(_path) != "";
+	return _store_session.dereference(Genode::Cstring((char*)_path)) != "";
 }
 
 
@@ -596,7 +596,7 @@ Store::addToStore(const string &name, const nix::Path &path,
 	if ((stat.mode&STAT_TYPE_MASK)==Vfs::Directory_service::STAT_MODE_DIRECTORY) {
 		hash_dir(buf, name, srcPath);
 		Store_hash::encode(buf, name.c_str(), sizeof(buf));
-		if (_store_session.dereference((char *) buf) != "") {
+		if (_store_session.dereference(Genode::Cstring((char*)buf)) != "") {
 			return "/" + string((char *) buf);
 		}
 		final_name = add_dir(name, srcPath);
@@ -604,7 +604,7 @@ Store::addToStore(const string &name, const nix::Path &path,
 	} else if ((stat.mode&STAT_TYPE_MASK)==Vfs::Directory_service::STAT_MODE_FILE) {
 		hash_file(buf, name, srcPath);
 		Store_hash::encode(buf, name.c_str(), sizeof(buf));
-		if (_store_session.dereference((char *) buf) != "") {
+		if (_store_session.dereference(Genode::Cstring((char *)buf)) != "") {
 			return "/" + string((char *) buf);
 		}
 
@@ -704,7 +704,7 @@ nix::Path nix::Store::addDataToStore(const string & name,
 
 	hash.digest(path_buf, sizeof(path_buf));
 	Store_hash::encode(path_buf, name.c_str(), sizeof(path_buf));
-	if (_store_session.dereference((char *)path_buf) != "")
+	if (_store_session.dereference(Genode::Cstring((char*)path_buf)) != "")
 		return nix::Path((char *)path_buf);
 	{
 		debug(format("adding dataspace ‘%1%’ to the store") % name);

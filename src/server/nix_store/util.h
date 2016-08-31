@@ -43,7 +43,7 @@ namespace Nix_store {
 			switch (fs.status(node).mode) {
 			case Status::MODE_FILE:
 			case Status::MODE_DIRECTORY:
-				return path.base();
+				return Genode::Cstring(path.base());
 			case Status::MODE_SYMLINK: {
 				Symlink_handle link = fs.symlink(
 					ROOT_HANDLE, path.base()+1, false);
@@ -68,7 +68,7 @@ namespace Nix_store {
 				source.release_packet(packet);
 			}}
 		}
-		return path.base();
+		return Genode::Cstring(path.base());
 	}
 
 }

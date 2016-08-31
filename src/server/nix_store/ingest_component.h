@@ -74,9 +74,6 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 		{
 			void *content = tx_sink()->packet_content(theirs);
 			size_t length = theirs.length();
-			if (length == 0) {
-				PDBG("zero length from their packet");
-			}
 
 			if (!content || (length > theirs.size()) || (length == 0)
 			    /* Reading the entries of the root is not allowed. */
@@ -161,8 +158,6 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 			File_system::Packet_descriptor &theirs = _packet_queue[i];
 
 			size_t length = ours.length();
-			if (length == 0)
-				PDBG("ours was zero length");
 
 			uint8_t const *content = (uint8_t const *)source.packet_content(ours);
 			if (!content) {

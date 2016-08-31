@@ -229,7 +229,7 @@ class Nix_store::Child : public Genode::Child_policy
 						Arg_string::set_arg_string(args, args_len, "root", dest);
 						Arg_string::set_arg(args, args_len, "writeable", false);
 					} else {
-						Genode::error("impure File_system request for root '",root,"'");
+						Genode::error("impure File_system request for root '",(char const *)root,"'");
 						*args = '\0';
 					}
 				}

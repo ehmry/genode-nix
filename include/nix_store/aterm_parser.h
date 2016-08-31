@@ -202,7 +202,7 @@ class Aterm::Parser
 			_pos += 2 + len;
 
 			check_end();
-			*out = Genode::String<N>(pos, len);
+			*out = Genode::String<N>(Genode::Cstring(pos, len));
 
 			return start;
 		}
