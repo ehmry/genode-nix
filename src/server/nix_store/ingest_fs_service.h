@@ -223,7 +223,10 @@ class Nix_store::Ingest_service : public Genode::Service
 		 */
 		Ingest_service(Nix_store::Derivation &drv,
 		               Genode::Env &env, Genode::Allocator &alloc)
-		: Genode::Service("File_system"), _env(env), _component(env, alloc) { }
+		:	Genode::Service(Genode::Service::Name("File_system"),
+			                env.ram_session_cap()),
+			_env(env), _component(env, alloc)
+		{ }
 
 		~Ingest_service() { revoke_cap(); }
 
@@ -239,17 +242,31 @@ class Nix_store::Ingest_service : public Genode::Service
 		 ** Service interface **
 		 ***********************/
 
-		Genode::Session_capability session(char const *args, Genode::Affinity const &) override
+		void initiate_request(Session_state &session) override
 		{
-			return _cap;
-		}
+			switch (session.phase) {
 
-		void upgrade(Genode::Session_capability, const char *args)
-		{
-			Genode::warning("ingest service upgraded with ", args);
-			_component.upgrade(args);
-		}
+			case Session_state::CREATE_REQUESTED:
+				session.cap   = _cap;
+				session.phase = Session_state::AVAILABLE;
+				break;
 
+			case Session_state::UPGRADE_REQUESTED:
+				session.phase = Session_state::CAP_HANDED_OUT;
+				session.confirm_ram_upgrade();
+				break;
+
+			case Session_state::CLOSE_REQUESTED:
+				session.phase = Session_state::CLOSED;
+				break;
+
+			case Session_state::INVALID_ARGS:
+			case Session_state::AVAILABLE:
+			case Session_state::CAP_HANDED_OUT:
+			case Session_state::CLOSED:
+				break;
+			}
+		}
 };
 
 #endif

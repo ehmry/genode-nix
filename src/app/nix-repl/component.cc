@@ -19,7 +19,7 @@ struct Main
 	enum { COMMAND_MAX_LEN = 1024 };
 	char buf[COMMAND_MAX_LEN];
 
-	Genode::Env       &env;
+	Genode::Env &env;
 
 	Terminal::Connection terminal { env };
 
@@ -49,11 +49,11 @@ struct Main
 
 	Main(Genode::Env &env,
 	     Genode::Allocator &alloc,
-	     Genode::Xml_node config)
+	     Genode::Attached_rom_dataspace &config)
 	:
 		env(env),
 		nix_repl(env, alloc, terminal, "nix-repl> ",
-		         buf, sizeof(buf), config.sub_node("nix"))
+		         buf, sizeof(buf), config)
 	{
 		terminal.read_avail_sigh(read_handler);
 		tprintf(terminal, "Welcome to Nix version " NIX_VERSION ". Type :? for help.\n\n");
@@ -71,15 +71,19 @@ namespace Component {
 	{
 		static Genode::Attached_rom_dataspace config { env, "config" };
 		static Genode::Heap heap { env.ram(), env.rm() };
-
+Genode::log("-- construct VFS --");
 		static Vfs::Dir_file_system vfs
-			{ env, heap, config.xml().sub_node("vfs"),
+			{ config.xml().sub_node("vfs"),
 			  Vfs::global_file_system_factory()
 			};
 
-		nix::initNix(vfs);
-
-		static Main main(env, heap, config.xml());
+		nix::handleExceptions("nix-repl", [&] {
+Genode::log("-- init nix --");
+			nix::initNix(vfs);
+Genode::log("-- construct Main --");
+	 		static Main main(env, heap, config);
+Genode::log("-- constructed everything --");
+		});
 	}
 
 }

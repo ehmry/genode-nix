@@ -17,6 +17,8 @@
 /* Genode includes */
 #include <store_hash/encode.h>
 #include <file_system_session/file_system_session.h>
+#include <timer_session/timer_session.h>
+#include <os/session_requester.h>
 #include <base/attached_rom_dataspace.h>
 #include <base/attached_ram_dataspace.h>
 #include <base/env.h>
@@ -28,7 +30,6 @@
 #include <cpu_session/connection.h>
 #include <rm_session/connection.h>
 #include <init/child_policy.h>
-#include <os/server.h>
 
 /* Nix includes */
 #include <nix_store/derivation.h>
@@ -47,46 +48,26 @@ namespace Nix_store {
 		MEGABYTE      = 1 << 20,
 		QUOTA_STEP    = 8*MEGABYTE,
 		QUOTA_RESERVE = 1*MEGABYTE,
-
-		ENTRYPOINT_STACK_SIZE = 8*1024*sizeof(long)
 	};
 
 	class Child;
 
+	typedef Genode::Registered<Genode::Parent_service> Parent_service;
 }
+
 
 class Nix_store::Child : public Genode::Child_policy
 {
 	private:
 
-		Name            const  _name;
+		Genode::Child_policy::Name const _name;
+
 		Genode::Env           &_env;
 		File_system::Session  &_fs;
 		Nix_store::Derivation  _drv { _env, _name.string() };
 
-		/**
-		 * Resources assigned to the child.
- 		*/
-		struct Resources
-		{
-			Genode::Pd_connection  pd;
-			Genode::Ram_connection ram;
-			Genode::Cpu_connection cpu;
-			Genode::Rm_connection  rm;
-
-			/**
-			 * Constructor
-			 */
-			Resources(Genode::Env &env, char const *label)
-			: pd(env, label), ram(env, label), cpu(env, label)
-			{
-				ram.ref_account(env.ram_session_cap());
-				env.ram().transfer_quota(ram.cap(), QUOTA_STEP);
-			}
-		} _resources { _env, _name.string() };
-
-		Genode::Child::Initial_thread _initial_thread { _resources.cpu, _resources.pd,
-		                                                _name.string() };
+		enum { ENTRYPOINT_STACK_SIZE = 12*1024 };
+		Genode::Rpc_entrypoint _entrypoint;
 
 		Genode::Session_label const _binary_label =
 			Genode::prefixed_label(Genode::Session_label("store"),
@@ -95,24 +76,33 @@ class Nix_store::Child : public Genode::Child_policy
 		Nix::Rom_connection _elf_rom { _env, _drv.builder() };
 		Genode::Rom_dataspace_capability _elf_rom_ds = _elf_rom.dataspace();
 
-		Genode::Region_map_client _address_space { _resources.pd.address_space() };
+		Genode::Parent_service _env_ram_service { _env, Genode::Ram_session::service_name() };
+		Genode::Parent_service _env_cpu_service { _env, Genode::Cpu_session::service_name() };
+		Genode::Parent_service _env_pd_service  { _env, Genode:: Pd_session::service_name() };
+		Genode::Parent_service _env_log_service { _env, Genode::Log_session::service_name() };
+		Genode::Parent_service _env_rom_service { _env, Genode::Rom_session::service_name() };
+		Genode::Parent_service _env_timer_service { _env, Timer::Session::service_name() };
 
-		Genode::Child _child;
+
+		Genode::Registry<Parent_service> _parent_services;
+
+		Genode::Session_requester _session_requester;
+
+		Genode::Child _child { _env.rm(), _entrypoint, *this };
 
 		Signal_context_capability  _exit_sigh;
-		Inputs      const _inputs      { _env, *_child.heap(), _fs, _drv };
-		Environment const _environment { _env, *_child.heap(), _fs, _drv, _inputs };
+		Inputs      const _inputs      { _env, _child.heap(), _fs, _drv };
+		Environment const _environment { _env, _child.heap(), _fs, _drv, _inputs };
 
 		Genode::Attached_ram_dataspace _config_dataspace
 			{ _env.ram(), _env.rm(), _drv.size() };
 
 		Init::Child_policy_provide_rom_file _config_policy
-			{ "config", _config_dataspace.cap(), &_env.ep().rpc_ep() };
+			{ "config", _config_dataspace.cap(), &_entrypoint };
 
-		Ingest_service   _fs_ingest_service { _drv, _env, *_child.heap() };
-		Filter_service   _fs_filter_service { _env, _inputs };
-		Parent_service   _fs_parent_service { "File_system" };
-		Service_registry _parent_services;
+		Ingest_service  _fs_ingest_service { _drv, _env, _child.heap() };
+		Filter_service  _fs_filter_service { _env, _inputs };
+		Parent_service  _fs_parent_service { _parent_services, "File_system" };
 
 	public:
 
@@ -126,24 +116,11 @@ class Nix_store::Child : public Genode::Child_policy
 		      Genode::Dataspace_capability  ldso_ds)
 		:
 			_name(name), _env(env), _fs(fs),
-			_child(_elf_rom_ds, ldso_ds,
-			       _resources.pd.cap(),  _resources.pd,
-			       _resources.ram.cap(), _resources.ram,
-			       _resources.cpu.cap(), _initial_thread,
-			       env.rm(), _address_space, 
-			       env.ep().rpc_ep(),
-			       *this),
+			_entrypoint(&_env.pd(), ENTRYPOINT_STACK_SIZE, _name.string(),
+			            false, Affinity::Location()),
+			_session_requester(_entrypoint, _env.ram(), _env.rm()),
 			_exit_sigh(exit_sigh)
 		{
-			/* ROM is not forwarded verbatim, labels are modified */
-			static char const *service_names[] = {
-				"CPU", "LOG", "PD", "RAM", "ROM", "RM", "Timer", 0
-			};
-			for (unsigned i = 0; service_names[i]; ++i)
-				_parent_services.insert(
-					new (_child.heap())
-						Parent_service(service_names[i]));
-
 			if (_drv.has_fixed_output()) {
 				char service_name[32];
 
@@ -162,8 +139,8 @@ class Nix_store::Child : public Genode::Child_policy
 						Genode::strncpy(service_name, impure+start, end-start);
 						Genode::log(_name.string(), ": forwarding impure service ",
 						            (char const *)service_name, " to parent");
-						_parent_services.insert(new (_child.heap())
-							Parent_service(service_name));
+						new (_child.heap())
+							Parent_service(_parent_services, service_name);
 						start = end;
 					} else
 						++end;
@@ -179,18 +156,17 @@ class Nix_store::Child : public Genode::Child_policy
 		 ** Child policy interface **
 		 ****************************/
 
-		char const *name() const {
-			return _name.string();
-		}
+		Genode::Child_policy::Name name() const {
+			return _name; }
 
-		void filter_session_args(const char *service, char *args, size_t args_len)
+		void filter_session_args(Service::Name const &service, char *args, size_t args_len)
 		{
 			using namespace Genode;
 
 			/*
 			 * Rewrite ROM requests to enforce purity
 			 */
-			if (strcmp(service, "ROM") == 0) {
+			if (service == "ROM") {
 
 				Session_label const label = label_from_args(args);
 				Session_label const request = label.last_element();
@@ -216,7 +192,7 @@ class Nix_store::Child : public Genode::Child_policy
 			/*
 			 * Rewrite File_system roots
 			 */
-			else if (strcmp(service, "File_system") == 0) {
+			else if (service == "File_system") {
 				char root[File_system::MAX_PATH_LEN] = { '\0' };
 
 				Genode::Arg_string::find_arg(args, "root").string(
@@ -239,7 +215,7 @@ class Nix_store::Child : public Genode::Child_policy
 			/*
 			 * Log messages need be seperated between build jobs
 			 */
-			else if (strcmp(service, "LOG") == 0) {
+			else if (service == "LOG") {
 				char label_buf[Parent::Session_args::MAX_SIZE];
 				Arg_string::find_arg(args, "label").string(label_buf, sizeof(label_buf), "");
 
@@ -260,46 +236,63 @@ class Nix_store::Child : public Genode::Child_policy
 			Arg_string::remove_arg(args, "label");
 		}
 
-		Service *resolve_session_request(const char *service_name,
-		                                 const char *args)
+		Genode::Service &resolve_session_request(
+			Genode::Service::Name const &service_name,
+			Genode::Session_state::Args const &args) override
 		{
-			Service *service = nullptr;
-			if (!(*args)) /* invalidated by filter_session_args */
-				return 0;
+			/* route environment session requests to the parent */
+			Genode::Session_label const label(Genode::label_from_args(args.string()));
+			if (label == name()) {
+				if (service_name == Genode::Ram_session::service_name()) return _env_ram_service;
+				if (service_name == Genode::Cpu_session::service_name()) return _env_cpu_service;
+				if (service_name == Genode::Pd_session::service_name())  return _env_pd_service;
+				if (service_name == Genode::Log_session::service_name()) return _env_log_service;
+				if (service_name == Timer::Session::service_name()) return _env_timer_service;
+			}
+
+			/* route initial ROM requests (binary and linker) to the parent */
+			if (service_name == Genode::Rom_session::service_name())
+				if (label.last_element() == linker_name()) return _env_rom_service;
+
+			Genode::Service *service = nullptr;
 
 			/* check for config file request */
-			if ((service = _config_policy.resolve_session_request(service_name, args)))
-				return service;
+			service = _config_policy.resolve_session_request(
+				service_name.string(), args.string());
+			if (service)
+				return *service;
 
-			if (strcmp("File_system", service_name) == 0)
-			{
-				Genode::Session_label label = label_from_args(args);
+			if (service_name == "File_system") {
+				Genode::Session_label label =
+					label_from_args(args.string());
 				char root[3] = { '\0' };
 
-				if (!strcmp("ingest", label.last_element().string()))
-					return &_fs_ingest_service;
+				if (label.last_element() == "ingest")
+					return _fs_ingest_service;
 
-				Genode::Arg_string::find_arg(args, "root").string(
+				Genode::Arg_string::find_arg(args.string(), "root").string(
 					root, sizeof(root), "/");
 
 				if (!(strcmp(root, "", sizeof(root))
 				 && strcmp(root, "/", sizeof(root))))
-					return &_fs_filter_service;
+					return _fs_filter_service;
 
 				/*
 				 * If there is a root argument then connect directly to 
 				 * the store backend because the session is isolated by
 				 * the root offset.
 				 */
-				return &_fs_parent_service;
+				return _fs_parent_service;
 			}
 
 			/* get it from the parent if it is allowed */
-			service = _parent_services.find(service_name);
+			_parent_services.for_each([&] (Parent_service &ps) {
+				if (!service && (ps.name() == service_name))
+					service = &ps; });
 
 			if (!service)
-				Genode::log(service_name, " request rejected from ", _name.string());
-			return service;
+				throw Genode::Parent::Service_denied();
+			return *service;
 		}
 
 		void exit(int exit_value)
@@ -314,8 +307,20 @@ class Nix_store::Child : public Genode::Child_policy
 			Signal_transmitter(_exit_sigh).submit();
 		}
 
-		void resource_request(Parent::Resource_args const &args)
+		Ram_session           &ref_ram() override {
+			return _env.ram(); }
+		Ram_session_capability ref_ram_cap() const override {
+			return _env.ram_session_cap();  }
+
+		void init(Ram_session &session, Capability<Ram_session> cap) override
 		{
+			session.ref_account(_env.ram_session_cap());
+			_env.ram().transfer_quota(cap, QUOTA_STEP);
+		}
+
+		void resource_request(Parent::Resource_args const &args) override
+		{
+			Genode::log("build child \"", name(), "\" requests resources: ", args.string());
 			size_t ram_request =
 				Arg_string::find_arg(args.string(), "ram_quota").ulong_value(0);
 
@@ -326,7 +331,7 @@ class Nix_store::Child : public Genode::Child_policy
 			size_t ram_avail = _env.ram().avail();
 			if (ram_avail > (ram_request+QUOTA_RESERVE)) {
 				_env.ram().transfer_quota(
-					_resources.ram.cap(), ram_avail);
+					_child.ram_session_cap(), ram_request);
 				_child.notify_resource_avail();
 			} else {
 				char arg_buf[32];
@@ -343,8 +348,10 @@ class Nix_store::Child : public Genode::Child_policy
 			if (quota_avail <= QUOTA_RESERVE)
 				return;
 
+			size_t transfer = (quota_avail-QUOTA_RESERVE)-(quota_avail%QUOTA_STEP);
+
 			_env.ram().transfer_quota(
-				_resources.ram.cap(), quota_avail - QUOTA_RESERVE);
+				_child.ram_session_cap(), quota_avail - QUOTA_RESERVE);
 
 			_child.notify_resource_avail();
 		}

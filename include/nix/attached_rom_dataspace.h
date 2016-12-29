@@ -18,7 +18,7 @@
 #include <rom_session/connection.h>
 #include <base/session_label.h>
 #include <util/string.h>
-#include <util/volatile_object.h>
+#include <util/reconstructible.h>
 #include <util/xml_node.h>
 
 namespace Nix {
@@ -45,7 +45,7 @@ class Nix::Attached_rom_dataspace
 		 * always be valid once constructed, a 'Attached_rom_dataspace' has
 		 * to handle the validity of the dataspace.
 		 */
-		Genode::Lazy_volatile_object<Genode::Attached_dataspace> _ds;
+		Genode::Constructible<Genode::Attached_dataspace> _ds;
 
 		/**
 		 * Try to attach the ROM module, ignore invalid dataspaces

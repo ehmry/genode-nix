@@ -107,6 +107,7 @@ append config {
 			<any-service> <parent/> <any-child/> </any-service>
 		</route>
 		<config>
+			<announce><service name="ROM"/></announce>
 			<libc stdout="/dev/log" stderr="/dev/log"/>
 			<nix verbosity="0"/>
 			<vfs>
@@ -117,9 +118,7 @@ append config {
 				</dir>
 				<dir name="expr"> <tar name="expr.tar"/> </dir>
 				<inline name="default.nix">
-request:
 let
-
   makeEnv = import /expr/make.nix;
 
   makefile = builtins.toFile "test.mk"
@@ -140,7 +139,12 @@ let
         <fs/>
       '';
   };
-in builtins.trace request result
+ # print the function call but just return 'result'
+in
+service: { label, ... }:
+if label == "rom_logger -> makeOutput"
+then result
+else abort "no evaluations for "+service+":"+label
 				</inline>
 			</vfs>
 		</config>

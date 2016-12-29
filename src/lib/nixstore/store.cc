@@ -275,7 +275,6 @@ void Store::copy_symlink(File_system::Session       &fs,
 	if (_vfs->readlink(src_path.c_str(), source.packet_content(packet),
 	                            packet.size(), vfs_count) != Directory_service::READLINK_OK)
 		throw Error(format("reading symlink ‘%1%’") % src_path);
-	PDBG("%s readlink count %llu", src_path.c_str(), vfs_count);
 	if (vfs_count) {
 		packet.length(vfs_count);
 
@@ -339,7 +338,6 @@ Store::hash_symlink(uint8_t *buf, const string &name, nix::Path const &src_path)
 	                            sizeof(data), vfs_count) != Directory_service::READLINK_OK)
 		throw Error(format("reading symlink ‘%1%’") % src_path);
 
-	PDBG("%s readlink count %llu", src_path.c_str(), vfs_count);
 	hash.update(data, vfs_count);
 
 	hash.update((uint8_t*)"\0s\0", 3);

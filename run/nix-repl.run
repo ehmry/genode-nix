@@ -116,9 +116,8 @@ append config {
 				<ram/>
 			</vfs>
 			<rom/>
-			<file_system>
-				<policy label_prefix="nix_store" writeable="yes" />
-			</file_system>
+			<policy label_prefix="nix_store" writeable="yes" />
+			<default-policy/>
 		</config>
 	</start>
 
@@ -176,9 +175,9 @@ rec {
   catN = n: readFile "/store/${se n}";
 }
 				</inline>
-				<dir name="nix"> <dir name="corepkgs">
+				<dir name="corepkgs">
 					<tar name="nix_corepkgs.tar"/>
-				</dir> </dir>
+				</dir>
 				<dir name="store"> <fs label="store"/> </dir>
 			</vfs>
 		</config>

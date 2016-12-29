@@ -86,7 +86,7 @@ class Nix_store::Jobs : private Genode::Fifo<Job>
 		Lock                     _lock;
 		File_system::Session    &_fs;
 
-		Genode::Lazy_volatile_object<Nix_store::Child> _child;
+		Genode::Constructible<Nix_store::Child> _child;
 
 		/**
 		 * Handle resource announcement from parent

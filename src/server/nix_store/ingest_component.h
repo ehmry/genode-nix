@@ -334,7 +334,8 @@ class Nix_store::Ingest_component : public File_system::Session_rpc_object
 				snprintf(arg_buf, sizeof(arg_buf), "ram=%zd", ram_quota);
 				Genode::warning("upgrading ingest backend session with ",
 				                (char const *)arg_buf);
-				_env.parent().upgrade(_fs.cap(), arg_buf);
+				//_env.parent().upgrade(_fs.cap(), arg_buf);
+				_fs.upgrade_ram(ram_quota);
 			}
 		}
 

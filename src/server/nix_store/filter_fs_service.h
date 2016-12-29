@@ -252,8 +252,9 @@ class Nix_store::Filter_service : public Genode::Service
 		 * Constructor
 		 */
 		Filter_service(Genode::Env &env, Inputs const &inputs)
-		:
-			Genode::Service("File_system"), _env(env), _component(env, inputs)
+		:	Genode::Service(Genode::Service::Name("File_system"),
+			                env.ram_session_cap()),
+			_env(env), _component(env, inputs)
 		{ }
 
 		~Filter_service() { revoke_cap(); }
@@ -263,17 +264,31 @@ class Nix_store::Filter_service : public Genode::Service
 		 ** Service interface **
 		 ***********************/
 
-		Genode::Session_capability session(char const *args, Genode::Affinity const &) override
+		void initiate_request(Session_state &session) override
 		{
-			return _cap;
-		}
+			switch (session.phase) {
 
-		void upgrade(Genode::Session_capability, const char *args)
-		{
-			Genode::error("client is upgrading session, but don't know where to send it, ", args);
-			//_env.parent().upgrade(_nix_store.cap(), args);
-		}
+			case Session_state::CREATE_REQUESTED:
+				session.cap   = _cap;
+				session.phase = Session_state::AVAILABLE;
+				break;
 
+			case Session_state::UPGRADE_REQUESTED:
+				session.phase = Session_state::CAP_HANDED_OUT;
+				session.confirm_ram_upgrade();
+				break;
+
+			case Session_state::CLOSE_REQUESTED:
+				session.phase = Session_state::CLOSED;
+				break;
+
+			case Session_state::INVALID_ARGS:
+			case Session_state::AVAILABLE:
+			case Session_state::CAP_HANDED_OUT:
+			case Session_state::CLOSED:
+				break;
+			}
+		}
 };
 
 

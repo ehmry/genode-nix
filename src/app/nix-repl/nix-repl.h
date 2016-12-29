@@ -5,7 +5,7 @@
 #include <vfs/file_system_factory.h>
 #include <vfs/dir_file_system.h>
 #include <terminal_session/terminal_session.h>
-#include <os/config.h>
+#include <base/attached_rom_dataspace.h>
 #include <base/log.h>
 
 /* Local includes */
@@ -50,8 +50,8 @@ struct NixRepl : Line_editor_base
     char              *_buf;
     size_t      const  _buf_size;
 
-    nix::Store           store;
-    nix::EvalState       state;
+    nix::Store     store;
+    nix::EvalState state;
 
     Strings loadedFiles;
 
@@ -64,21 +64,25 @@ struct NixRepl : Line_editor_base
     StringSet completions;
     StringSet::iterator curCompletion;
 
-	NixRepl(Genode::Env       &env,
- 	        Genode::Allocator &alloc,
-	        Terminal::Session &terminal,
-	        const char        *prompt,
-	        char              *buf,
-	        size_t             buf_size,
-	        Genode::Xml_node   config)
+	Genode::Attached_rom_dataspace &config_rom;
+
+	NixRepl(Genode::Env                    &env,
+ 	        Genode::Allocator              &alloc,
+	        Terminal::Session              &terminal,
+	        const char                     *prompt,
+	        char                           *buf,
+	        size_t                          buf_size,
+	        Genode::Attached_rom_dataspace &config_rom)
 	    : Line_editor_base(terminal, prompt, buf, buf_size)
 	    , _buf(buf)
 	    , _buf_size(buf_size)
 	    , store(env, alloc)
-	    , state(env, store, Genode::config()->xml_node().sub_node("nix"))
+	    , state(env, store, config_rom.xml().sub_node("nix"))
 	    , staticEnv(false, &state.staticBaseEnv)
 	    , _term(terminal)
+		, config_rom(config_rom)
 	{
+Genode::log(__func__, " initEnv");
 	    initEnv();
 	}
 
@@ -275,6 +279,7 @@ bool NixRepl::processLine(string line)
     }
 
     else if (command == ":r" || command == ":reload") {
+		config_rom.update();
         state.resetFileCache();
         reloadFiles();
     }
@@ -350,7 +355,7 @@ void NixRepl::initEnv()
         varNames.insert(i->first);
 
     Genode::String<1024> filename;
-    Genode::config()->xml_node().for_each_sub_node("load", [&] (Genode::Xml_node node) {
+    config_rom.xml().for_each_sub_node("load", [&] (Genode::Xml_node node) {
         if (node.has_attribute("file")) {
             node.attribute("file").value(&filename);
             loadFile(filename.string());

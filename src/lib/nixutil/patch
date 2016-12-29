@@ -295,7 +295,7 @@ index f136a13..93618eb 100644
  {
      if (pos == s.size()) throw EndOfFile("end of string reached");
 diff --git a/src/libutil/util.cc b/src/libutil/util.cc
-index 16d3296..85542b9 100644
+index 16d3296..951a748 100644
 --- a/src/libutil/util.cc
 +++ b/src/libutil/util.cc
 @@ -10,18 +10,8 @@
@@ -328,7 +328,7 @@ index 16d3296..85542b9 100644
  
  BaseError::BaseError(const FormatOrString & fs, unsigned int status)
      : status(status)
-@@ -53,32 +45,28 @@ SysError::SysError(const FormatOrString & fs)
+@@ -53,32 +45,26 @@ SysError::SysError(const FormatOrString & fs)
  
  string getEnv(const string & key, const string & def)
  {
@@ -343,11 +343,9 @@ index 16d3296..85542b9 100644
 +                       char value[256];
 +                       attr.value(value, sizeof(value));
 +
-+                       PWRN("%s=%s", key.c_str(), value);
 +                       return string(value);
 +               }
 +       } catch (...) { }
-+       PWRN("%s=%s", key.c_str(), def.c_str());
 +       return def;
  }
  
@@ -377,7 +375,7 @@ index 16d3296..85542b9 100644
      return canonPath(path);
  }
  
-@@ -174,171 +162,189 @@ bool isInDir(const Path & path, const Path & dir)
+@@ -174,171 +160,189 @@ bool isInDir(const Path & path, const Path & dir)
  }
  
  
@@ -663,7 +661,7 @@ index 16d3296..85542b9 100644
  }
  
  
-@@ -362,60 +368,62 @@ static Path tempName(Path tmpRoot, const Path & prefix, bool includePid,
+@@ -362,60 +366,62 @@ static Path tempName(Path tmpRoot, const Path & prefix, bool includePid,
      int & counter)
  {
      tmpRoot = canonPath(tmpRoot.empty() ? getEnv("TMPDIR", "/tmp") : tmpRoot, true);
@@ -750,7 +748,7 @@ index 16d3296..85542b9 100644
  
      return created;
  }
-@@ -423,8 +431,9 @@ Paths createDirs(const Path & path)
+@@ -423,8 +429,9 @@ Paths createDirs(const Path & path)
  
  void createSymlink(const Path & target, const Path & link)
  {
@@ -762,7 +760,7 @@ index 16d3296..85542b9 100644
  }
  
  
-@@ -511,7 +520,6 @@ void printMsg_(Verbosity level, const FormatOrString & fs)
+@@ -511,7 +518,6 @@ void printMsg_(Verbosity level, const FormatOrString & fs)
      }
  
      string s = (format("%1%%2%\n") % prefix % fs.s).str();
@@ -770,16 +768,16 @@ index 16d3296..85542b9 100644
      writeToStderr(s);
  }
  
-@@ -531,7 +539,7 @@ void writeToStderr(const string & s)
+@@ -531,7 +537,7 @@ void writeToStderr(const string & s)
          if (_writeToStderr)
              _writeToStderr((const unsigned char *) s.data(), s.size());
          else
 -            writeFull(STDERR_FILENO, s);
-+            Genode::printf(s.c_str());
++            Genode::log(s.c_str());
      } catch (SysError & e) {
          /* Ignore failing writes to stderr if we're in an exception
             handler, otherwise throw an exception.  We need to ignore
-@@ -546,58 +554,48 @@ void writeToStderr(const string & s)
+@@ -546,58 +552,48 @@ void writeToStderr(const string & s)
  void (*_writeToStderr) (const unsigned char * buf, size_t count) = 0;
  
  
@@ -862,7 +860,7 @@ index 16d3296..85542b9 100644
  }
  
  
-@@ -644,20 +642,20 @@ void AutoDelete::reset(const Path & p, bool recursive) {
+@@ -644,20 +640,20 @@ void AutoDelete::reset(const Path & p, bool recursive) {
  
  //////////////////////////////////////////////////////////////////////
  
@@ -889,7 +887,7 @@ index 16d3296..85542b9 100644
  {
      /* Copying an AutoCloseFD isn't allowed (who should get to close
         it?).  But as an edge case, allow copying of closed
-@@ -665,302 +663,62 @@ AutoCloseFD::AutoCloseFD(const AutoCloseFD & fd)
+@@ -665,302 +661,62 @@ AutoCloseFD::AutoCloseFD(const AutoCloseFD & fd)
         involving copy constructor use on default object values in STL
         containers (like when you do `map[value]' where value isn't in
         the map yet). */
@@ -1217,7 +1215,7 @@ index 16d3296..85542b9 100644
  
  std::vector<char *> stringsToCharPtrs(const Strings & ss)
  {
-@@ -971,101 +729,13 @@ std::vector<char *> stringsToCharPtrs(const Strings & ss)
+@@ -971,101 +727,13 @@ std::vector<char *> stringsToCharPtrs(const Strings & ss)
  }
  
  
@@ -1320,7 +1318,7 @@ index 16d3296..85542b9 100644
  }
  
  
-@@ -1144,32 +814,6 @@ string replaceStrings(const std::string & s,
+@@ -1144,32 +812,6 @@ string replaceStrings(const std::string & s,
  }
  
  
