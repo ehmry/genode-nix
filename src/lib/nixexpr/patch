@@ -381,7 +381,7 @@ index d34882f..34eac20 100644
 -
  }
 diff --git a/src/libexpr/primops.cc b/src/libexpr/primops.cc
-index 87ee4f6..1654ec8 100644
+index 87ee4f6..3f753e7 100644
 --- a/src/libexpr/primops.cc
 +++ b/src/libexpr/primops.cc
 @@ -19,6 +19,9 @@
@@ -390,7 +390,7 @@ index 87ee4f6..1654ec8 100644
  
 +/* Genode includes */
 +#include <base/attached_rom_dataspace.h>
-+
++#include <base/session_label.h>
  
  namespace nix {
  
@@ -462,7 +462,7 @@ index 87ee4f6..1654ec8 100644
      } catch (InvalidPathError & e) {
          throw EvalError(format("cannot import ‘%1%’, since path ‘%2%’ is not valid, at %3%")
              % path % e.path % pos);
-@@ -383,11 +385,31 @@ static void prim_tryEval(EvalState & state, const Pos & pos, Value * * args, Val
+@@ -383,11 +385,65 @@ static void prim_tryEval(EvalState & state, const Pos & pos, Value * * args, Val
  }
  
  
@@ -494,10 +494,44 @@ index 87ee4f6..1654ec8 100644
 +		throw EvalError(format("failed to add ROM dataspace `%1%' to store at %2%")
 +             % name % pos);
 +    };
++}
++
++
++/* Get the last element of a session label */
++static void prim_sessionLabelLast(EvalState & state, const Pos & pos, Value * * args, Value & v)
++{
++    string str = state.forceStringNoCtx(*args[0], pos);
++    Genode::Session_label const label(str.c_str());
++
++    mkString(v, label.last_element().string());
++}
++
++
++/* Make a compound session label */
++static void prim_mkSessionLabel(EvalState & state, const Pos & pos, Value * * args, Value & v)
++{
++    Value &list = *args[0];
++    state.forceList(list, pos);
++    if (!v.listSize()) {
++        mkString(v, "");
++        return;
++    } else {
++
++        Genode::Session_label label(
++            state.forceStringNoCtx(*list.listElems()[0], pos).c_str());
++
++        for (unsigned int n = 1; n < list.listSize(); ++n) {
++            string str = state.forceStringNoCtx(*list.listElems()[n], pos);
++            Genode::Session_label head = label;
++            label = Genode::prefixed_label(head, Genode::Session_label(str.c_str()));
++        }
++
++        mkString(v, label.string());
++	}
  }
  
  
-@@ -491,22 +513,16 @@ static void prim_derivationStrict(EvalState & state, const Pos & pos, Value * *
+@@ -491,22 +547,16 @@ static void prim_derivationStrict(EvalState & state, const Pos & pos, Value * *
                  if (i.value->type == tNull) continue;
              }
  
@@ -525,7 +559,7 @@ index 87ee4f6..1654ec8 100644
                  else if (i.name == state.sSystem) drv.platform = s;
                  else if (i.name == state.sName) {
                      drvName = s;
-@@ -560,11 +576,11 @@ static void prim_derivationStrict(EvalState & state, const Pos & pos, Value * *
+@@ -560,11 +610,11 @@ static void prim_derivationStrict(EvalState & state, const Pos & pos, Value * *
             runs. */
          if (path.at(0) == '=') {
              /* !!! This doesn't work if readOnlyMode is set. */
@@ -539,7 +573,7 @@ index 87ee4f6..1654ec8 100644
              }
          }
  
-@@ -581,7 +597,7 @@ static void prim_derivationStrict(EvalState & state, const Pos & pos, Value * *
+@@ -581,7 +631,7 @@ static void prim_derivationStrict(EvalState & state, const Pos & pos, Value * *
          /* Handle derivation contexts returned by
             ‘builtins.storePath’. */
          else if (isDerivation(path))
@@ -548,7 +582,7 @@ index 87ee4f6..1654ec8 100644
  
          /* Otherwise it's a source file. */
          else
-@@ -595,7 +611,6 @@ static void prim_derivationStrict(EvalState & state, const Pos & pos, Value * *
+@@ -595,7 +645,6 @@ static void prim_derivationStrict(EvalState & state, const Pos & pos, Value * *
          throw EvalError(format("required attribute ‘system’ missing, at %1%") % posDrvName);
  
      /* Check whether the derivation name is valid. */
@@ -556,7 +590,7 @@ index 87ee4f6..1654ec8 100644
      if (isDerivation(drvName))
          throw EvalError(format("derivation names are not allowed to end in ‘%1%’, at %2%")
              % drvExtension % posDrvName);
-@@ -630,7 +645,7 @@ static void prim_derivationStrict(EvalState & state, const Pos & pos, Value * *
+@@ -630,7 +679,7 @@ static void prim_derivationStrict(EvalState & state, const Pos & pos, Value * *
  
          /* Use the masked derivation expression to compute the output
             path. */
@@ -565,7 +599,7 @@ index 87ee4f6..1654ec8 100644
  
          for (auto & i : drv.outputs)
              if (i.second.path == "") {
-@@ -641,7 +656,7 @@ static void prim_derivationStrict(EvalState & state, const Pos & pos, Value * *
+@@ -641,7 +690,7 @@ static void prim_derivationStrict(EvalState & state, const Pos & pos, Value * *
      }
  
      /* Write the resulting term into the Nix store directory. */
@@ -574,7 +608,7 @@ index 87ee4f6..1654ec8 100644
  
      printMsg(lvlChatty, format("instantiated ‘%1%’ -> ‘%2%’")
          % drvName % drvPath);
-@@ -649,7 +664,7 @@ static void prim_derivationStrict(EvalState & state, const Pos & pos, Value * *
+@@ -649,7 +698,7 @@ static void prim_derivationStrict(EvalState & state, const Pos & pos, Value * *
      /* Optimisation, but required in read-only mode! because in that
         case we don't actually write store derivations, so we can't
         read them later. */
@@ -583,7 +617,7 @@ index 87ee4f6..1654ec8 100644
  
      state.mkAttrs(v, 1 + drv.outputs.size());
      mkString(*state.allocAttr(v, state.sDrvPath), drvPath, singleton<PathSet>("=" + drvPath));
-@@ -690,12 +705,9 @@ static void prim_storePath(EvalState & state, const Pos & pos, Value * * args, V
+@@ -690,12 +739,9 @@ static void prim_storePath(EvalState & state, const Pos & pos, Value * * args, V
      /* Resolve symlinks in ‘path’, unless ‘path’ itself is a symlink
         directly in the store.  The latter condition is necessary so
         e.g. nix-push does the right thing. */
@@ -597,7 +631,7 @@ index 87ee4f6..1654ec8 100644
      context.insert(path2);
      mkString(v, path, context);
  }
-@@ -745,7 +757,7 @@ static void prim_readFile(EvalState & state, const Pos & pos, Value * * args, Va
+@@ -745,7 +791,7 @@ static void prim_readFile(EvalState & state, const Pos & pos, Value * * args, Va
      PathSet context;
      Path path = state.coerceToPath(pos, *args[0], context);
      try {
@@ -606,7 +640,7 @@ index 87ee4f6..1654ec8 100644
      } catch (InvalidPathError & e) {
          throw EvalError(format("cannot read ‘%1%’, since path ‘%2%’ is not valid, at %3%")
              % path % e.path % pos);
-@@ -786,7 +798,7 @@ static void prim_findFile(EvalState & state, const Pos & pos, Value * * args, Va
+@@ -786,7 +832,7 @@ static void prim_findFile(EvalState & state, const Pos & pos, Value * * args, Va
      string path = state.forceStringNoCtx(*args[1], pos);
  
      try {
@@ -615,7 +649,7 @@ index 87ee4f6..1654ec8 100644
      } catch (InvalidPathError & e) {
          throw EvalError(format("cannot find ‘%1%’, since path ‘%2%’ is not valid, at %3%")
              % path % e.path % pos);
-@@ -801,7 +813,7 @@ static void prim_readDir(EvalState & state, const Pos & pos, Value * * args, Val
+@@ -801,7 +847,7 @@ static void prim_readDir(EvalState & state, const Pos & pos, Value * * args, Val
      PathSet ctx;
      Path path = state.coerceToPath(pos, *args[0], ctx);
      try {
@@ -624,7 +658,7 @@ index 87ee4f6..1654ec8 100644
      } catch (InvalidPathError & e) {
          throw EvalError(format("cannot read ‘%1%’, since path ‘%2%’ is not valid, at %3%")
              % path % e.path % pos);
-@@ -812,12 +824,10 @@ static void prim_readDir(EvalState & state, const Pos & pos, Value * * args, Val
+@@ -812,12 +858,10 @@ static void prim_readDir(EvalState & state, const Pos & pos, Value * * args, Val
  
      for (auto & ent : entries) {
          Value * ent_val = state.allocAttr(v, state.symbols.create(ent.name));
@@ -640,7 +674,7 @@ index 87ee4f6..1654ec8 100644
              "unknown");
      }
  
-@@ -885,7 +895,7 @@ static void prim_toFile(EvalState & state, const Pos & pos, Value * * args, Valu
+@@ -885,7 +929,7 @@ static void prim_toFile(EvalState & state, const Pos & pos, Value * * args, Valu
  
      Path storePath = settings.readOnlyMode
          ? computeStorePathForText(name, contents, refs)
@@ -649,7 +683,7 @@ index 87ee4f6..1654ec8 100644
  
      /* Note: we don't need to add `context' to the context of the
         result, since `storePath' itself has references to the paths
-@@ -907,9 +917,7 @@ struct FilterFromExpr : PathFilter
+@@ -907,9 +951,7 @@ struct FilterFromExpr : PathFilter
  
      bool operator () (const Path & path)
      {
@@ -660,7 +694,7 @@ index 87ee4f6..1654ec8 100644
  
          /* Call the filter function.  The first argument is the path,
             the second is a string indicating the type of the file. */
-@@ -921,9 +929,9 @@ struct FilterFromExpr : PathFilter
+@@ -921,9 +963,9 @@ struct FilterFromExpr : PathFilter
  
          Value arg2;
          mkString(arg2,
@@ -673,7 +707,7 @@ index 87ee4f6..1654ec8 100644
              "unknown" /* not supported, will fail! */);
  
          Value res;
-@@ -950,8 +958,8 @@ static void prim_filterSource(EvalState & state, const Pos & pos, Value * * args
+@@ -950,8 +992,8 @@ static void prim_filterSource(EvalState & state, const Pos & pos, Value * * args
      path = state.checkSourcePath(path);
  
      Path dstPath = settings.readOnlyMode
@@ -684,7 +718,7 @@ index 87ee4f6..1654ec8 100644
  
      mkString(v, dstPath, singleton<PathSet>(dstPath));
  }
-@@ -1720,9 +1728,6 @@ void EvalState::createBaseEnv()
+@@ -1720,9 +1762,6 @@ void EvalState::createBaseEnv()
      mkNull(v);
      addConstant("null", v);
  
@@ -694,16 +728,18 @@ index 87ee4f6..1654ec8 100644
      mkString(v, settings.thisSystem);
      addConstant("__currentSystem", v);
  
-@@ -1759,7 +1764,7 @@ void EvalState::createBaseEnv()
+@@ -1759,7 +1798,9 @@ void EvalState::createBaseEnv()
      addPrimOp("throw", 1, prim_throw);
      addPrimOp("__addErrorContext", 2, prim_addErrorContext);
      addPrimOp("__tryEval", 1, prim_tryEval);
 -    addPrimOp("__getEnv", 1, prim_getEnv);
 +    addPrimOp("__getRom", 1, prim_getRom);
++    addPrimOp("__sessionLabelLast", 1, prim_sessionLabelLast);
++    addPrimOp("__mkSessionLabel", 1, prim_mkSessionLabel);
  
      // Strictness
      addPrimOp("__seq", 2, prim_seq);
-@@ -1846,7 +1851,7 @@ void EvalState::createBaseEnv()
+@@ -1846,7 +1887,7 @@ void EvalState::createBaseEnv()
  
      /* Add a wrapper around the derivation primop that computes the
         `drvPath' and `outPath' attributes lazily. */
