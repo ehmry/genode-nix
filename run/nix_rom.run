@@ -11,7 +11,7 @@ set build_components {
 	server/vfs
 	test/libports/ncurses
 	test/libports/nixexpr
-	test/printf
+	test/log
 }
 
 build $build_components
@@ -82,9 +82,15 @@ append config {
 			<service name="ROM"/>
 		</provides>
 		<config verbosity="9">
+			<announce> <service name="ROM"/> </announce>
 			<vfs>
 				<dir name="corepkgs"> <tar name="nix_corepkgs.tar"/> </dir>
-				<inline name="default.nix">builtins.getRom</inline>
+				<inline name="default.nix">
+service: { label, ... }:
+if service == "ROM"
+then builtins.getRom (builtins.sessionLabelLast label)
+else abort "no evaluations for "+service
+				</inline>
 			</vfs>
 			<nix verbosity="9">
 				<search-path name="store" path="/store"/>
@@ -92,8 +98,6 @@ append config {
 			<default-policy/>
 		</config>
 		<route>
-			<service name="Nix_store" >
-				<child name="nix_store"/> </service>
 			<service label_prefix="store" name="ROM" >
 				<child name="store_rom"/> </service>
 			<service label_prefix="store" name="File_system">
@@ -102,7 +106,7 @@ append config {
 				<child name="nix_store"/> </service>
 			<service name="Timer">
 				<child name="timer"/> </service>
-			<any-service> <parent/> </any-service>
+			<any-service> <parent/> <any-child/> </any-service>
 		</route>
 	</start>
 
@@ -124,7 +128,7 @@ append config {
 				<service name="RM"/>
 				<service name="ROM"/>
 			</parent-provides>
-			<start name="test-printf">
+			<start name="test-log">
 				<resource name="RAM" quantum="1M"/>
 				<route>
 					<any-service> <parent/> </any-service>
@@ -156,7 +160,7 @@ set boot_modules {
 	nixstore.lib.so
 	nixutil.lib.so
 	stdcxx.lib.so
-	test-printf
+	test-log
 	timer
 	vfs
 	zlib.lib.so
@@ -166,4 +170,4 @@ build_boot_image $boot_modules
 
 append qemu_args " -nographic"
 
-run_genode_until {child "test-printf" exited with exit value 0} 20
+run_genode_until {Test done.} 20

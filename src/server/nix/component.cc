@@ -33,6 +33,7 @@
 #include <base/rpc_server.h>
 #include <root/root.h>
 #include <base/attached_rom_dataspace.h>
+#include <util/reconstructible.h>
 #include <base/heap.h>
 #include <base/component.h>
 #include <base/log.h>
@@ -40,32 +41,45 @@
 namespace Nix {
 	using namespace Genode;
 
-	struct State;
+	struct Main;
 
-	template <typename SESSION_TYPE> class Service_proxy;
-
-	class Rom_root;
-	class File_system_root;
+	typedef Genode::String<64> Service_name;
 }
 
 
-/**
- * Allocates and destroys state
- */
-struct Nix::State
+struct Nix::Main
 {
+	struct Session : Parent::Server
+	{
+		Parent::Client parent_client;
+
+		Id_space<Parent::Client>::Element client_id;
+		Id_space<Parent::Server>::Element server_id;
+
+		Session(Id_space<Parent::Client> &client_space,
+		        Id_space<Parent::Server> &server_space,
+		        Parent::Server::Id server_id)
+		:
+			client_id(parent_client, client_space),
+			server_id(*this, server_space, server_id) { }
+	};
+
+	Id_space<Parent::Server> server_id_space;
+
 	Genode::Env &env;
 
-	Genode::Attached_rom_dataspace config_rom { env, "config" };
+	Attached_rom_dataspace config_rom       { env, "config" };
+	Attached_rom_dataspace session_requests { env, "session_requests" };
 
-	Genode::Heap heap { env.ram(), env.rm() };
+	Heap heap { env.ram(), env.rm() };
 
 	/*
 	 * TODO: Move the VFS to Internal_state, need to
 	 * make sure that the VFS is destructable first.
 	 */
 	Vfs::Dir_file_system vfs
-		{ config_rom.xml().sub_node("vfs"),
+		{ env, heap,
+		  config_rom.xml().sub_node("vfs"),
 		  Vfs::global_file_system_factory()
 		};
 
@@ -84,30 +98,47 @@ struct Nix::State
 		{ }
 	};
 
-	Genode::Lazy_volatile_object<Internal_state> _state;
+	Genode::Constructible<Internal_state>
+		state { env, heap, config_rom.xml() };
 
-	Internal_state &alloc()
+	Internal_state &alloc_state()
 	{
-		if (!_state.constructed()) nix::handleExceptions("nix server", [&] {
-			_state.construct(env, heap, config_rom.xml());
-		});
+		if (!state.constructed()) nix::handleExceptions("nix server", [&] {
+			state.construct(env, heap, config_rom.xml()); });
 
-		if (!_state.constructed())
+		if (!state.constructed())
 			throw Root::Unavailable();
 
-		return *_state;
+		return *state;
 	}
 
-	void free() { _state.destruct(); }
+	void free() { state.destruct(); }
 
-	void update_config()
+	nix::Path realise(Genode::Xml_node const policy,
+	                  Genode::Service::Name const &service,
+	                  Genode::Session_label const &label,
+	                  Session_state::Args const &session_args);
+
+	bool config_stale = false;
+
+	void handle_config() {
+		config_stale = true; }
+
+	void handle_session_request(Xml_node request);
+
+	void handle_session_requests()
 	{
-		Genode::log("reloading config and evaluator state");
-		free(); config_rom.update();
-	}
+		if (config_stale) {
+			config_rom.update();
+			config_stale = false;
+		}
 
-	Genode::Signal_handler<State> config_handler
-		{ env.ep(), *this, &State::update_config };
+		session_requests.update();
+
+		Xml_node const requests = session_requests.xml();
+		requests.for_each_sub_node([&] (Xml_node request) {
+			handle_session_request(request); });
+	}
 
 	/**
 	 * This lazy kind of work can get expensive
@@ -123,286 +154,285 @@ struct Nix::State
 		Genode::log("yielded ", (before - after) >> 10, "KB");
 	}
 
-	Genode::Signal_handler<State> yield_handler
-		{ env.ep(), *this, &State::yield };
+	Signal_handler<Main> config_handler {
+		env.ep(), *this, &Main::handle_config };
 
-	State(Genode::Env &env) : env(env)
+	Signal_handler<Main> session_request_handler {
+		env.ep(), *this, &Main::handle_session_requests };
+
+	Signal_handler<Main> yield_handler
+		{ env.ep(), *this, &Main::yield };
+
+	Main(Genode::Env &env) : env(env)
 	{
 		/* initialize the Nix libraries */
 		nix::handleExceptions("nix server", [&] { nix::initNix(vfs); });
 
-		/* register signal handlers */
 		config_rom.sigh(config_handler);
+		session_requests.sigh(session_request_handler);
 		env.parent().yield_sigh(yield_handler);
+
+		try {
+			Xml_node announce = config_rom.xml().sub_node("announce");
+			announce.for_each_sub_node("service", [&] (Xml_node &node) {
+				env.parent().announce(node.attribute_value(
+					"name", Genode::Service::Name()).string()); });
+		} catch (...) {
+			error("failed to parse and announce services");
+			throw;
+		}
 	}
 };
 
 
-template <typename SESSION_TYPE>
-class Nix::Service_proxy : public Genode::Rpc_object<Typed_root<SESSION_TYPE>>
+/**
+ * Apply an argument to a function and realise the nix output
+ */
+nix::Path Nix::Main::realise(Genode::Xml_node const policy,
+                             Genode::Service::Name const &service,
+ 	                         Genode::Session_label const &label,
+                             Session_state::Args const &session_args)
 {
-	protected:
+	using namespace nix;
 
-		virtual void read_nix_arg(char *arg, size_t arg_len,
-		                          Root::Session_args const &args) = 0;
-		virtual void rewrite_args(char *args, size_t args_len, nix::Path &out) = 0;
+	nix::string out;
 
+	enum { TMP_BUF_LEN = 256 };
+	char tmp_buf[TMP_BUF_LEN] = { '\0' };
 
-	private:
+	Value root_value;
+	Expr *e;
 
-		Parent_service  _backend;
-		State          &_state;
-
-		nix::Path _realise(Genode::Xml_node policy, char const *nix_arg)
-		{
-			using namespace nix;
-
-			nix::string out;
-
-			enum { TMP_BUF_LEN = 256 };
-			char tmp_buf[TMP_BUF_LEN] = { '\0' };
-
-			Value root_value;
-			Expr *e;
-
-			State::Internal_state &state = _state.alloc();
+	Internal_state &state = alloc_state();
 
 
-			/****************
-			 ** Parse file **
-			 ****************/
+	/****************
+	 ** Parse file **
+	 ****************/
 
-			/* XXX: use the string methods from Xml_node */
-			try {
-				policy.attribute("file").value(tmp_buf, sizeof(tmp_buf));
-				e = state.eval_state.parseExprFromFile(nix::Path(tmp_buf));
+	/* XXX: use the string methods from Xml_node */
+	try {
+		policy.attribute("file").value(tmp_buf, sizeof(tmp_buf));
+		e = state.eval_state.parseExprFromFile(nix::Path(tmp_buf));
 
-			} catch (Xml_node::Nonexistent_attribute) {
-				e = state.eval_state.parseExprFromFile("/default.nix");
-			}
-			state.eval_state.eval(e, root_value);
+	} catch (Xml_node::Nonexistent_attribute) {
+		e = state.eval_state.parseExprFromFile("/default.nix");
+	}
+	state.eval_state.eval(e, root_value);
 
+	/***********************
+	 ** Session arguments **
+	 ***********************/
+	std::map<string, string> arg_map;
 
-			/***********************
-			 ** Collect arguments **
-			 ***********************/
-			std::map<string, string> arg_map;
+	{
+		string label_str;
+		label_str += "#"; /* stripped away, i don't know why */
+		label_str += label.string();
+		arg_map["label"] = label_str;
 
-			policy.for_each_sub_node("arg", [&arg_map] (Xml_node arg_node) {
-				char  name[64] = { '\0' };
-				char value[64] = { '\0' };
-
-				arg_node.attribute("name").value(name, sizeof(name));
-				arg_node.attribute("value").value(value, sizeof(value));
-				arg_map[name] = value;
-			});
-
-			Bindings &args(*evalAutoArgs(state.eval_state, arg_map));
-
-
-			/********************
-			 ** Find attribute **
-			 ********************/
-
-			Value *v;
-			try {
-				policy.attribute("attr").value(tmp_buf, sizeof(tmp_buf));
-				v = findAlongAttrPath(
-					state.eval_state, tmp_buf, args, root_value);
-			} catch (Xml_node::Nonexistent_attribute) {
-				v = findAlongAttrPath(
-					state.eval_state, "", args, root_value);
-			}
-
-
-			/*************
-			 ** realise **
-			 *************/
-
-			PathSet context;
-			Value func;
-			if (args.empty())
-				func = *v;
-			else
-				state.eval_state.autoCallFunction(args, *v, func);
-
-			Value arg_value;
-			mkString(arg_value, nix_arg);
-
-			Value result;
-			state.eval_state.callFunction(func, arg_value, result, noPos);
-
-			DrvInfo drv_info(state.eval_state);
-			if (getDerivation(state.eval_state, result, drv_info, false)) {
-				PathSet drv_set{ drv_info.queryDrvPath() };
-				state.store.buildPaths(drv_set, nix::bmNormal);
-
-				out = drv_info.queryOutPath();
-			} else
-				out = state.eval_state.coerceToString(noPos, result, context);
-
-			while (out.front() == '/') out.erase(0,1);
-
-			/* XXX: and if out is not a top level store element? */
-			Nix_store::Name out_name =
-				state.eval_state.store().store_session().dereference(out.c_str());
-			return out_name.string();
-		}
-
-	public:
-
-		/**
-		 * Constructor
+		/*
+		 * XXX: All session arguments should be passed
+		 * but Arg_string does not support iteration.
 		 */
-		Service_proxy(char const *service_name, State &state)
-		: _backend(service_name), _state(state)
-		{
-			state.env.parent().announce(state.env.ep().manage(*this));
-		}
 
-		/********************
-		 ** Root interface **
-		 ********************/
+		enum { ARG_MAX_LEN = 128 };
+		char arg[ARG_MAX_LEN];
 
-		Session_capability session(Root::Session_args const &args,
-		                           Affinity           const &affinity)
-		{
-			enum {
-				   ARGS_MAX_LEN = 160,
-				NIX_ARG_MAX_LEN = 128
-			};
+		Arg_string::find_arg(session_args.string(), "root").string(
+			arg, sizeof(arg), "");
+		if (arg[0])
+			arg_map["root"] = arg;
+	}
 
-			char new_args[ARGS_MAX_LEN];
-			char nix_arg[NIX_ARG_MAX_LEN];
-			nix::Path out;
+	Bindings &args(*evalAutoArgs(state.eval_state, arg_map));
 
-			read_nix_arg(nix_arg, NIX_ARG_MAX_LEN, args);
-			char const *arg = nix_arg;
 
-			Session_label const label = label_from_args(args.string());
+	/********************
+	 ** Find attribute **
+	 ********************/
+
+	Value *entry;
+	try {
+		policy.attribute("attr").value(tmp_buf, sizeof(tmp_buf));
+		entry = findAlongAttrPath(
+			state.eval_state, tmp_buf, args, root_value);
+	} catch (Xml_node::Nonexistent_attribute) {
+		entry = findAlongAttrPath(
+			state.eval_state, "", args, root_value);
+	}
+
+
+	/*************
+	 ** realise **
+	 *************/
+
+	PathSet context;
+	Value service_arg, func, result;
+
+	mkString(service_arg, service.string());
+
+	state.eval_state.callFunction(*entry, service_arg, func, noPos);
+	state.eval_state.autoCallFunction(args, func, result);
+
+	DrvInfo drv_info(state.eval_state);
+	if (getDerivation(state.eval_state, result, drv_info, false)) {
+		PathSet drv_set{ drv_info.queryDrvPath() };
+		state.store.buildPaths(drv_set, nix::bmNormal);
+
+		out = drv_info.queryOutPath();
+	} else
+		out = state.eval_state.coerceToString(noPos, result, context);
+
+	while (out.front() == '/') out.erase(0,1);
+
+	/* XXX: and if out is not a top level store element? */
+	Nix_store::Name out_name =
+		state.eval_state.store().store_session().dereference(out.c_str());
+	return out_name.string();
+}
+
+
+void Nix::Main::handle_session_request(Genode::Xml_node request)
+{
+	using namespace Genode;
+
+	if (!request.has_attribute("id"))
+		return;
+
+	Parent::Server::Id const server_id { request.attribute_value("id", 0UL) };
+
+	if (request.has_type("create")) {
+
+		if (!request.has_sub_node("args"))
+			return;
+
+		Genode::Service::Name const service =
+			request.attribute_value("service", Service::Name());
+
+		Session_state::Args const args =
+			request.sub_node("args").decoded_content<Session_state::Args>();
+
+		Session_label const label = label_from_args(args.string());
+		nix::Path out;
+
+		try {
 			try {
-				try {
-					Session_policy policy(label, _state.config_rom.xml());
-					nix::handleExceptions("nix", [&] {
-						out = _realise(policy, arg);
-					});
-				} catch (Session_policy::No_policy_defined) {
-					nix::handleExceptions("nix", [&] {
-						out = _realise(Xml_node("<default-policy/>"), arg);
-					});
-				}
-			} catch (...) {
-				Genode::error("caught unhandled exception while evaluating '", arg, "'");
-				throw Root::Unavailable();
+				Session_policy policy(label, config_rom.xml());
+				nix::handleExceptions("nix", [&] {
+					out = realise(policy, service, label, args);
+				});
+			} catch (Session_policy::No_policy_defined) {
+				nix::handleExceptions("nix", [&] {
+					out = realise(Xml_node(
+						"<default-policy/>"), service, label, args);
+				});
 			}
-
-			if (out == "") {
-				Genode::error("no evaluation for '", arg, "'");
-				throw Root::Unavailable();
-			}
-
-			if (out.length() >= Vfs::MAX_PATH_LEN) {
-				Genode::error("'", arg, "' did not resolve to a store object");
-				throw Root::Unavailable();
-			}
-
-			/*
-			 * Set the label on the request to "store" to differentiate
-			 * this request with requests during evaluation.
-			 */
-			strncpy(new_args, args.string(), ARGS_MAX_LEN);
-			rewrite_args(new_args, sizeof(new_args), out);
-
-			try { return _backend.session(new_args, affinity); }
-			catch (Service::Invalid_args)   { throw Root::Invalid_args();  }
-			catch (Service::Quota_exceeded) { throw Root::Quota_exceeded(); }
-			catch (...) { }
-			throw Root::Unavailable();
+		} catch (...) {
+			Genode::error("caught unhandled exception while evaluating '",service,":",label,"'");
+			env.parent().session_response(server_id, Parent::INVALID_ARGS);
+			return;
 		}
 
-		void upgrade(Session_capability        cap,
-		             Root::Upgrade_args const &args) override {
-			_backend.upgrade(cap, args.string()); }
+		if (out == "") {
+			Genode::error("no evaluation for '",service,":",label,"'");
+			env.parent().session_response(server_id, Parent::INVALID_ARGS);
+			return;
+		}
 
-		void close(Session_capability cap) override {
-			_backend.close(cap); }
+		if (out.length() >= Vfs::MAX_PATH_LEN) {
+			Genode::error("'",service,":",label,"' did not resolve to a store object");
+			env.parent().session_response(server_id, Parent::INVALID_ARGS);
+			return;
+		}
+
+		enum { ARGS_MAX_LEN = 256 };
+		char new_args[ARGS_MAX_LEN];
+
+		strncpy(new_args, args.string(), ARGS_MAX_LEN);
+
+		// XXX: slash hack
+		while (out.front() == '/')
+			out.erase(0,1);
+
+		Session_label const new_label = prefixed_label(
+			Session_label("store"),
+			Session_label(out.c_str()));
+
+		Arg_string::set_arg_string(
+			new_args, ARGS_MAX_LEN, "label", new_label.string());
+
+		/* allocate session meta-data */
+		Session *session = nullptr;
+		try {
+			session = new (heap)
+				Session(env.id_space(), server_id_space, server_id);
+
+			Affinity aff;
+			Session_capability cap =
+				env.session(service.string(), session->client_id.id(),
+				            new_args, aff);
+
+			env.parent().deliver_session_cap(server_id, cap);
+			return;
+		}
+
+		catch (Parent::Service_denied) {
+			warning("'", new_label, "' was denied"); }
+
+		catch (Service::Unavailable) {
+			warning("'", new_label, "' is unavailable"); }
+
+		catch (Service::Invalid_args)   {
+			warning("'", new_label, "' received invalid args"); }
+
+		catch (Service::Quota_exceeded) {
+			warning("'", new_label, "' quota donation was insufficient"); }
+
+		if (session)
+				destroy(heap, session);
+
+		env.parent().session_response(server_id, Parent::INVALID_ARGS);
+	}
+
+	if (request.has_type("upgrade")) {
+
+		server_id_space.apply<Session>(server_id, [&] (Session &session) {
+
+			size_t ram_quota = request.attribute_value("ram_quota", 0UL);
+
+			char buf[64];
+			Genode::snprintf(buf, sizeof(buf), "ram_quota=%ld", ram_quota);
+
+			// XXX handle Root::Invalid_args
+			env.upgrade(session.client_id.id(), buf);
+			env.parent().session_response(server_id, Parent::SESSION_OK);
+		});
+	}
+
+	if (request.has_type("close")) {
+		server_id_space.apply<Session>(server_id, [&] (Session &session) {
+			env.close(session.client_id.id());
+			destroy(heap, &session);
+			env.parent().session_response(server_id, Parent::SESSION_CLOSED);
+		});
+	}
+
 };
 
 
-class Nix::Rom_root : public Service_proxy<Rom_session>
-{
-	protected:
 
-		void read_nix_arg(char *arg, size_t arg_len,
-		                  Root::Session_args const &args) override
-		{
-			Genode::Session_label const label = label_from_args(args.string());
-			Genode::strncpy(arg, label.last_element().string(), arg_len);
-		}
-
-		void rewrite_args(char *args, size_t args_len, nix::Path &out) override
-		{
-			using namespace Genode;
-
-			// XXX: slash hack
-			while (out.front() == '/')
-				out.erase(0,1);
-
-			Session_label const new_label = prefixed_label(
-				Session_label("store"), Session_label(out.c_str()));
-
-			Arg_string::set_arg_string(
-				args, args_len, "label", new_label.string());
-		}
-
-	public:
-
-		Rom_root(State &state)
-		: Service_proxy<Rom_session>("ROM", state) { }
-};
+/***************
+ ** Component **
+ ***************/
 
 
-class Nix::File_system_root : public Service_proxy<File_system::Session>
-{
-	protected:
-
-		void read_nix_arg(char *arg, size_t arg_len,
-		                  Root::Session_args const &args) override
-		{
-			Genode::Arg_string::find_arg(args.string(), "root").string(
-				arg, arg_len, "");
-
-			while (*arg == '/')
-				strncpy(arg, arg+1, arg_len-1);
-		}
-
-		void rewrite_args(char *args, size_t args_len, nix::Path &out) override
-		{
-			Arg_string::set_arg_string(args, args_len, "label", "store");
-			Arg_string::set_arg_string(args, args_len, "root", out.c_str());
-			Arg_string::set_arg(args, args_len, "writeable", false);
-		}
-
-	public:
-
-		File_system_root(State &state)
-		: Service_proxy<File_system::Session>("File_system", state)
-		{ }
-};
-
-
-	/*
-	 * XXX: Nix uses this stack for the evaluation,
-	 * so the threat of a blown stack depends on
-	 * the complexity of the evaulation.
-	 */
+/*
+ * XXX: Nix uses this stack for the evaluation,
+ * so the threat of a blown stack depends on
+ * the complexity of the evaulation.
+ */
 Genode::size_t Component::stack_size() { return 32*1024*sizeof(long); }
 
-void Component::construct(Genode::Env &env)
-{
-	using namespace Nix;
-
-	static            State    state { env };
-	static         Rom_root rom_root { state };
-	static File_system_root  fs_root { state };
-}
+void Component::construct(Genode::Env &env) {
+	static Nix::Main inst(env); }
